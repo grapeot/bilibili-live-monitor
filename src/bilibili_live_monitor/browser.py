@@ -169,15 +169,17 @@ class Browser:
 
             collect(links)
             # 首页可能仅展示20个推荐房间；沿页面实际出现的分区链接补足候选。
-            areas = list(dict.fromkeys(link['url'] for link in links if link['url'].startswith(
-                'https://live.bilibili.com/p/eden/area-tags')))
+            areas = list(dict.fromkeys(link['url'] for link in links
+                                       if link['url'].startswith('https://live.bilibili.com/p/eden/area-tags')
+                                       or link['url'].split('?', 1)[0] == 'https://live.bilibili.com/all'))
             for area in areas[:3]:
                 if len(result) >= limit:
                     break
                 try:
                     await page.goto(area, wait_until='domcontentloaded', timeout=10000)
-                    await page.wait_for_function('document.querySelectorAll("a[href]").length>30',
-                                                 timeout=5000)
+                    await page.wait_for_function(r'''n=>[...document.querySelectorAll('a[href]')].filter(a=>
+                        a.hostname==='live.bilibili.com' && /^\/[1-9]\d*\/?$/.test(a.pathname)).length>=n''',
+                                                 arg=min(20, limit-len(result)), timeout=10000)
                     collect(await page.evaluate('''() => [...document.querySelectorAll('a[href]')]
                         .map(a=>({url:a.href,title:a.innerText.trim().slice(0,120)}))'''))
                 except Exception:
