@@ -52,3 +52,4 @@
 - 实现PR #1已合入master，25测试与构建通过GitHub CI；文档先行、零审批者与管理员无绕过保护已回读确认。Context Infrastructure中文PR #123、英文PR #78和registry PR #56（第89项）已依序合并，文案由Antigravity起草、主线程核验。
 - 首页面向推荐只显示约20个房间，沿实际/all链接找到69个新候选，补足30路。发现函数补/all并等待真实房间卡片，实测返回59个候选，仍不保证候选可播放。
 - 完成视频可行性探索：3来源各3张JPEG连续变化，约5.2秒VP8采样可解26帧；隔离3路1fps MJPEG经Tailscale实际显示并持续更新，22:00退出另有自管owner。原始证据与画面在.local/overnight_20261022/video_probe/，不提交。结论见docs/video_feasibility.md。
+- 最终同一修复版在补充实际可播放来源后，30路各至少两个有效30秒窗口及SSE续传检查通过，证据`thirty_rooms_final.json`；早先失败记录不覆盖。核查时30路均capturing、ASR重启/重试/过载为0。最近150段中138 done、5 empty、6 queued、1 transcribing，推理均值791.8ms、P95 1413ms，已完成段排队P95 6398ms；仅代表该时段样本。
