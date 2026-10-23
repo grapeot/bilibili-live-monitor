@@ -130,7 +130,7 @@ class Monitor:
                 self.generations[room_id] = generation
                 chat_context.update(room_id=room_id, generation=generation)
                 self.store.room({'room_id': room_id, 'url': room_url(resolved_page.url),
-                                 'title': await resolved_page.title(), 'cover_url': '',
+                                 'title': room_id, 'cover_url': '',
                                  'chunk_seconds': seconds, 'status': 'reconnecting',
                                  'error': None, 'muted': True, 'cycle_notice': False})
                 for message in chat_buffer:
@@ -157,7 +157,9 @@ class Monitor:
                     return {title:document.title,
                     cover_url:data?.room_info?.cover || data?.anchor_info?.base_info?.face ||
                               document.querySelector('meta[property="og:image"]')?.content ||
-                              document.querySelector('video')?.poster || ''}}''')
+                               document.querySelector('video')?.poster || ''}}''')
+                if self.generations.get(room_id) != chat_context['generation']:
+                    raise ValueError('房间启动已取消')
                 room = {'room_id': room_id, 'url': canonical, **metadata, 'chunk_seconds': seconds,
                         'status': 'capturing', 'error': None, 'muted': True,
                         'cycle_notice': False}

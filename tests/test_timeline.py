@@ -4,6 +4,7 @@ import struct
 import zlib
 
 import brotli
+import pytest
 from fastapi.testclient import TestClient
 
 from bilibili_live_monitor.app import create_app
@@ -132,5 +133,39 @@ async def test_chat_binds_before_video_ready_and_stops_with_generation(tmp_path)
     await monitor.stop('123456')
     callback({'text': '停止后不应写入', 'source_key': 'late', 'at_utc': '2026-10-23T01:00:01+00:00'})
     assert len(list(store.export_items())) == 260
+    await monitor.close()
+    store.close()
+
+
+async def test_stop_during_startup_metadata_cannot_resurrect_room(tmp_path):
+    store = Store(tmp_path / 'monitor.sqlite3')
+    monitor = Monitor(Settings(data_dir=tmp_path), store)
+
+    class Page:
+        url = 'https://live.bilibili.com/123456'
+
+        async def title(self):
+            raise AssertionError('绑定前不应等待标题')
+
+        async def evaluate(self, *args):
+            await monitor.stop('123456')
+            return {'title': '不应恢复的标题', 'cover_url': ''}
+
+        def is_closed(self):
+            return False
+
+        async def close(self):
+            pass
+
+    async def page(url, on_danmaku, on_resolved):
+        p = Page()
+        await on_resolved(p)
+        return p
+
+    monitor.browser.page = page
+    with pytest.raises(ValueError, match='启动已取消'):
+        await monitor.add('123456', 30)
+    assert store.rooms()[0]['status'] == 'stopped'
+    assert not monitor.tasks and not monitor.generations and not monitor.starting_rooms
     await monitor.close()
     store.close()
