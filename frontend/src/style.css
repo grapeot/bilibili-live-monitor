@@ -5,7 +5,8 @@ main{max-width:none;width:100%;min-height:100dvh;padding:24px}
 .header-actions{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
 .timeline-tools{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:8px 0;font-size:12px}
 .timeline-tools a,.export-link{color:#167c71;text-decoration:none}
-.segments{height:300px;max-height:300px;overflow:auto;overflow-anchor:none;overscroll-behavior:contain}
+.segments{height:300px;max-height:300px;overflow:auto;overflow-anchor:auto;overscroll-behavior:contain}
+.segments.following{overflow-anchor:none}
 .segment.danmaku{border-left:2px solid #9fb5c3;padding-left:10px}
 .segment.transcript{border-left:2px solid #258b7e;padding-left:10px;background:#f3faf8}
 .chat-author{font-weight:550;color:#597487}

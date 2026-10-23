@@ -6,7 +6,7 @@ type Segment = {seq:number; start_utc:string; end_utc:string; text:string; statu
   queue_wait_ms:number; infer_ms:number; rms_dbfs:number; error:string|null; coverage_ratio?:number|null};
 type Room = {room_id:string; title:string; url:string; cover_url:string; status:string;
   error:string|null; chunk_seconds:number; segments:Segment[];items:Item[]};
-type Item = {id:number;room_id:string;kind:'transcript'|'danmaku';at_utc:string;text:string;
+type Item = {id:number;room_id:string;kind:'transcript'|'danmaku';at_utc:string;received_utc:string;text:string;
   author?:string|null;seq?:number|null;status?:string|null;error?:string|null};
 type Change = {kind:'room';data:Room}|{kind:'segment';data:Segment&{room_id:string}}|{kind:'item';data:Item};
 type State = {rooms:Room[]; queue_depth:number; queue_capacity:number; asr_ready:boolean;
@@ -38,7 +38,7 @@ const RoomCard = React.memo(function RoomCard({room,status,onError}:{room:Room;s
     <div className="room-sub"><span>房间 {room.room_id} · {room.chunk_seconds} 秒 / 段</span><button className="text-button" disabled={room.status==='stopped'} onClick={()=>api(`rooms/${room.room_id}/stop`,{method:'POST'}).catch(e=>onError(e.message))}>停止监控</button></div>
     {room.error&&<p className="room-error">{room.error}</p>}
     <div className="timeline-tools"><button className="text-button" aria-pressed={following} onClick={()=>{setFollowing(true);if(scroller.current)scroller.current.scrollTop=scroller.current.scrollHeight}}>{following?'跟随最新':'已暂停·回最新'}</button><a href={base+'api/export?room_id='+room.room_id}>导出本房快照</a></div>
-    <div className="segments" ref={scroller} onScroll={e=>{const n=e.currentTarget;setFollowing(n.scrollHeight-n.scrollTop-n.clientHeight<32)}}>
+    <div className={'segments'+(following?' following':'')} ref={scroller} onScroll={e=>{const n=e.currentTarget;setFollowing(n.scrollHeight-n.scrollTop-n.clientHeight<32)}}>
       {!room.items.length?<p className="waiting">等待弹幕或首个音频切片…</p>:room.items.map(item=><div className={'segment '+item.kind+' '+(item.status||'')} key={item.id}>
         <div className="segment-meta"><time>{time(item.at_utc)}</time><span>{item.kind==='danmaku'?'弹幕':`语音转写 #${item.seq} · ${labels[item.status||'']||item.status}`}</span></div>
         <p>{item.author&&<b className="chat-author">{item.author}：</b>}{item.text||item.error||(item.status==='silent'?'音量低于阈值，已跳过识别':item.status==='empty'?'本段未识别到文字':'等待识别…')}</p>
@@ -73,7 +73,7 @@ function App(){
               rooms=index<0?[...rooms,next]:rooms.map((r,i)=>i===index?next:r);
             }else if(index>=0){const old=rooms[index];let next:Room;
               if(change.kind==='segment'){const seg=change.data;next={...old,segments:[...old.segments.filter(x=>x.seq!==seg.seq),seg].sort((a,b)=>a.seq-b.seq).slice(-20)}}
-              else{const item=change.data;next={...old,items:[...old.items.filter(x=>x.id!==item.id),item].sort((a,b)=>Date.parse(a.at_utc)-Date.parse(b.at_utc)||a.id-b.id).slice(-80)}}
+              else{const item=change.data;next={...old,items:[...old.items.filter(x=>x.id!==item.id),item].sort((a,b)=>Date.parse(b.received_utc)-Date.parse(a.received_utc)||b.id-a.id).slice(0,80).sort((a,b)=>Date.parse(a.at_utc)-Date.parse(b.at_utc)||a.id-b.id)}}
               rooms=rooms.map((r,i)=>i===index?next:r);
             }
           }return {...s,rooms}});

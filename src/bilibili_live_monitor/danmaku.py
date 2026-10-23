@@ -34,26 +34,32 @@ def packets(frame, depth=0):
                     raise ValueError('弹幕解压超过大小限制')
             yield from packets(bytes(expanded), depth + 1)
         elif version in (0, 1):
-            yield json.loads(payload)
+            try:
+                yield json.loads(payload)
+            except (ValueError, UnicodeError):
+                continue
 
 
 def messages(frame):
     result = []
     try:
         for packet in packets(frame):
-            if not isinstance(packet, dict) or not str(packet.get('cmd', '')).startswith('DANMU_MSG'):
+            try:
+                if not isinstance(packet, dict) or not str(packet.get('cmd', '')).startswith('DANMU_MSG'):
+                    continue
+                info = packet['info']
+                text = info[1]
+                if not isinstance(text, str) or not text.strip():
+                    continue
+                timestamp = float(info[0][4])
+                if timestamp > 10**11:
+                    timestamp /= 1000
+                at = datetime.fromtimestamp(timestamp, timezone.utc).isoformat()
+                key = hashlib.sha256(json.dumps(info, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+                result.append({'text': text[:10000], 'author': str(info[2][1])[:200],
+                               'at_utc': at, 'source_key': key})
+            except (ValueError, TypeError, IndexError, KeyError, OverflowError, OSError):
                 continue
-            info = packet['info']
-            text = info[1]
-            if not isinstance(text, str) or not text.strip():
-                continue
-            timestamp = float(info[0][4])
-            if timestamp > 10**11:
-                timestamp /= 1000
-            at = datetime.fromtimestamp(timestamp, timezone.utc).isoformat()
-            key = hashlib.sha256(json.dumps(info, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
-            result.append({'text': text[:10000], 'author': str(info[2][1])[:200],
-                           'at_utc': at, 'source_key': key})
     except (ValueError, TypeError, IndexError, KeyError, OverflowError, OSError, zlib.error, brotli.error):
         # 畸形帧不能影响采音；已成功解码的消息仍保留。
         pass

@@ -55,6 +55,7 @@ class Monitor:
         self.tasks, self.pages, self.generations = {}, {}, {}
         self.pending = set()
         self.stopping = set()
+        self.starting_rooms = {}
         self.lock = asyncio.Lock()
         self.worker = None
         self.overload_count = 0
@@ -107,21 +108,50 @@ class Monitor:
             self.pending.add(url)
         page = None
         chat_context, chat_buffer = {}, []
+        chat_dropped = 0
 
         def on_danmaku(message):
+            nonlocal chat_dropped
             if not chat_context:
                 if len(chat_buffer) < 200:
                     chat_buffer.append(message)
+                else:
+                    chat_dropped += 1
             elif self.generations.get(chat_context['room_id']) == chat_context['generation']:
                 self.store.danmaku(chat_context['room_id'], message)
 
+        async def on_resolved(resolved_page):
+            room_id = room_url(resolved_page.url).rsplit('/', 1)[1]
+            async with self.lock:
+                if room_id in self.tasks or room_id in self.stopping or room_id in self.starting_rooms:
+                    raise ValueError('同一实际房间已在监控或启动中')
+                generation = uuid.uuid4().hex
+                self.starting_rooms[room_id] = generation
+                self.generations[room_id] = generation
+                chat_context.update(room_id=room_id, generation=generation)
+                self.store.room({'room_id': room_id, 'url': room_url(resolved_page.url),
+                                 'title': await resolved_page.title(), 'cover_url': '',
+                                 'chunk_seconds': seconds, 'status': 'reconnecting',
+                                 'error': None, 'muted': True, 'cycle_notice': False})
+                for message in chat_buffer:
+                    on_danmaku(message)
+                chat_buffer.clear()
+                if chat_dropped:
+                    self.store.item({'room_id': room_id, 'kind': 'danmaku',
+                                     'at_utc': iso_ms(time.time() * 1000), 'text': '', 'status': 'error',
+                                     'error': f'页面导航期间弹幕缓冲已满，丢弃{chat_dropped}条'},
+                                    f'startup-gap:{generation}')
+
         try:
-            page = await self.browser.page(url, on_danmaku=on_danmaku)
+            page = await self.browser.page(url, on_danmaku=on_danmaku, on_resolved=on_resolved)
             canonical = room_url(page.url)
             room_id = canonical.rsplit('/', 1)[1]
             async with self.lock:
                 if room_id in self.tasks or room_id in self.stopping:
                     raise ValueError('同一实际房间已在监控中')
+                if (room_id != chat_context.get('room_id') or
+                        self.generations.get(room_id) != chat_context.get('generation')):
+                    raise ValueError('房间启动已取消或来源发生变化')
                 metadata = await page.evaluate('''() => {
                     const data=window.__NEPTUNE_IS_MY_WAIFU__?.roomInfoRes?.data;
                     return {title:document.title,
@@ -133,15 +163,18 @@ class Monitor:
                         'cycle_notice': False}
                 self.store.room(room)
                 self.pages[room_id] = page
-                generation = uuid.uuid4().hex
-                self.generations[room_id] = generation
-                chat_context.update(room_id=room_id, generation=generation)
-                for message in chat_buffer:
-                    on_danmaku(message)
-                chat_buffer.clear()
+                generation = chat_context['generation']
                 self.tasks[room_id] = asyncio.create_task(self.capture(room, page, generation))
                 return room
-        except BaseException:
+        except BaseException as error:
+            if chat_context:
+                rid, generation = chat_context['room_id'], chat_context['generation']
+                if self.generations.get(rid) == generation:
+                    self.generations.pop(rid, None)
+                    room = next((r for r in self.store.rooms() if r['room_id'] == rid), None)
+                    if room:
+                        room.update(status='error', error=f'启动失败：{type(error).__name__}: {error}')
+                        self.store.room(room)
             if page and not page.is_closed():
                 try:
                     await close_page(page)
@@ -150,6 +183,10 @@ class Monitor:
             raise
         finally:
             self.pending.discard(url)
+            if chat_context:
+                rid = chat_context['room_id']
+                if self.starting_rooms.get(rid) == chat_context['generation']:
+                    self.starting_rooms.pop(rid, None)
 
     async def capture(self, room, page, generation):
         room_id = room['room_id']

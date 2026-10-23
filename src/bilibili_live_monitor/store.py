@@ -26,6 +26,8 @@ class Store:
                 kind TEXT NOT NULL, source_key TEXT NOT NULL, at_utc TEXT NOT NULL,
                 data TEXT NOT NULL, UNIQUE(room_id,kind,source_key));
             CREATE INDEX IF NOT EXISTS timeline_room_time ON timeline(room_id,at_utc,id);
+            CREATE INDEX IF NOT EXISTS timeline_room_received
+                ON timeline(room_id,json_extract(data,'$.received_utc'),id);
         ''')
         # 旧数据库升级时补齐转写时间线；不触发历史SSE重放。
         self.db.execute('''INSERT OR IGNORE INTO timeline(room_id,kind,source_key,at_utc,data)
@@ -85,21 +87,25 @@ class Store:
 
     def items(self, room_id, limit=80):
         rows = self.db.execute('SELECT id,data FROM timeline WHERE room_id=? '
-                               'ORDER BY at_utc DESC,id DESC LIMIT ?', (room_id, limit)).fetchall()
-        return [{**json.loads(r['data']), 'id': r['id']} for r in reversed(rows)]
+                               "ORDER BY json_extract(data,'$.received_utc') DESC,id DESC LIMIT ?",
+                               (room_id, limit)).fetchall()
+        items = [{**json.loads(r['data']), 'id': r['id']} for r in rows]
+        return sorted(items, key=lambda item: (item['at_utc'], item['id']))
 
     def export_items(self, room_id=None):
         # 截止ID固定，导出不追逐不断到来的新消息。
         end = self.db.execute('SELECT COALESCE(MAX(id),0) FROM timeline').fetchone()[0]
-        cursor = 0
-        while cursor < end:
+        cursor_time, cursor_id = '', 0
+        while True:
             rows = self.db.execute(
-                'SELECT id,data FROM timeline WHERE id>? AND id<=? AND (? IS NULL OR room_id=?) '
-                'ORDER BY id LIMIT 500', (cursor, end, room_id, room_id)).fetchall()
+                'SELECT id,at_utc,data FROM timeline WHERE id<=? '
+                'AND (at_utc>? OR (at_utc=? AND id>?)) AND (? IS NULL OR room_id=?) '
+                'ORDER BY at_utc,id LIMIT 500',
+                (end, cursor_time, cursor_time, cursor_id, room_id, room_id)).fetchall()
             if not rows:
                 break
             for row in rows:
-                cursor = row['id']
+                cursor_time, cursor_id = row['at_utc'], row['id']
                 yield {**json.loads(row['data']), 'id': row['id']}
 
     def segments(self, room_id):

@@ -122,7 +122,7 @@ class Browser:
             self.browser = await self.pw.chromium.connect_over_cdp(self.cdp_url, timeout=15000)
         return self.browser.contexts[0]
 
-    async def page(self, url, on_danmaku=None):
+    async def page(self, url, on_danmaku=None, on_resolved=None):
         ctx = await self.connect()
         page = await ctx.new_page()
         if on_danmaku:
@@ -133,6 +133,8 @@ class Browser:
         try:
             await page.add_init_script(MUTE_SCRIPT)
             await page.goto(url, wait_until='domcontentloaded', timeout=30000)
+            if on_resolved:
+                await on_resolved(page)
             await page.wait_for_function(
                 'document.querySelector("video")?.readyState >= 2', timeout=30000)
             await ensure_playing(page)
@@ -154,14 +156,32 @@ class Browser:
             links = await page.evaluate('''() => [...document.querySelectorAll('a[href]')]
                 .map(a=>({url:a.href,title:a.innerText.trim().slice(0,120)}))''')
             result, seen = [], set()
-            for link in links:
+
+            def collect(candidates):
+                for link in candidates:
+                    try:
+                        url = room_url(link['url'])
+                    except ValueError:
+                        continue
+                    if url not in seen:
+                        seen.add(url)
+                        result.append({**link, 'url': url})
+
+            collect(links)
+            # 首页可能仅展示20个推荐房间；沿页面实际出现的分区链接补足候选。
+            areas = list(dict.fromkeys(link['url'] for link in links if link['url'].startswith(
+                'https://live.bilibili.com/p/eden/area-tags')))
+            for area in areas[:3]:
+                if len(result) >= limit:
+                    break
                 try:
-                    url = room_url(link['url'])
-                except ValueError:
-                    continue
-                if url not in seen:
-                    seen.add(url)
-                    result.append({**link, 'url': url})
+                    await page.goto(area, wait_until='domcontentloaded', timeout=10000)
+                    await page.wait_for_function('document.querySelectorAll("a[href]").length>30',
+                                                 timeout=5000)
+                    collect(await page.evaluate('''() => [...document.querySelectorAll('a[href]')]
+                        .map(a=>({url:a.href,title:a.innerText.trim().slice(0,120)}))'''))
+                except Exception:
+                    continue  # 单分区失败不丢掉其他页面已发现的候选。
             return result[:limit]
         finally:
             await close_page(page)

@@ -46,3 +46,4 @@
 - 30路启动阶段未全部满足，证据`.local/overnight_20261022/thirty_rooms_initial.json`；沿原基线续测30路各至少两个有效30秒窗口通过，证据`thirty_rooms_resumed.json`。错误与恢复保留，不记为无间隙。
 - 22项pytest、ruff、TS/Vite构建通过；真实弹幕已收到。全宽、上翻暂停跟随、回到底部、原生全屏与390px窄屏通过；证据`ui_timeline_qa.json`及私有截图。看板已在专用Chrome打开。
 - 定位与公开根skill经Antigravity起草、主线程修正事实，见docs/formulation.md。独立code review进行中，未完成项不写作已验收。
+- 首轮独立review的消息异常隔离、导出排序、迟到转写可见性、播放器就绪前绑定及滚动锚定问题已修复；24项离线测试与构建通过，小范围复核进行中。详见docs/review.md。
