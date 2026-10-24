@@ -37,7 +37,8 @@ async def main(args):
             index += len(batch)
 
             async def add(candidate):
-                result = await client.post('/api/rooms', json={'url': candidate['url'], 'chunk_seconds':30})
+                result = await client.post('/api/rooms', json={'url': candidate['url'], 'chunk_seconds':30,
+                                                            'asr_enabled':True, 'record_mode':'none'})
                 record = {'candidate': candidate, 'status': result.status_code, 'response': result.json()}
                 attempts.append(record)
                 print('添加', candidate['url'], result.status_code, flush=True)

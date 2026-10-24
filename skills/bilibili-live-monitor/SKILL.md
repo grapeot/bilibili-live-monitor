@@ -7,18 +7,19 @@ description: 在Apple Silicon Mac部署、运行与验证B站多路直播监控�
 
 ## 定位与注册
 
-监控主播语音与观众弹幕，将每条弹幕和每段转写各作为一个item，按事件时间混合在每房间时间线。无视频展示、视觉理解或音频回放，无付费识别API；运行消耗本机算力、内存与网络。
+默认保存原始音频与弹幕，可独立启用ASR、音视频保存和按需缩略图。每条弹幕和每段转写各作为一个item，按事件时间混合在每房间时间线。不做视觉理解，无付费识别API；运行消耗本机算力、内存与网络。
 
 从目标workspace的AGENTS.md或CLAUDE.md开始，沿路由找到skill索引，只注册本根skill。主机路径、运行目录与真实房间列表放本地私有overlay。公开仓库：<https://github.com/grapeot/bilibili-live-monitor>。
 
 ## 环境与安装
 
-需要Apple Silicon Mac、Python3.12、uv、Node.js与Chrome。主采集无需ffmpeg，历史WebM解码测试需要它。在仓库根目录执行：
+需要Apple Silicon Mac、Python3.12、uv、Node.js、Chrome与ffmpeg。在仓库根目录执行：
 
 ```bash
 uv venv --python 3.12
 source .venv/bin/activate
 uv pip install -e '.[dev]'
+# 以下两行仅在需要ASR时执行
 uv venv --python 3.12 .venvs/asr
 uv pip install --python .venvs/asr/bin/python mlx-qwen3-asr==0.4.4
 npm install --prefix frontend
@@ -39,12 +40,14 @@ python -m bilibili_live_monitor run --until 2030-01-01T22:00:00-08:00
 
 ## 采集、存储与接口
 
-每房间独立Page，保持muted且持续播放。video.captureStream音轨经AudioContext(16000Hz)与AudioWorklet收PCM，Worklet输出置0不外放。复用该页面已有WebSocket，后端解码普通/zlib/Brotli弹幕，不另建连接。
+默认RECORD_MODE=audio、ASR_ENABLED=0、PREVIEW_ENABLED=0，新增房间可覆盖record_mode/asr_enabled/preview_enabled三个独立字段。ASR关闭时不加载模型、不创建识别PCM窗口或队列；看板显示禁用。ffmpeg复制原始压缩包分段写入DATA_DIR/recordings/<room_id>/，音频.mka、音视频.mkv。默认300秒分段，RECORDING_SEGMENT_SECONDS可配置。
+
+每房间独立Page并静音。仅启用ASR时，video.captureStream音轨经AudioContext(16000Hz)与AudioWorklet收PCM，Worklet输出置0不外放。ASR与缩略图都关闭时暂停网页视频，后台录制独立进行。复用网页已有WebSocket采集弹幕，不另建连接。缩略图仅显式启用、卡片可见且页面前台时请求。
 
 SQLite保存完整segments、timeline和SSE事件。UI最近80条item、20段识别数据不代表存储上限。支持全宽、全屏、自动向下跟随，上翻时暂停跟随。
 
 - GET /api/state：房间、最近记录与运行指标。
-- POST /api/rooms：`{"url":"123456","chunk_seconds":30}`。
+- POST /api/rooms：`{"url":"123456","chunk_seconds":30,"record_mode":"audio","asr_enabled":false,"preview_enabled":false}`。
 - POST /api/rooms/123456/stop：停止并清除本房间排队任务，取消inflight，迟到结果校验generation。
 - GET /api/events：SSE，支持Last-Event-ID。
 - GET /api/export：混合时间线JSONL，可加?room_id=123456。
@@ -68,4 +71,4 @@ python scripts/live_smoke.py --rooms 30 --segments 2 --wait-seconds 180 --output
 
 ## 数据边界
 
-原始音频临时处理后删除。真实房间、用户名、转写、截图、数据库、录音与本机路径不得进入公开仓库；证据放.local/。公开示例统一使用虚构123456。
+ASR临时音频处理后删除；原始录制文件按保存选项独立保留。真实房间、用户名、转写、截图、数据库、录音与本机路径不得进入公开仓库；证据放.local/。公开示例统一使用虚构123456。

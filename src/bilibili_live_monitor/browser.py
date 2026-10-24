@@ -5,6 +5,7 @@ import re
 from playwright.async_api import async_playwright
 
 from .danmaku import messages
+from .recording import is_media_url
 
 
 def room_url(value: str):
@@ -125,6 +126,13 @@ class Browser:
     async def page(self, url, on_danmaku=None, on_resolved=None):
         ctx = await self.connect()
         page = await ctx.new_page()
+        page.recording_url = None
+
+        def media_response(response):
+            if response.status in (200, 206) and is_media_url(response.url):
+                page.recording_url = response.url
+
+        page.on('response', media_response)
         if on_danmaku:
             def websocket(socket):
                 if '.chat.bilibili.com/' in socket.url:
@@ -172,17 +180,35 @@ class Browser:
             areas = list(dict.fromkeys(link['url'] for link in links
                                        if link['url'].startswith('https://live.bilibili.com/p/eden/area-tags')
                                        or link['url'].split('?', 1)[0] == 'https://live.bilibili.com/all'))
-            for area in areas[:3]:
+            if 'https://live.bilibili.com/all' not in areas:
+                areas.insert(0, 'https://live.bilibili.com/all')
+            for area in areas[:12]:
                 if len(result) >= limit:
                     break
                 try:
-                    await page.goto(area, wait_until='domcontentloaded', timeout=10000)
+                    response = await page.goto(area, wait_until='domcontentloaded', timeout=10000)
+                    if response and response.status in (403, 412, 429):
+                        raise RuntimeError('discover_refused：来源发现接口拒绝访问，停止请求')
                     await page.wait_for_function(r'''n=>[...document.querySelectorAll('a[href]')].filter(a=>
                         a.hostname==='live.bilibili.com' && /^\/[1-9]\d*\/?$/.test(a.pathname)).length>=n''',
                                                  arg=min(20, limit-len(result)), timeout=10000)
                     collect(await page.evaluate('''() => [...document.querySelectorAll('a[href]')]
                         .map(a=>({url:a.href,title:a.innerText.trim().slice(0,120)}))'''))
-                except Exception:
+                    stalled = 0
+                    for _ in range(12):
+                        if len(result) >= limit or stalled >= 3:
+                            break
+                        previous = len(result)
+                        await page.evaluate('''()=>{window.scrollTo(0,document.body.scrollHeight);
+                            for(const e of document.querySelectorAll('div'))
+                                if(e.clientHeight>200&&e.scrollHeight>e.clientHeight+200)e.scrollTop=e.scrollHeight}''')
+                        await page.wait_for_timeout(1200)
+                        collect(await page.evaluate('''() => [...document.querySelectorAll('a[href]')]
+                            .map(a=>({url:a.href,title:a.innerText.trim().slice(0,120)}))'''))
+                        stalled = stalled+1 if len(result)==previous else 0
+                except Exception as error:
+                    if 'discover_refused' in str(error):
+                        raise
                     continue  # 单分区失败不丢掉其他页面已发现的候选。
             return result[:limit]
         finally:

@@ -91,7 +91,7 @@ def test_history_and_event_replay(tmp_path):
 
 
 async def test_silence_overload_and_shared_worker(tmp_path):
-    settings = Settings(data_dir=tmp_path, queue_size=1)
+    settings = Settings(data_dir=tmp_path, queue_size=1, asr_enabled=True, record_mode='none')
     store = Store(tmp_path / 'monitor.db')
     monitor = Monitor(settings, store)
     monitor.generations['123456'] = 'generation'
