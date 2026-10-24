@@ -122,6 +122,7 @@ class Monitor:
             self.pending.add(url)
         page = None
         chat_context, chat_buffer = {}, []
+        previous = {}
         chat_dropped = 0
 
         def on_danmaku(message):
@@ -143,7 +144,8 @@ class Monitor:
                 self.starting_rooms[room_id] = generation
                 self.generations[room_id] = generation
                 chat_context.update(room_id=room_id, generation=generation)
-                self.store.room({'room_id': room_id, 'url': room_url(resolved_page.url),
+                previous.update(next((r for r in self.store.rooms() if r['room_id'] == room_id), {}))
+                self.store.room({**previous, 'room_id': room_id, 'url': room_url(resolved_page.url),
                                  'title': room_id, 'cover_url': '',
                                   'chunk_seconds': seconds, 'status': 'reconnecting',
                                   'error': None, 'muted': True, 'cycle_notice': False, **options})
@@ -178,7 +180,11 @@ class Monitor:
                 room = {'room_id': room_id, 'url': canonical, **metadata, 'chunk_seconds': seconds,
                          'status': 'capturing', 'error': None, 'muted': True,
                          'cycle_notice': False, **options, 'recording_status': 'disabled' if options['record_mode'] == 'none' else 'starting',
-                         'recorded_seconds': 0, 'recording_files': 0, 'recording_bytes': 0}
+                          'recorded_seconds': previous.get('recorded_seconds', 0),
+                          'recording_files': previous.get('recording_files', 0),
+                          'recording_bytes': previous.get('recording_bytes', 0)}
+                if previous.get('recording_session'):
+                    room['recording_session'] = previous['recording_session']
                 self.store.room(room)
                 self.pages[room_id] = page
                 generation = chat_context['generation']

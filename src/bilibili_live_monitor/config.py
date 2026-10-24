@@ -1,3 +1,4 @@
+import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -24,6 +25,12 @@ class Settings:
     retry_delay: float = field(default_factory=lambda: float(os.getenv('RETRY_DELAY', '2')))
     asr_start_timeout: float = 30
     asr_infer_timeout: float = 30
+    platform_tick_seconds: float = 2
+    platform_start_concurrency: int = 5
+    platform_min_free_bytes: int = 5 * 1024**3
+    babysitter_command: list[str] = field(default_factory=lambda: json.loads(os.getenv('BABYSITTER_COMMAND', '[]')))
+    babysitter_interval_seconds: float = field(default_factory=lambda: float(os.getenv('BABYSITTER_INTERVAL_SECONDS', '300')))
+    babysitter_timeout_seconds: float = field(default_factory=lambda: float(os.getenv('BABYSITTER_TIMEOUT_SECONDS', '120')))
 
     def __post_init__(self):
         if self.record_mode not in ('none', 'audio', 'video') or not 10 <= self.recording_segment_seconds <= 3600:
@@ -33,6 +40,11 @@ class Settings:
         self.data_dir = self.data_dir.resolve()
         if self.max_reconnects < 1 or self.retry_delay < 0:
             raise ValueError('连续重连次数至少为1，退避时间不得为负')
+        if (not isinstance(self.babysitter_command, list) or
+                any(not isinstance(x, str) or not x for x in self.babysitter_command) or
+                min(self.platform_tick_seconds, self.platform_start_concurrency,
+                    self.babysitter_interval_seconds, self.babysitter_timeout_seconds) <= 0):
+            raise ValueError('babysitter命令需为JSON字符串数组；调度间隔和并发需为正数')
 
 
 def load_settings():

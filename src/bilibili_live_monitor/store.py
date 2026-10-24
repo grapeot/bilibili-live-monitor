@@ -16,6 +16,7 @@ class Store:
         self.db.executescript('''
             PRAGMA journal_mode=WAL;
             CREATE TABLE IF NOT EXISTS rooms(room_id TEXT PRIMARY KEY, data TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS control(key TEXT PRIMARY KEY, data TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS segments(
                 id INTEGER PRIMARY KEY AUTOINCREMENT, room_id TEXT NOT NULL, seq INTEGER NOT NULL,
                 data TEXT NOT NULL, UNIQUE(room_id,seq));
@@ -131,3 +132,12 @@ class Store:
 
     def close(self):
         self.db.close()
+
+    def control(self, key, default=None):
+        row = self.db.execute('SELECT data FROM control WHERE key=?', (key,)).fetchone()
+        return json.loads(row['data']) if row else default
+
+    def save_control(self, key, data):
+        with self.db:
+            self.db.execute('INSERT OR REPLACE INTO control VALUES(?,?)',
+                            (key, json.dumps(data, ensure_ascii=False)))

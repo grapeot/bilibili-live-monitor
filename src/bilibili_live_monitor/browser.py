@@ -162,7 +162,9 @@ class Browser:
         page = await ctx.new_page()
         try:
             await page.add_init_script(MUTE_SCRIPT)
-            await page.goto('https://live.bilibili.com/', wait_until='domcontentloaded')
+            response = await page.goto('https://live.bilibili.com/', wait_until='domcontentloaded')
+            if response and response.status in (403, 412, 429):
+                raise RuntimeError('discover_refused：来源发现接口拒绝访问，停止请求')
             await page.wait_for_function('document.querySelectorAll("a[href]").length>30')
             links = await page.evaluate('''() => [...document.querySelectorAll('a[href]')]
                 .map(a=>({url:a.href,title:a.innerText.trim().slice(0,120)}))''')
