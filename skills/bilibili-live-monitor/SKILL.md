@@ -15,6 +15,8 @@ description: 在Apple Silicon Mac运行B站常驻录制平台，通过AI控制�
 
 常驻目标、重启恢复、健康摘要与AI异步补位见 [平台运维子skill](platform-operations.md)。只注册本根skill，子skill按任务加载；真实路径、端口、模型和运行状态从本机私有overlay读取。
 
+已有录制素材的盘点、可恢复本地转写与文本/能量判读边界见 [离线ASR子skill](offline-asr.md)。
+
 ## 环境与安装
 
 需要Apple Silicon Mac、Python3.12、uv、Node.js、Chrome与ffmpeg。在仓库根目录执行：

@@ -2,9 +2,12 @@ import argparse
 import asyncio
 import json
 import os
+import sys
 
 from .browser import Browser
 from .config import load_settings
+from .offline_asr import configure_parser
+from .offline_asr import main as offline_asr_main
 
 
 def main():
@@ -16,7 +19,10 @@ def main():
     commands.add_parser('platform', help='常驻录制平台；目标通过/api/platform管理，SIGTERM优雅关闭')
     discover = commands.add_parser('discover')
     discover.add_argument('--limit', type=int, default=10, choices=range(1, 101))
+    configure_parser(commands)
     args = parser.parse_args()
+    if args.command == 'offline-asr':
+        return offline_asr_main(args)
     settings = load_settings()
     if args.command == 'serve':
         import uvicorn
@@ -41,4 +47,4 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())
