@@ -23,14 +23,17 @@ def parse_deadline(value):
     return deadline.timestamp()
 
 
-def run_owned(commands, directory, deadline, env=None, stop_event=None):
+def run_owned(commands, directory, deadline=None, env=None, stop_event=None):
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
     stop_event = stop_event or threading.Event()
     children, logs = [], []
-    grace = min(3, max(0, (deadline-time.time())/4))
-    manifest = {'owner_pid': os.getpid(), 'until': datetime.fromtimestamp(deadline).astimezone().isoformat(),
-                'deadline_epoch': deadline, 'status': 'starting', 'children': []}
+    resident = deadline is None
+    deadline = float('inf') if resident else deadline
+    grace = 45 if resident else min(3, max(0, (deadline-time.time())/4))
+    manifest = {'owner_pid': os.getpid(), 'until': None if resident else datetime.fromtimestamp(deadline).astimezone().isoformat(),
+                'deadline_epoch': None if resident else deadline, 'mode': 'resident' if resident else 'bounded',
+                'status': 'starting', 'children': []}
     manifest_path = directory / 'runtime.json'
 
     def save():
@@ -72,14 +75,14 @@ def run_owned(commands, directory, deadline, env=None, stop_event=None):
                 child.terminate()
         for child in reversed(children):
             try:
-                child.wait(timeout=max(0, min(3, deadline-time.time())))
+                child.wait(timeout=45 if resident else max(0, min(3, deadline-time.time())))
             except subprocess.TimeoutExpired:
                 pass
         # 根进程退出也不跳过其进程组，防止ASR或Chrome Helper残留。
         for child in reversed(children):
             try:
                 os.killpg(child.pid, signal.SIGKILL)
-            except ProcessLookupError:
+            except (ProcessLookupError, PermissionError):
                 pass
             child.wait()
         manifest['status'] = 'stopped'
@@ -92,8 +95,8 @@ def run_owned(commands, directory, deadline, env=None, stop_event=None):
     return manifest
 
 
-def run_session(settings, until):
-    deadline = parse_deadline(until)
+def run_session(settings, until=None):
+    deadline = parse_deadline(until) if until else None
     endpoint = urlparse(settings.cdp_url)
     if endpoint.hostname not in ('127.0.0.1', 'localhost'):
         raise ValueError('自管模式的CDP_URL必须指向本机回环地址')
@@ -117,7 +120,7 @@ def run_session(settings, until):
                        '--no-first-run', '--no-default-browser-check', '--disable-extensions',
                        '--disable-session-crashed-bubble', '--disable-background-timer-throttling',
                        '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows',
-                       '--autoplay-policy=no-user-gesture-required', 'about:blank']
+                       '--autoplay-policy=no-user-gesture-required', '--mute-audio', 'about:blank']
     event = threading.Event()
     for signum in (signal.SIGINT, signal.SIGTERM):
         signal.signal(signum, lambda *_: event.set())

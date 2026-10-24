@@ -1,6 +1,6 @@
 ---
 name: bilibili-live-monitor
-description: 在Apple Silicon Mac部署、运行与验证B站多路直播监控，将本地语音转写与网页弹幕合并为持久化时间线，支持静音采集、SQLite、JSONL导出和全宽实时看板。
+description: 在Apple Silicon Mac运行B站常驻录制平台，通过AI控制面管理目标与来源，将原始媒体、本地语音转写与网页弹幕持久保存；包含面向AI的平台运维子skill。
 ---
 
 # B站多路直播监控
@@ -10,6 +10,10 @@ description: 在Apple Silicon Mac部署、运行与验证B站多路直播监控�
 默认保存原始音频与弹幕，可独立启用ASR、音视频保存和按需缩略图。每条弹幕和每段转写各作为一个item，按事件时间混合在每房间时间线。不做视觉理解，无付费识别API；运行消耗本机算力、内存与网络。
 
 从目标workspace的AGENTS.md或CLAUDE.md开始，沿路由找到skill索引，只注册本根skill。主机路径、运行目录与真实房间列表放本地私有overlay。公开仓库：<https://github.com/grapeot/bilibili-live-monitor>。
+
+## AI 操作者入口
+
+常驻目标、重启恢复、健康摘要与AI异步补位见 [平台运维子skill](platform-operations.md)。只注册本根skill，子skill按任务加载；真实路径、端口、模型和运行状态从本机私有overlay读取。
 
 ## 环境与安装
 
@@ -36,7 +40,7 @@ python -m bilibili_live_monitor run --until 2030-01-01T22:00:00-08:00
 
 将截止时间换成实际未来带时区时间。该控制进程直接拥有Chrome、后端和ASR进程组，不使用外部Background Process Manager；DATA_DIR/runtime.json记录所有权，到期清理自有组。提前结束向manifest中的owner发送SIGTERM。也支持scripts/start_chrome.sh和scripts/start_backend.sh分步启动。
 
-默认服务8765、CDP9222、房间上限10、队列20，均可配置。30路实测先设MAX_ROOMS=30、QUEUE_SIZE=60。看板打开http://127.0.0.1:8765，添加虚构示例123456或实际授权的房间链接。重启恢复历史但不会自动重开直播。
+默认服务8765、CDP9222、房间上限10、队列20，均可配置。30路实测先设MAX_ROOMS=30、QUEUE_SIZE=60。看板打开http://127.0.0.1:8765，添加虚构示例123456或实际授权的房间链接。临时房间重启后不自动重开；平台候选与policy目标持久化并自动恢复。
 
 ## 采集、存储与接口
 

@@ -14,6 +14,7 @@ from .browser import room_url
 from .config import load_settings
 from .models import CandidateResponse, HealthResponse, RoomResponse, StateResponse
 from .monitor import Monitor
+from .platform import Candidate, Decision, Platform, Policy
 from .store import Store
 
 
@@ -36,6 +37,10 @@ class ErrorResponse(BaseModel):
     detail: str = Field(description='失败原因')
 
 
+class Candidates(BaseModel):
+    candidates: list[Candidate] = Field(max_length=500)
+
+
 def sse(kind, data, event_id=None):
     prefix = f'id: {event_id}\n' if event_id is not None else ''
     return f'{prefix}event: {kind}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n'
@@ -54,9 +59,13 @@ def create_app(settings=None):
             monitor = Monitor(settings, store)
             app.state.monitor = monitor
             await monitor.start()
+            platform = Platform(monitor)
+            app.state.platform = platform
+            await platform.start()
             try:
                 yield
             finally:
+                await platform.close()
                 await monitor.close()
                 store.close()
         finally:
@@ -84,6 +93,53 @@ def create_app(settings=None):
     @app.get('/api/state', summary='获取房间与最近转写快照', response_model=StateResponse)
     async def state():
         return app.state.monitor.state()
+
+    @app.get('/api/platform', summary='AI巡检摘要：目标、执行、候选与最近决策')
+    async def platform_summary():
+        return app.state.platform.summary()
+
+    @app.put('/api/platform/policy', summary='持久化平台目标；异步收敛而非同步就绪承诺')
+    async def platform_policy(body: Policy):
+        try:
+            return app.state.platform.configure(body)
+        except ValueError as error:
+            raise HTTPException(422, str(error)) from error
+
+    @app.post('/api/platform/candidates', status_code=202, summary='导入已发现的候选，不解除封禁')
+    async def platform_candidates(body: Candidates):
+        try:
+            return app.state.platform.import_candidates(body.candidates)
+        except ValueError as error:
+            raise HTTPException(409, str(error)) from error
+
+    @app.post('/api/platform/discover', status_code=202, summary='请求异步网页发现；受冷却与拒绝边界约束')
+    async def platform_discover():
+        app.state.platform.discovery_requested = True
+        return {'accepted': True, 'completed': False}
+
+    @app.post('/api/platform/candidates/{room_id}/stop', status_code=202,
+              summary='撤销候选，异步停止执行并防止自动补回')
+    async def platform_stop(room_id: str):
+        try:
+            return app.state.platform.stop_candidate(room_id)
+        except (KeyError, ValueError) as error:
+            raise HTTPException(404, '平台候选不存在') from error
+
+    @app.post('/api/platform/decisions', status_code=202, summary='提交带版本的AI排序、停止与发现决策')
+    async def platform_decision(body: Decision):
+        try:
+            return app.state.platform.apply_decision(body)
+        except ValueError as error:
+            raise HTTPException(409, str(error)) from error
+
+    @app.get('/api/platform/events', summary='按游标读取平台动作回执，不夹带弹幕与转写')
+    async def platform_events(after: int = 0, limit: int = 100):
+        if after < 0 or not 1 <= limit <= 200:
+            raise HTTPException(422, 'after非负；limit为1～200')
+        rows = app.state.monitor.store.db.execute(
+            "SELECT id,data FROM events WHERE kind='platform_action' AND id>? ORDER BY id LIMIT ?",
+            (after, limit)).fetchall()
+        return [{'id': row['id'], **json.loads(row['data'])} for row in rows]
 
     @app.get('/api/export', summary='导出SQLite中的完整混合时间线JSONL')
     async def export(room_id: str | None = None):
@@ -127,8 +183,9 @@ def create_app(settings=None):
               responses={404: {'model': ErrorResponse}})
     async def stop_room(room_id: str):
         try:
+            app.state.platform.stop_room_intent(room_id)
             return await app.state.monitor.stop(room_id)
-        except KeyError as error:
+        except (KeyError, ValueError) as error:
             raise HTTPException(404, '房间不存在') from error
 
     @app.get('/api/events', summary='SSE快照与持久事件，支持Last-Event-ID')
