@@ -123,7 +123,7 @@ class Browser:
             self.browser = await self.pw.chromium.connect_over_cdp(self.cdp_url, timeout=15000)
         return self.browser.contexts[0]
 
-    async def page(self, url, on_danmaku=None, on_resolved=None):
+    async def page(self, url, on_danmaku=None, on_resolved=None, *, require_playback=True):
         ctx = await self.connect()
         page = await ctx.new_page()
         page.recording_url = None
@@ -140,12 +140,15 @@ class Browser:
             page.on('websocket', websocket)
         try:
             await page.add_init_script(MUTE_SCRIPT)
-            await page.goto(url, wait_until='domcontentloaded', timeout=30000)
+            response = await page.goto(url, wait_until='domcontentloaded', timeout=30000)
+            if response and response.status in (403, 412, 429):
+                raise RuntimeError(f'recording_refused: HTTP {response.status}')
             if on_resolved:
                 await on_resolved(page)
-            await page.wait_for_function(
-                'document.querySelector("video")?.readyState >= 2', timeout=30000)
-            await ensure_playing(page)
+            if require_playback:
+                await page.wait_for_function(
+                    'document.querySelector("video")?.readyState >= 2', timeout=30000)
+                await ensure_playing(page)
             return page
         except BaseException:
             try:
