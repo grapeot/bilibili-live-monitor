@@ -146,7 +146,8 @@ class Platform:
                 'recording_bytes': sum(r.get('recording_bytes', 0) for r in rooms),
                 'room_statuses': dict(Counter(r['status'] for r in rooms)),
                 'sources': [{k: r.get(k) for k in ('room_id', 'status', 'recording_status',
-                                                  'recorded_seconds', 'error', 'updated_at')} for r in rooms],
+                                                  'recorded_seconds', 'error', 'attention', 'updated_at')} for r in rooms],
+                'attention_count': sum(bool(r.get('attention')) for r in rooms if r['room_id'] in tasks),
                 'free_bytes': shutil.disk_usage(self.settings.data_dir).free,
                 'queue_depth': self.monitor.queue.qsize(), 'asr_ready': self.monitor.asr.ready,
                 'candidates': list(self.candidates.values()), 'last_error': self.last_error,
@@ -187,6 +188,8 @@ class Platform:
             options = self.policy.model_dump(exclude={'enabled', 'target_rooms'})
             room = await self.monitor.add(candidate['url'], self.settings.chunk_seconds, **options)
             candidate['room_id'] = room['room_id']
+            candidate['started_epoch'] = time.time()
+            candidate['start_seconds'] = room.get('recorded_seconds', 0)
             self.active[candidate['url']] = room['room_id']
             self.save()
             self.event('source_started', url=candidate['url'], room_id=room['room_id'],
@@ -226,6 +229,12 @@ class Platform:
             if rid not in self.monitor.tasks:
                 self.active.pop(url)
                 self.failed(candidate, rooms.get(rid, {}).get('error') or 'capture_ended')
+            elif (rooms.get(rid, {}).get('record_mode') != 'none' and
+                  rooms.get(rid, {}).get('recorded_seconds', 0) <= candidate.get('start_seconds', 0) and
+                  time.time()-candidate.get('started_epoch', time.time()) > 60):
+                await self.monitor.stop(rid)
+                self.active.pop(url)
+                self.failed(candidate, 'no_media_progress_60s')
         # 先取消多余启动，再停止多余任务；不停止非平台拥有的手工任务。
         excess = max(0, len(self.monitor.tasks)+len(self.launching)-target)
         for url, task in reversed(list(self.launching.items())):

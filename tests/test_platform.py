@@ -1,5 +1,6 @@
 import asyncio
 import sys
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -256,3 +257,55 @@ async def test_failed_restart_preserves_media_accounting(tmp_path):
     for key in ('recorded_seconds', 'recording_bytes', 'recording_files', 'recording_session'):
         assert row[key] == previous[key]
     reopened.close()
+
+
+async def test_no_new_media_start_is_closed_and_slot_reused(tmp_path):
+    platform = fixture(tmp_path)
+    platform.import_candidates([Candidate(url='1'), Candidate(url='2')])
+    platform.configure(Policy(enabled=True, target_rooms=1))
+    await settled(platform)
+    first = platform.candidates['https://live.bilibili.com/1']
+    first['started_epoch'] = time.time()-61
+    await settled(platform)
+    assert first['last_error']=='no_media_progress_60s'
+    assert list(platform.active.values())==['2']
+    await platform.close()
+    platform.store.close()
+
+
+async def test_asr_only_does_not_require_raw_media_progress(tmp_path):
+    platform = fixture(tmp_path)
+    platform.import_candidates([Candidate(url='1')])
+    platform.configure(Policy(enabled=True, target_rooms=1,record_mode='none',asr_enabled=True))
+    await settled(platform)
+    candidate = platform.candidates['https://live.bilibili.com/1']
+    candidate['started_epoch'] = time.time()-61
+    await platform.tick()
+    assert list(platform.active.values())==['1']
+    await platform.close()
+    platform.store.close()
+
+
+async def test_attention_changes_are_observable_without_bypassing(tmp_path):
+    store = Store(tmp_path/'monitor.sqlite3')
+    monitor = Monitor(Settings(data_dir=tmp_path),store)
+    room = {'room_id':'123456','status':'capturing'}
+
+    class Page:
+        attention = 'verification_or_login'
+
+        async def evaluate(self, script, pause):
+            assert 'captcha' in script
+            return {'attention':self.attention}
+
+    page = Page()
+    await monitor.inspect_page(room,page)
+    await monitor.inspect_page(room,page,pause=True)
+    assert room['attention']=='verification_or_login'
+    assert store.db.execute("SELECT count(*) FROM events WHERE kind='platform_action'").fetchone()[0]==1
+    page.attention = None
+    await monitor.inspect_page(room,page)
+    assert room['attention'] is None
+    assert store.db.execute("SELECT count(*) FROM events WHERE kind='platform_action'").fetchone()[0]==2
+    await monitor.close()
+    store.close()
