@@ -157,7 +157,8 @@ class Monitor:
                                     f'startup-gap:{generation}')
 
         try:
-            page = await self.browser.page(url, on_danmaku=on_danmaku, on_resolved=on_resolved)
+            page = await self.browser.page(url, on_danmaku=on_danmaku, on_resolved=on_resolved,
+                                           require_playback=options['asr_enabled'] or options['preview_enabled'])
             canonical = room_url(page.url)
             room_id = canonical.rsplit('/', 1)[1]
             async with self.lock:
@@ -219,10 +220,13 @@ class Monitor:
                         delay = min(30, self.settings.retry_delay * 2 ** (self.failures[room_id] - 1))
                         await asyncio.sleep(delay)
                         page.recording_url = None
-                        await page.reload(wait_until='domcontentloaded', timeout=30000)
-                        await page.wait_for_function(
-                            'document.querySelector("video")?.readyState >= 2', timeout=30000)
-                        await ensure_playing(page)
+                        response = await page.reload(wait_until='domcontentloaded', timeout=30000)
+                        if response and response.status in (403, 412, 429):
+                            raise RuntimeError(f'recording_refused: HTTP {response.status}')
+                        if room.get('asr_enabled', True) or room.get('preview_enabled'):
+                            await page.wait_for_function(
+                                'document.querySelector("video")?.readyState >= 2', timeout=30000)
+                            await ensure_playing(page)
                         room.update(status='capturing', error=None)
                         self.store.room(room)
                     await self.session_cycles(room, page, generation)
@@ -263,7 +267,7 @@ class Monitor:
             audio_task = asyncio.create_task(self.capture_cycles(room, page, generation))
         try:
             if room.get('record_mode', 'none') != 'none':
-                for _ in range(20):
+                for _ in range(60):
                     if getattr(page, 'recording_url', None):
                         break
                     await asyncio.sleep(.5)

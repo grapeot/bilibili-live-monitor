@@ -113,7 +113,7 @@ async def test_chat_binds_before_video_ready_and_stops_with_generation(tmp_path)
         async def close(self):
             pass
 
-    async def page(url, on_danmaku, on_resolved):
+    async def page(url, on_danmaku, on_resolved, **options):
         nonlocal callback
         callback = on_danmaku
         await on_resolved(Page())
@@ -157,7 +157,7 @@ async def test_stop_during_startup_metadata_cannot_resurrect_room(tmp_path):
         async def close(self):
             pass
 
-    async def page(url, on_danmaku, on_resolved):
+    async def page(url, on_danmaku, on_resolved, **options):
         p = Page()
         await on_resolved(p)
         return p
