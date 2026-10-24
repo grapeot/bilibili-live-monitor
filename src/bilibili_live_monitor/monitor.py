@@ -14,6 +14,16 @@ from .capture import close_pcm, read_pcm, start_pcm
 from .preview import Previews
 from .recording import Recording
 
+PAGE_INSPECTION_SCRIPT = '''pause => {
+    const v=document.querySelector('video');if(pause&&v&&!v.paused)v.pause();
+    const selectors='.geetest_panel_box,.geetest_panel,iframe[src*="captcha"],'
+        +'iframe[src*="passport"],.bili-mini-login,input[placeholder*="验证码"]';
+    const visible=[...document.querySelectorAll(selectors)].some(e=>{
+        const r=e.getBoundingClientRect(),s=getComputedStyle(e);
+        return r.width>0&&r.height>0&&s.visibility!=='hidden'&&s.opacity!=='0';});
+    return {attention:visible?'verification_or_login':null};
+}'''
+
 
 def iso_ms(milliseconds):
     return datetime.fromtimestamp(milliseconds / 1000, timezone.utc).isoformat()
@@ -272,12 +282,14 @@ class Monitor:
         if room.get('asr_enabled', True):
             audio_task = asyncio.create_task(self.capture_cycles(room, page, generation))
         try:
+            await self.inspect_page(room, page)
             if room.get('record_mode', 'none') != 'none':
                 for _ in range(60):
                     if getattr(page, 'recording_url', None):
                         break
                     await asyncio.sleep(.5)
                 if not getattr(page, 'recording_url', None):
+                    await self.inspect_page(room, page)
                     raise RuntimeError('recording_url_missing：未发现网页正在请求的直播流')
                 recorder = Recording(self.settings, room)
                 await recorder.start(page.recording_url)
@@ -297,7 +309,7 @@ class Monitor:
                     reset_budget = True
                 if not room.get('asr_enabled', True) and not room.get('preview_enabled'):
                     # 保留网页弹幕WebSocket，暂停本地视频解码；录制由ffmpeg独立拉流。
-                    await page.evaluate("()=>{const v=document.querySelector('video');if(v&&!v.paused)v.pause()}")
+                    await self.inspect_page(room, page, pause=True)
                 if audio_task:
                     await asyncio.wait({audio_task}, timeout=3)
                 else:
@@ -319,6 +331,15 @@ class Monitor:
             except asyncio.CancelledError:
                 await cleanup_task
                 raise
+
+    async def inspect_page(self, room, page, *, pause=False):
+        result = await page.evaluate(PAGE_INSPECTION_SCRIPT, pause)
+        attention = result.get('attention') if isinstance(result, dict) else None
+        if attention != room.get('attention'):
+            room['attention'] = attention
+            self.store.room(room)
+            self.store.event('platform_action', {'at_utc': iso_ms(time.time()*1000),
+                             'action': 'human_attention', 'room_id': room['room_id'], 'attention': attention})
 
     async def capture_cycles(self, room, page, generation):
         room_id = room['room_id']
