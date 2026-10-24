@@ -31,6 +31,13 @@ class SegmentResponse(BaseModel):
 
 
 class RoomResponse(BaseModel):
+    record_mode: Literal['none', 'audio', 'video'] = 'audio'
+    asr_enabled: bool = False
+    preview_enabled: bool = False
+    recording_status: str = 'disabled'
+    recorded_seconds: float = 0
+    recording_files: int = 0
+    recording_bytes: int = 0
     room_id: str = Field(description='解析重定向后的实际房间号', examples=['123456'])
     url: str = Field(description='实际房间HTTPS链接')
     title: str = Field(description='直播页面标题')
@@ -67,6 +74,9 @@ class Inflight(BaseModel):
 
 
 class StateResponse(BaseModel):
+    asr_enabled: bool = False
+    record_mode: Literal['none', 'audio', 'video'] = 'audio'
+    preview_enabled: bool = False
     rooms: list[RoomState] = Field(description='历史和当前监控房间')
     queue_depth: int = Field(ge=0, description='等待识别的段数，不包含正在推理的段')
     queue_capacity: int = Field(ge=1, description='等待队列容量上限')
@@ -82,6 +92,7 @@ class StateResponse(BaseModel):
 
 
 class HealthResponse(BaseModel):
+    asr_enabled: bool = False
     ok: bool = Field(description='HTTP服务是否可响应，不代表所有直播均正常')
     asr_ready: bool = Field(description='ASR模型是否已就绪')
     queue_depth: int = Field(ge=0, description='等待识别段数')

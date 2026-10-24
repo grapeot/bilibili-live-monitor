@@ -11,6 +11,8 @@ from .asr import ASR
 from .audio_queue import AudioQueue
 from .browser import Browser, close_page, ensure_playing, room_url
 from .capture import close_pcm, read_pcm, start_pcm
+from .preview import Previews
+from .recording import Recording
 
 
 def iso_ms(milliseconds):
@@ -55,6 +57,7 @@ class Monitor:
         self.tasks, self.pages, self.generations = {}, {}, {}
         self.pending = set()
         self.stopping = set()
+        self.stop_tasks = {}
         self.starting_rooms = {}
         self.lock = asyncio.Lock()
         self.worker = None
@@ -64,6 +67,8 @@ class Monitor:
         self.active_generation = None
         self.failures = {}
         self.warm_task = None
+        self.previews = Previews(lambda rid: self.pages.get(rid) if any(
+            r['room_id'] == rid and r.get('preview_enabled') for r in self.store.rooms()) else None)
 
     async def start(self, *, warm=True):
         directory = self.settings.data_dir / 'audio'
@@ -71,9 +76,10 @@ class Monitor:
             for path in directory.glob('*.wav'):
                 if len(path.stem) == 32 and all(c in '0123456789abcdef' for c in path.stem):
                     path.unlink(missing_ok=True)
-        if warm:
+        if warm and self.settings.asr_enabled:
             self.warm_task = asyncio.create_task(self.warm_model())
-        self.worker = asyncio.create_task(self.consume())
+        if self.settings.asr_enabled:
+            self.worker = asyncio.create_task(self.consume())
 
     async def warm_model(self):
         try:
@@ -91,14 +97,22 @@ class Monitor:
         return {'rooms': rooms, **self.metrics(), 'cursor': self.store.cursor()}
 
     def metrics(self):
-        return {'queue_depth': self.queue.qsize(), 'queue_capacity': self.queue.maxsize,
+        return {'asr_enabled': self.settings.asr_enabled or any(
+                    r.get('asr_enabled') and r['room_id'] in self.tasks for r in self.store.rooms()),
+                'record_mode': self.settings.record_mode, 'preview_enabled': self.settings.preview_enabled,
+                'queue_depth': self.queue.qsize(), 'queue_capacity': self.queue.maxsize,
                 'asr_ready': self.asr.ready, 'overload_count': self.overload_count,
                 'inflight': self.inflight,
                 'active_count': len(self.tasks), 'pending_count': len(self.pending),
                 'asr_restarts': self.asr.restart_count, 'asr_retries': self.asr.retry_count,
                 'asr_error': self.asr.last_error}
 
-    async def add(self, value, seconds):
+    async def add(self, value, seconds, *, record_mode=None, asr_enabled=None, preview_enabled=None):
+        options = {'record_mode': self.settings.record_mode if record_mode is None else record_mode,
+                   'asr_enabled': self.settings.asr_enabled if asr_enabled is None else asr_enabled,
+                   'preview_enabled': self.settings.preview_enabled if preview_enabled is None else preview_enabled}
+        if options['record_mode'] not in ('none', 'audio', 'video'):
+            raise ValueError('保存模式无效')
         url = room_url(value)
         async with self.lock:
             if url in self.pending or url.rsplit('/', 1)[1] in self.tasks or url.rsplit('/', 1)[1] in self.stopping:
@@ -131,8 +145,8 @@ class Monitor:
                 chat_context.update(room_id=room_id, generation=generation)
                 self.store.room({'room_id': room_id, 'url': room_url(resolved_page.url),
                                  'title': room_id, 'cover_url': '',
-                                 'chunk_seconds': seconds, 'status': 'reconnecting',
-                                 'error': None, 'muted': True, 'cycle_notice': False})
+                                  'chunk_seconds': seconds, 'status': 'reconnecting',
+                                  'error': None, 'muted': True, 'cycle_notice': False, **options})
                 for message in chat_buffer:
                     on_danmaku(message)
                 chat_buffer.clear()
@@ -161,11 +175,15 @@ class Monitor:
                 if self.generations.get(room_id) != chat_context['generation']:
                     raise ValueError('房间启动已取消')
                 room = {'room_id': room_id, 'url': canonical, **metadata, 'chunk_seconds': seconds,
-                        'status': 'capturing', 'error': None, 'muted': True,
-                        'cycle_notice': False}
+                         'status': 'capturing', 'error': None, 'muted': True,
+                         'cycle_notice': False, **options, 'recording_status': 'disabled' if options['record_mode'] == 'none' else 'starting',
+                         'recorded_seconds': 0, 'recording_files': 0, 'recording_bytes': 0}
                 self.store.room(room)
                 self.pages[room_id] = page
                 generation = chat_context['generation']
+                if room['asr_enabled'] and self.worker is None:
+                    self.worker = asyncio.create_task(self.consume())
+                    self.warm_task = asyncio.create_task(self.warm_model())
                 self.tasks[room_id] = asyncio.create_task(self.capture(room, page, generation))
                 return room
         except BaseException as error:
@@ -200,18 +218,20 @@ class Monitor:
                     if reconnect:
                         delay = min(30, self.settings.retry_delay * 2 ** (self.failures[room_id] - 1))
                         await asyncio.sleep(delay)
+                        page.recording_url = None
                         await page.reload(wait_until='domcontentloaded', timeout=30000)
                         await page.wait_for_function(
                             'document.querySelector("video")?.readyState >= 2', timeout=30000)
                         await ensure_playing(page)
                         room.update(status='capturing', error=None)
                         self.store.room(room)
-                    await self.capture_cycles(room, page, generation)
+                    await self.session_cycles(room, page, generation)
                 except asyncio.CancelledError:
                     raise
                 except Exception as error:
                     self.failures[room_id] += 1
-                    exhausted = self.failures[room_id] >= self.settings.max_reconnects
+                    exhausted = ('recording_refused' in str(error) or
+                                 self.failures[room_id] >= self.settings.max_reconnects)
                     room.update(status='error' if exhausted else 'reconnecting',
                                 error=f'{type(error).__name__}: {error}')
                     self.store.room(room)
@@ -220,6 +240,7 @@ class Monitor:
                     reconnect = True
         finally:
             try:
+                await self.previews.stop(room_id)
                 await close_page(page)
             except Exception as error:
                 self.store.event('cleanup_error', {'room_id': room_id, 'error': str(error)})
@@ -231,6 +252,63 @@ class Monitor:
                 self.failures.pop(room_id, None)
                 if self.generations.get(room_id) == generation:
                     self.generations.pop(room_id, None)
+
+    async def session_cycles(self, room, page, generation):
+        recorder = None
+        audio_task = None
+        healthy_started = time.monotonic()
+        reset_budget = False
+        last_store = 0
+        if room.get('asr_enabled', True):
+            audio_task = asyncio.create_task(self.capture_cycles(room, page, generation))
+        try:
+            if room.get('record_mode', 'none') != 'none':
+                for _ in range(20):
+                    if getattr(page, 'recording_url', None):
+                        break
+                    await asyncio.sleep(.5)
+                if not getattr(page, 'recording_url', None):
+                    raise RuntimeError('recording_url_missing：未发现网页正在请求的直播流')
+                recorder = Recording(self.settings, room)
+                await recorder.start(page.recording_url)
+            while True:
+                if recorder:
+                    await recorder.check()
+                    if time.monotonic()-last_store >= 10:
+                        room.update(recorder.snapshot())
+                        self.store.room(room)
+                        last_store = time.monotonic()
+                if audio_task and audio_task.done():
+                    await audio_task
+                    raise RuntimeError('audio_capture_ended')
+                if (recorder is not None and not reset_budget and time.monotonic()-healthy_started >= 60 and
+                        recorder.progress_seconds >= 60):
+                    self.failures[room['room_id']] = 0
+                    reset_budget = True
+                if not room.get('asr_enabled', True) and not room.get('preview_enabled'):
+                    # 保留网页弹幕WebSocket，暂停本地视频解码；录制由ffmpeg独立拉流。
+                    await page.evaluate("()=>{const v=document.querySelector('video');if(v&&!v.paused)v.pause()}")
+                if audio_task:
+                    await asyncio.wait({audio_task}, timeout=3)
+                else:
+                    await asyncio.sleep(3)
+        finally:
+            async def cleanup():
+                try:
+                    if audio_task:
+                        audio_task.cancel()
+                        await asyncio.gather(audio_task, return_exceptions=True)
+                finally:
+                    if recorder:
+                        await recorder.close()
+                        room.update(recorder.snapshot(), recording_status='stopped')
+                        self.store.room(room)
+            cleanup_task = asyncio.create_task(cleanup())
+            try:
+                await asyncio.shield(cleanup_task)
+            except asyncio.CancelledError:
+                await cleanup_task
+                raise
 
     async def capture_cycles(self, room, page, generation):
         room_id = room['room_id']
@@ -266,7 +344,8 @@ class Monitor:
                     self.store.segment(segment)
                     raise
                 self.submit(segment, pcm, generation)
-                self.failures[room_id] = 0  # 成功采集后重置连续失败预算，不累计终身失败。
+                if room.get('record_mode', 'none') == 'none':
+                    self.failures[room_id] = 0  # 纯ASR通路以通过校验的完整PCM窗口作为恢复标准。
                 seq += 1
         finally:
             if not page.is_closed():
@@ -339,11 +418,19 @@ class Monitor:
                 self.queue.task_done()
 
     async def stop(self, room_id):
+        if room_id not in self.stop_tasks:
+            self.stopping.add(room_id)
+            self.generations.pop(room_id, None)  # 首次停止立即失效，禁止迟到结果抢在清理任务前发布。
+            self.stop_tasks[room_id] = asyncio.create_task(self._stop_once(room_id))
+        return await asyncio.shield(self.stop_tasks[room_id])
+
+    async def _stop_once(self, room_id):
         self.stopping.add(room_id)
         try:
             return await self._stop(room_id)
         finally:
             self.stopping.discard(room_id)
+            self.stop_tasks.pop(room_id, None)
 
     async def _stop(self, room_id):
         self.generations.pop(room_id, None)
@@ -370,8 +457,8 @@ class Monitor:
             self.store.segment(segment)
 
     async def close(self):
-        for room_id in list(self.tasks):
-            await self.stop(room_id)
+        await self.previews.close()
+        await asyncio.gather(*(self.stop(room_id) for room_id in list(self.tasks)))
         if self.worker:
             self.worker.cancel()
             await asyncio.gather(self.worker, return_exceptions=True)

@@ -16,7 +16,7 @@ from bilibili_live_monitor.store import Store
 
 async def test_stop_releases_queue_and_inflight_without_dropping_other_room(tmp_path):
     store = Store(tmp_path / 'test.db')
-    monitor = Monitor(Settings(data_dir=tmp_path, queue_size=1), store)
+    monitor = Monitor(Settings(data_dir=tmp_path, queue_size=1, asr_enabled=True, record_mode='none'), store)
     store.room({'room_id': '123456', 'status': 'capturing'})
     monitor.generations.update({'123456': 'a', '234567': 'b'})
     started = asyncio.Event()
@@ -212,7 +212,7 @@ for line in sys.stdin:
 
 async def test_completed_inference_cannot_publish_after_stop(tmp_path):
     store = Store(tmp_path / 'test.db')
-    monitor = Monitor(Settings(data_dir=tmp_path), store)
+    monitor = Monitor(Settings(data_dir=tmp_path, asr_enabled=True, record_mode='none'), store)
     monitor.generations['123456'] = 'a'
     store.room({'room_id':'123456', 'status':'capturing'})
     stop_tasks = []

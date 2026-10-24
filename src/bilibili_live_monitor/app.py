@@ -3,9 +3,10 @@ import fcntl
 import json
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Literal
 
 from fastapi import FastAPI, Header, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
@@ -17,6 +18,9 @@ from .store import Store
 
 
 class AddRoom(BaseModel):
+    record_mode: Literal['none', 'audio', 'video'] | None = None
+    asr_enabled: bool | None = None
+    preview_enabled: bool | None = None
     url: str = Field(min_length=1, max_length=300, description='直播间 HTTPS 链接或正整数房间号',
                      examples=['https://live.bilibili.com/123456'])
     chunk_seconds: int | None = Field(default=None, ge=5, le=60,
@@ -63,7 +67,19 @@ def create_app(settings=None):
     @app.get('/api/health', summary='检查服务与ASR状态', response_model=HealthResponse)
     async def health():
         monitor = app.state.monitor
-        return {'ok': True, 'asr_ready': monitor.asr.ready, 'queue_depth': monitor.queue.qsize()}
+        return {'ok': True, 'asr_enabled': monitor.metrics()['asr_enabled'],
+                'asr_ready': monitor.asr.ready, 'queue_depth': monitor.queue.qsize()}
+
+    @app.get('/api/rooms/{room_id}/preview.jpg', summary='显式启用缩略图后按需抓取')
+    async def preview(room_id: str):
+        try:
+            room_id = room_url(room_id).rsplit('/', 1)[1]
+            image = await app.state.monitor.previews.frame(room_id)
+        except (KeyError, ValueError) as error:
+            raise HTTPException(404, '缩略图未启用或房间未运行') from error
+        except (RuntimeError, TimeoutError) as error:
+            raise HTTPException(503, '缩略图暂不可用') from error
+        return Response(image, media_type='image/jpeg', headers={'Cache-Control': 'no-store'})
 
     @app.get('/api/state', summary='获取房间与最近转写快照', response_model=StateResponse)
     async def state():
@@ -88,8 +104,8 @@ def create_app(settings=None):
     @app.get('/api/discover', summary='从直播首页发现候选房间', response_model=list[CandidateResponse],
              responses={502: {'model': ErrorResponse}})
     async def discover(limit: int = 20):
-        if not 1 <= limit <= 100:
-            raise HTTPException(422, 'limit需为1～100')
+        if not 1 <= limit <= 200:
+            raise HTTPException(422, 'limit需为1～200')
         try:
             return await app.state.monitor.browser.discover(limit)
         except Exception as error:
@@ -99,7 +115,9 @@ def create_app(settings=None):
               responses={409: {'model': ErrorResponse}, 502: {'model': ErrorResponse}})
     async def add_room(body: AddRoom):
         try:
-            return await app.state.monitor.add(body.url, body.chunk_seconds or settings.chunk_seconds)
+            options = {key: getattr(body, key) for key in ('record_mode', 'asr_enabled', 'preview_enabled')
+                       if getattr(body, key) is not None}
+            return await app.state.monitor.add(body.url, body.chunk_seconds or settings.chunk_seconds, **options)
         except ValueError as error:
             raise HTTPException(409, str(error)) from error
         except Exception as error:

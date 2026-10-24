@@ -7,6 +7,10 @@ from dotenv import load_dotenv
 
 @dataclass
 class Settings:
+    record_mode: str = field(default_factory=lambda: os.getenv('RECORD_MODE', 'audio'))
+    asr_enabled: bool = field(default_factory=lambda: os.getenv('ASR_ENABLED', '0').lower() in ('1', 'true', 'yes'))
+    preview_enabled: bool = field(default_factory=lambda: os.getenv('PREVIEW_ENABLED', '0').lower() in ('1', 'true', 'yes'))
+    recording_segment_seconds: int = field(default_factory=lambda: int(os.getenv('RECORDING_SEGMENT_SECONDS', '300')))
     data_dir: Path = field(default_factory=lambda: Path(os.getenv('DATA_DIR', '.local')))
     cdp_url: str = field(default_factory=lambda: os.getenv('CDP_URL', 'http://127.0.0.1:9222'))
     asr_python: str = field(default_factory=lambda: os.getenv('ASR_PYTHON', '.venvs/asr/bin/python'))
@@ -22,6 +26,8 @@ class Settings:
     asr_infer_timeout: float = 30
 
     def __post_init__(self):
+        if self.record_mode not in ('none', 'audio', 'video') or not 10 <= self.recording_segment_seconds <= 3600:
+            raise ValueError('保存模式需为none/audio/video；录制分段需为10～3600秒')
         if not 5 <= self.chunk_seconds <= 60 or self.max_rooms < 1 or self.queue_size < 1:
             raise ValueError('配置越界：切片5～60秒，房间与队列上限至少为1')
         self.data_dir = self.data_dir.resolve()
