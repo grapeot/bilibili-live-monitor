@@ -11,10 +11,13 @@ type Item = {id:number;room_id:string;kind:'transcript'|'danmaku';at_utc:string;
 type Change = {kind:'room';data:Room}|{kind:'segment';data:Segment&{room_id:string}}|{kind:'item';data:Item};
 type State = {rooms:Room[]; queue_depth:number; queue_capacity:number; asr_ready:boolean;
   overload_count:number; inflight:{room_id:string;seq:number}|null;active_count:number;pending_count:number;
-  asr_restarts:number;asr_retries:number;asr_error:string|null};
+  asr_restarts:number;asr_retries:number;asr_error:string|null;
+  asr_busy_ratio?:number;vad_skip_ratio?:number|null;queue_oldest_wait_ms?:number;queue_audio_seconds?:number;
+  vad_error?:string|null;infer_timeout_count?:number;mean_result_latency_ms?:number|null;
+  load_window_seconds?:number;asr_failure_count?:number;silence_skip_ratio?:number|null;no_speech_skip_ratio?:number|null};
 const labels:Record<string,string> = {
   starting:'启动中',capturing:'采集中',queued:'排队中',transcribing:'转写中',stopped:'已停止',
-  error:'异常',silent:'静音跳过',done:'已转写',empty:'未识别到文字',cancelled:'已取消',truncated:'识别截断',reconnecting:'正在重连'
+  error:'异常',silent:'静音跳过',no_speech:'无人声跳过',dropped:'过载丢弃',done:'已转写',empty:'未识别到文字',cancelled:'已取消',truncated:'识别截断',reconnecting:'正在重连'
 };
 const base = import.meta.env.BASE_URL;
 const api = async(path:string, init?:RequestInit) => {
@@ -41,7 +44,7 @@ const RoomCard = React.memo(function RoomCard({room,status,onError}:{room:Room;s
     <div className={'segments'+(following?' following':'')} ref={scroller} onScroll={e=>{const n=e.currentTarget;setFollowing(n.scrollHeight-n.scrollTop-n.clientHeight<32)}}>
       {!room.items.length?<p className="waiting">等待弹幕或首个音频切片…</p>:room.items.map(item=><div className={'segment '+item.kind+' '+(item.status||'')} key={item.id}>
         <div className="segment-meta"><time>{time(item.at_utc)}</time><span>{item.kind==='danmaku'?'弹幕':`语音转写 #${item.seq} · ${labels[item.status||'']||item.status}`}</span></div>
-        <p>{item.author&&<b className="chat-author">{item.author}：</b>}{item.text||item.error||(item.status==='silent'?'音量低于阈值，已跳过识别':item.status==='empty'?'本段未识别到文字':'等待识别…')}</p>
+        <p>{item.author&&<b className="chat-author">{item.author}：</b>}{item.text||item.error||(item.status==='silent'?'音量低于阈值，已跳过识别':item.status==='no_speech'?'本窗口未检测到人声，已跳过识别':item.status==='empty'?'本段未识别到文字':'等待识别…')}</p>
       </div>)}
     </div>
     <footer><span>等待 {latest?`${(latest.queue_wait_ms/1000).toFixed(1)}s`:'—'}</span><span>推理 {latest?`${(latest.infer_ms/1000).toFixed(1)}s`:'—'}</span><span>{latest?`${latest.rms_dbfs} dBFS`:'等待音频'}</span><span>覆盖 {latest?.coverage_ratio!=null?`${(latest.coverage_ratio*100).toFixed(0)}%`:'—'}</span></footer>
@@ -100,6 +103,10 @@ function App(){
       <div><span>队列深度</span><strong>{state.queue_depth}<small> / {state.queue_capacity}</small></strong></div>
       <div><span>模型 · 重启 {state.asr_restarts} / 重试 {state.asr_retries}</span><strong className="word">{state.asr_ready?'已就绪':state.asr_error?'等待恢复':'正在加载'}</strong></div>
       <div><span>队列过载次数</span><strong className={state.overload_count?'warning':''}>{state.overload_count}</strong></div>
+      <div><span>ASR忙碌率 · 最近{(state.load_window_seconds||0).toFixed(0)}秒</span><strong>{((state.asr_busy_ratio||0)*100).toFixed(1)}<small>%</small></strong></div>
+      <div><span>跳过音频时长 · 静音{((state.silence_skip_ratio||0)*100).toFixed(0)}% / VAD{((state.no_speech_skip_ratio||0)*100).toFixed(0)}%</span><strong>{state.vad_skip_ratio==null?'—':(state.vad_skip_ratio*100).toFixed(1)+'%'}</strong></div>
+      <div><span>最老排队 · 待处理音频</span><strong>{((state.queue_oldest_wait_ms||0)/1000).toFixed(1)}<small>s · {(state.queue_audio_seconds||0).toFixed(0)}s音频</small></strong></div>
+      <div><span>已返回样本平均延迟 · 失败{state.asr_failure_count||0}段 / 超时{state.infer_timeout_count||0}次</span><strong>{state.mean_result_latency_ms==null?'—':(state.mean_result_latency_ms/1000).toFixed(1)+'s'}</strong></div>
     </section>
     <form onSubmit={e=>{e.preventDefault();void add(url)}}>
       <input aria-label="直播间链接或房间号" placeholder="输入直播间链接或房间号" value={url} onChange={e=>setUrl(e.target.value)} required/>
@@ -111,6 +118,7 @@ function App(){
     </form>
     {error&&<div className="alert" role="alert">{error}<button onClick={()=>setError('')}>×</button></div>}
     {state.asr_error&&<div className="alert" role="alert">模型：{state.asr_error}</div>}
+    {state.vad_error&&<div className="alert" role="alert">VAD已降级为原音频识别：{state.vad_error}</div>}
     {candidates.length>0&&<section className="candidates">{candidates.map(c=><button disabled={busy} key={c.url} className="secondary" onClick={()=>void add(c.url)}>{c.title||c.url}</button>)}</section>}
     <div className="section-title"><h2>直播间 <span>{state.rooms.length}</span></h2><a className="export-link" href={base+'api/export'}>导出全部快照</a></div>
     {state.rooms.length===0&&<section className="empty">当前暂无监控房间，请输入直播间链接或房间号开始监听。</section>}

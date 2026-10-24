@@ -105,7 +105,8 @@ async def test_silence_overload_and_shared_worker(tmp_path):
         monitor.submit({**base, 'seq': seq, 'rms_dbfs': rms_dbfs(loud)}, loud, 'generation')
     assert monitor.queue.qsize() == 1
     assert monitor.overload_count == 1
-    assert store.segments('123456')[-1]['status'] == 'error'
+    assert store.segments('123456')[1]['status'] == 'dropped'
+    assert store.segments('123456')[-1]['status'] == 'queued'
     calls = []
 
     async def recognize(path, req_id):
@@ -117,7 +118,7 @@ async def test_silence_overload_and_shared_worker(tmp_path):
     await monitor.start(warm=False)
     await asyncio.wait_for(monitor.queue.join(), 3)
     assert len(calls) == 1
-    assert store.segments('123456')[1]['status'] == 'done'
+    assert store.segments('123456')[-1]['status'] == 'done'
     assert not list((tmp_path / 'audio').iterdir())
     await monitor.close()
     store.close()

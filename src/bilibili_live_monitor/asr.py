@@ -13,6 +13,7 @@ class ASR:
         self.lock = asyncio.Lock()
         self.restart_count = 0
         self.retry_count = 0
+        self.timeout_count = 0
         self.last_error = None
         self.worker_script = worker_script or Path(__file__).with_name('asr_worker.py')
 
@@ -51,7 +52,11 @@ class ASR:
                 request = {'req_id': req_id, 'wav_path': str(path)}
                 self.process.stdin.write((json.dumps(request) + '\n').encode())
                 await self.process.stdin.drain()
-                line = await asyncio.wait_for(self.process.stdout.readline(), self.settings.asr_infer_timeout)
+                try:
+                    line = await asyncio.wait_for(self.process.stdout.readline(), self.settings.asr_infer_timeout)
+                except TimeoutError:
+                    self.timeout_count += 1
+                    raise
                 if not line:
                     raise RuntimeError(f'ASR子进程提前退出，exit={self.process.returncode}；查看asr.stderr.log')
                 result = json.loads(line)

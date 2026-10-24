@@ -24,6 +24,7 @@ cd bilibili-live-monitor
 uv venv --python 3.12
 source .venv/bin/activate
 uv pip install -e '.[dev]'
+python scripts/prepare_vad.py
 uv venv --python 3.12 .venvs/asr
 uv pip install --python .venvs/asr/bin/python mlx-qwen3-asr==0.4.4
 npm install --prefix frontend

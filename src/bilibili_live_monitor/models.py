@@ -3,7 +3,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-SegmentStatus = Literal['queued', 'transcribing', 'done', 'empty', 'silent', 'truncated', 'error', 'cancelled']
+SegmentStatus = Literal['queued', 'transcribing', 'done', 'empty', 'silent', 'no_speech', 'dropped',
+                        'truncated', 'error', 'cancelled']
 
 
 class SegmentResponse(BaseModel):
@@ -28,6 +29,13 @@ class SegmentResponse(BaseModel):
     status: SegmentStatus = Field(description='处理状态；empty表示模型未输出文本')
     text: str = Field(description='模型原始文字，未做语义编辑')
     error: str | None = Field(description='错误原因，正常时为null')
+    vad_speech_seconds: float | None = None
+    vad_peak: float | None = None
+    vad_ms: int | None = None
+    vad_has_speech: bool | None = None
+    vad_error: str | None = None
+    result_latency_ms: int | None = None
+    completed_utc: str | None = None
 
 
 class RoomResponse(BaseModel):
@@ -79,6 +87,21 @@ class StateResponse(BaseModel):
     asr_restarts: int = Field(ge=0, description='模型传输失败后的自动重启次数')
     asr_retries: int = Field(ge=0, description='同一音频段自动重试次数，包含识别错误与进程错误')
     asr_error: str | None = Field(description='最近的模型启动或通信错误；成功启动后清空')
+    queue_oldest_wait_ms: int = 0
+    queue_audio_seconds: float = 0
+    vad_enabled: bool = False
+    vad_error: str | None = None
+    vad_error_count: int = 0
+    infer_timeout_count: int = Field(default=0, description='本次进程累计推理等待超时次数，含重试')
+    load_window_seconds: float = 0
+    asr_busy_ratio: float = 0
+    vad_skip_ratio: float | None = Field(default=None, description='有效音频中静音及VAD跳过的音频时长占比')
+    silence_skip_ratio: float | None = None
+    no_speech_skip_ratio: float | None = None
+    asr_failure_count: int = 0
+    valid_windows_recent: int = 0
+    completed_recent: int = 0
+    mean_result_latency_ms: int | None = Field(default=None, description='有结果响应样本的平均延迟，异常退出不计')
 
 
 class HealthResponse(BaseModel):

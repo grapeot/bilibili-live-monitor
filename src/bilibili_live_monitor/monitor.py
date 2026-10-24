@@ -11,6 +11,8 @@ from .asr import ASR
 from .audio_queue import AudioQueue
 from .browser import Browser, close_page, ensure_playing, room_url
 from .capture import close_pcm, read_pcm, start_pcm
+from .load_metrics import LoadMetrics
+from .vad import VoiceDetector
 
 
 def iso_ms(milliseconds):
@@ -64,6 +66,11 @@ class Monitor:
         self.active_generation = None
         self.failures = {}
         self.warm_task = None
+        self.vad = VoiceDetector(settings)
+        self.load = LoadMetrics()
+        self.vad_error = None
+        self.vad_error_count = 0
+        self.asr_failure_count = 0
 
     async def start(self, *, warm=True):
         directory = self.settings.data_dir / 'audio'
@@ -91,12 +98,19 @@ class Monitor:
         return {'rooms': rooms, **self.metrics(), 'cursor': self.store.cursor()}
 
     def metrics(self):
+        queued = self.queue.snapshot()
         return {'queue_depth': self.queue.qsize(), 'queue_capacity': self.queue.maxsize,
                 'asr_ready': self.asr.ready, 'overload_count': self.overload_count,
                 'inflight': self.inflight,
                 'active_count': len(self.tasks), 'pending_count': len(self.pending),
                 'asr_restarts': self.asr.restart_count, 'asr_retries': self.asr.retry_count,
-                'asr_error': self.asr.last_error}
+                'asr_error': self.asr.last_error,
+                'queue_oldest_wait_ms': round((time.monotonic() - queued[0][2]) * 1000) if queued else 0,
+                'queue_audio_seconds': round(sum(item[0].get('duration_seconds', 0) for item in queued), 1),
+                'vad_enabled': self.settings.vad_enabled, 'vad_error': self.vad_error,
+                'vad_error_count': self.vad_error_count, 'infer_timeout_count': self.asr.timeout_count,
+                'asr_failure_count': self.asr_failure_count,
+                **self.load.snapshot()}
 
     async def add(self, value, seconds):
         url = room_url(value)
@@ -265,27 +279,53 @@ class Monitor:
                     segment.update(status='error', error=f'{type(error).__name__}: {error}')
                     self.store.segment(segment)
                     raise
-                self.submit(segment, pcm, generation)
+                await self.classify_and_submit(segment, pcm, generation)
                 self.failures[room_id] = 0  # 成功采集后重置连续失败预算，不累计终身失败。
                 seq += 1
         finally:
+            await asyncio.to_thread(self.vad.reset, generation)
             if not page.is_closed():
                 try:
                     await close_pcm(page)
                 except Exception as error:
                     self.store.event('capture_cleanup_error', {'room_id': room_id, 'error': str(error)})
 
+    async def classify_and_submit(self, segment, pcm, generation):
+        if self.settings.vad_enabled and segment['rms_dbfs'] >= self.settings.silence_dbfs:
+            try:
+                token = self.vad.prepare(generation)
+                segment.update(await asyncio.to_thread(self.vad.analyze, pcm, generation, token))
+                self.vad_error = None
+            except Exception as error:
+                # 门控故障时保留原音频转写，显式显示降级，不把模型故障伪装为无人声。
+                self.vad_error = f'{type(error).__name__}: VAD不可用，已降级为原音频识别'
+                self.vad_error_count += 1
+                segment['vad_error'] = self.vad_error
+        elif self.settings.vad_enabled:
+            await asyncio.to_thread(self.vad.reset, generation)
+        if self.generations.get(segment['room_id']) == generation:
+            self.submit(segment, pcm, generation)
+
     def submit(self, segment, pcm, generation):
+        reason = ('silent' if segment['rms_dbfs'] < self.settings.silence_dbfs else
+                  'no_speech' if segment.get('vad_has_speech') is False else None)
+        self.load.windows.append((time.monotonic(), len(pcm) / 32000, reason))
         if segment['rms_dbfs'] < self.settings.silence_dbfs:
             segment['status'] = 'silent'
             self.store.segment(segment)
             return
+        if segment.get('vad_has_speech') is False:
+            segment['status'] = 'no_speech'
+            self.store.segment(segment)
+            return
         if self.queue.full():
             self.overload_count += 1
-            segment.update(status='error', error='queue_overload：识别队列已满，本段已丢弃')
-            self.store.segment(segment)
-            self.store.event('queue_overload', {'room_id': segment['room_id'], 'count': self.overload_count})
-            return
+            old, old_path, _, _ = self.queue.get_nowait()
+            self.queue.task_done()
+            old_path.unlink(missing_ok=True)
+            old.update(status='dropped', error='queue_overload：队列已满，丢弃最旧待识别段以保留新内容')
+            self.store.segment(old)
+            self.store.event('queue_overload', {'room_id': old['room_id'], 'count': self.overload_count})
         directory = self.settings.data_dir / 'audio'
         directory.mkdir(exist_ok=True)
         path = directory / f'{uuid.uuid4().hex}.wav'
@@ -310,6 +350,7 @@ class Monitor:
                     self.inflight = {'room_id': segment['room_id'], 'seq': segment['seq']}
                     self.store.segment(segment)
                     self.active_generation = generation
+                    self.load.begin()
                     self.inference_task = asyncio.create_task(
                         self.asr.transcribe(path, f'{generation}:{segment["seq"]}'))
                     result = await self.inference_task
@@ -319,9 +360,17 @@ class Monitor:
                         continue
                     segment.update(text=result.get('text', ''), infer_ms=result.get('infer_ms', 0),
                                    error=result.get('error'))
+                    if result.get('error'):
+                        self.asr_failure_count += 1
                     segment['status'] = ('error' if result.get('error') else
                                          'truncated' if result.get('truncated') else
-                                         'done' if segment['text'].strip() else 'empty')
+                                          'done' if segment['text'].strip() else 'empty')
+                    if segment.get('end_utc'):
+                        finished = time.time()
+                        segment['result_latency_ms'] = round(
+                            (finished - datetime.fromisoformat(segment['end_utc']).timestamp()) * 1000)
+                        self.load.results.append((time.monotonic(), segment['result_latency_ms']))
+                        segment['completed_utc'] = iso_ms(finished * 1000)
                 self.store.segment(segment)
             except asyncio.CancelledError:
                 segment.update(status='cancelled', error='服务或房间已停止，中断识别')
@@ -329,9 +378,11 @@ class Monitor:
                 if asyncio.current_task().cancelling():
                     raise
             except Exception as error:
+                self.asr_failure_count += 1
                 segment.update(status='error', error=f'{type(error).__name__}: {error}')
                 self.store.segment(segment)
             finally:
+                self.load.end()
                 path.unlink(missing_ok=True)
                 self.inflight = None
                 self.inference_task = None
