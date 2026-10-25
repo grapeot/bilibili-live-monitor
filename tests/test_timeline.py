@@ -93,7 +93,8 @@ def test_late_transcript_stays_visible_and_export_is_event_ordered(tmp_path):
     store.close()
 
 
-async def test_chat_binds_before_video_ready_and_stops_with_generation(tmp_path):
+@pytest.mark.parametrize('kind', ['danmaku', 'gift'])
+async def test_chat_binds_before_video_ready_and_stops_with_generation(tmp_path, kind):
     store = Store(tmp_path / 'monitor.sqlite3')
     monitor = Monitor(Settings(data_dir=tmp_path), store)
     callback = None
@@ -119,7 +120,7 @@ async def test_chat_binds_before_video_ready_and_stops_with_generation(tmp_path)
         await on_resolved(Page())
         # 模拟视频还未就绪时大量弹幕到达，不应进入200条导航缓冲。
         for seq in range(260):
-            on_danmaku({'text': '合成弹幕', 'source_key': str(seq),
+            on_danmaku({'text': '合成直播事件', 'kind': kind, 'source_key': str(seq),
                         'at_utc': '2026-10-23T01:00:00+00:00'})
         return Page()
 
@@ -130,6 +131,7 @@ async def test_chat_binds_before_video_ready_and_stops_with_generation(tmp_path)
     monitor.capture = capture
     await monitor.add('123456', 30)
     assert len(list(store.export_items())) == 260
+    assert all(item['kind'] == kind for item in store.export_items())
     await monitor.stop('123456')
     callback({'text': '停止后不应写入', 'source_key': 'late', 'at_utc': '2026-10-23T01:00:01+00:00'})
     assert len(list(store.export_items())) == 260

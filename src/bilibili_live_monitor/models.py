@@ -50,14 +50,33 @@ class RoomResponse(BaseModel):
     updated_at: str = Field(description='状态更新时间，UTC ISO8601')
 
 
+class GiftDetails(BaseModel):
+    event_type: Literal['SEND_GIFT', 'SEND_GIFT_V2', 'GUARD_BUY', 'SUPER_CHAT_MESSAGE']
+    event_id: str | None = None
+    dedup_basis: Literal['event_id', 'payload_hash']
+    sender_uid: str | None = Field(default=None, description='协议提供的UID，可能缺失或脱敏；不是保证稳定的观众身份')
+    gift_id: str | None = None
+    gift_name: str
+    num: int = Field(ge=1)
+    coin_type: str | None = None
+    price: int | None = Field(default=None, ge=0, description='平台原始price字段，不擅自换算人民币或当作净收入')
+    total_coin: int | None = Field(default=None, ge=0, description='SEND_GIFT原始总币数，金币/银币需分开')
+    batch_index: int | None = Field(default=None, ge=0, description='V2多结果批次中的索引，不丢弃盲盒每个结果')
+    blind_gift: dict | None = Field(default=None, description='原始盲盒信息；结果礼物标价不代表实际付费金额')
+    guard_level: int | None = None
+    price_yuan: int | None = Field(default=None, ge=0, description='仅醒目留言的协议人民币元金额')
+
+
 class TimelineItem(BaseModel):
     id: int
     room_id: str
-    kind: Literal['transcript', 'danmaku']
+    kind: Literal['transcript', 'danmaku', 'gift']
     at_utc: str
     received_utc: str
     text: str = ''
     author: str | None = None
+    source_key: str | None = None
+    gift: GiftDetails | None = None
     seq: int | None = None
     status: SegmentStatus | None = None
     error: str | None = None
@@ -65,7 +84,7 @@ class TimelineItem(BaseModel):
 
 class RoomState(RoomResponse):
     segments: list[SegmentResponse] = Field(description='该房间最近20条切片，按序号升序')
-    items: list[TimelineItem] = Field(default_factory=list, description='最近80条弹幕与转写，按事件时间升序')
+    items: list[TimelineItem] = Field(default_factory=list, description='最近80条弹幕、礼物与转写，按事件时间升序')
 
 
 class Inflight(BaseModel):

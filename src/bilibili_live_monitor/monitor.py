@@ -143,7 +143,7 @@ class Monitor:
                 else:
                     chat_dropped += 1
             elif self.generations.get(chat_context['room_id']) == chat_context['generation']:
-                self.store.danmaku(chat_context['room_id'], message)
+                self.store.live_message(chat_context['room_id'], message)
 
         async def on_resolved(resolved_page):
             room_id = room_url(resolved_page.url).rsplit('/', 1)[1]
@@ -165,7 +165,7 @@ class Monitor:
                 if chat_dropped:
                     self.store.item({'room_id': room_id, 'kind': 'danmaku',
                                      'at_utc': iso_ms(time.time() * 1000), 'text': '', 'status': 'error',
-                                     'error': f'页面导航期间弹幕缓冲已满，丢弃{chat_dropped}条'},
+                                     'error': f'页面导航期间直播事件缓冲已满，丢弃{chat_dropped}条（可能含礼物）'},
                                     f'startup-gap:{generation}')
 
         try:

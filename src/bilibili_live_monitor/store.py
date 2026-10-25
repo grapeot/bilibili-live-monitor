@@ -86,6 +86,12 @@ class Store:
     def danmaku(self, room_id, message):
         self.item({**message, 'room_id': room_id, 'kind': 'danmaku'}, message['source_key'])
 
+    def live_message(self, room_id, message):
+        if message.get('kind') == 'gift':
+            self.item({**message, 'room_id': room_id}, message['source_key'])
+        else:
+            self.danmaku(room_id, message)
+
     def items(self, room_id, limit=80):
         rows = self.db.execute('SELECT id,data FROM timeline WHERE room_id=? '
                                "ORDER BY json_extract(data,'$.received_utc') DESC,id DESC LIMIT ?",
