@@ -3,6 +3,7 @@ import hashlib
 import json
 import struct
 import zlib
+from collections import Counter
 from datetime import datetime, timezone
 
 import brotli
@@ -35,10 +36,13 @@ def gift_message(packet):
     data = packet['data']
     if not isinstance(data, dict):
         raise ValueError('礼物数据不是对象')
-    at = event_time(data.get('timestamp') or data.get('start_time'))
+    source_time = data.get('timestamp') or data.get('start_time')
+    event_at = event_time(source_time) if source_time else None
+    at = event_at or datetime.now(timezone.utc).isoformat()
     user = data.get('user_info') or {}
     author = str(data.get('uname') or data.get('username') or user.get('uname') or '')[:200]
-    gift = {'event_type': command, 'sender_uid': str(data['uid']) if data.get('uid') else None}
+    gift = {'event_type': command, 'sender_uid': str(data['uid']) if data.get('uid') else None,
+            'time_source': 'event' if event_at else 'received', 'event_at_utc': event_at}
     stable_identity = None
     if command == 'SEND_GIFT':
         gift.update(gift_id=str(data['giftId']), gift_name=str(data['giftName'])[:200],
@@ -53,14 +57,14 @@ def gift_message(packet):
             text += f" · {'结果标价 ' if gift.get('blind_gift') else ''}{gift['total_coin']} 平台{'金币' if gift['coin_type'] == 'gold' else '银币'}"
         if gift.get('blind_gift') and gift['blind_gift'].get('original_gift_price') is not None:
             original_price = integer(gift['blind_gift']['original_gift_price'])
-            text += f" · 原始盲盒单价 {original_price} 金瓜子"
+            text += f" · 原始盲盒价格原值 {original_price}（未换算）"
     elif command == 'GUARD_BUY':
         gift.update(gift_id=str(data.get('gift_id', '')), gift_name=str(data.get('gift_name') or '大航海')[:200],
                     num=integer(data['num'], minimum=1), guard_level=integer(data['guard_level'], minimum=1),
                     coin_type='gold',
                     guard_price_gold=integer(data['price']) if data.get('price') is not None else None)
         identity = data.get('order_id')
-        if gift['sender_uid']:
+        if gift['sender_uid'] and event_at:
             stable_identity = {'sender_uid': gift['sender_uid'], 'at_utc': at,
                                'guard_level': gift['guard_level'], 'num': gift['num']}
         text = f"购买 {gift['gift_name']} ×{gift['num']}（大航海等级 {gift['guard_level']}）"
@@ -73,7 +77,7 @@ def gift_message(packet):
     identity = str(identity) if isinstance(identity, (int, str)) and str(identity) not in ('', '0') else None
     gift['event_id'] = identity
     gift['dedup_basis'] = 'event_id' if identity else 'event_fields' if stable_identity else 'payload_hash'
-    fingerprint = json.dumps(stable_identity or {'at_utc': at, 'author': author, 'gift': gift, 'text': text},
+    fingerprint = json.dumps(stable_identity or {'at_utc': event_at, 'author': author, 'gift': gift, 'text': text},
                              ensure_ascii=False, sort_keys=True)
     key = command + ':' + (identity or hashlib.sha256(fingerprint.encode()).hexdigest())
     return {'kind': 'gift', 'gift': gift, 'text': text, 'author': author,
@@ -120,12 +124,17 @@ def messages(frame):
                 command = packet.get('cmd', '')
                 if command == 'SEND_GIFT_V2':
                     items = list(gift_items(packet['data']))
+                    identities = Counter(str(data.get('tid')) for data in items if data.get('tid'))
                     for index, data in enumerate(items):
-                        item = gift_message({'cmd': 'SEND_GIFT', 'data': data})
+                        try:
+                            item = gift_message({'cmd': 'SEND_GIFT', 'data': data})
+                        except (ValueError, TypeError, KeyError, OverflowError, OSError, AttributeError):
+                            continue  # 一个结果畸形不丢弃同批后续结果。
                         item['gift']['event_type'] = 'SEND_GIFT_V2'
                         if len(items) > 1:
                             item['gift']['batch_index'] = index
-                            item['source_key'] += f':item{index}'
+                            if not data.get('tid') or identities[str(data['tid'])] > 1:
+                                item['source_key'] += f':item{index}'
                         result.append(item)
                     continue
                 if command in ('SEND_GIFT', 'GUARD_BUY', 'SUPER_CHAT_MESSAGE'):

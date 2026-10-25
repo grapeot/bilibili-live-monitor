@@ -53,6 +53,8 @@ class RoomResponse(BaseModel):
 class GiftDetails(BaseModel):
     event_type: Literal['SEND_GIFT', 'SEND_GIFT_V2', 'GUARD_BUY', 'SUPER_CHAT_MESSAGE']
     event_id: str | None = None
+    time_source: Literal['event', 'received', 'unknown'] = 'unknown'
+    event_at_utc: str | None = Field(default=None, description='协议事件时间；缺失时at_utc仅用接收时钟显示，不伪造事件时间')
     dedup_basis: Literal['event_id', 'event_fields', 'payload_hash']
     sender_uid: str | None = Field(default=None, description='协议提供的UID，可能缺失或脱敏；不是保证稳定的观众身份')
     gift_id: str | None = None

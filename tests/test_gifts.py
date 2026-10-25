@@ -3,6 +3,7 @@ import json
 import struct
 
 import brotli
+import pytest
 from fastapi.testclient import TestClient
 
 from bilibili_live_monitor.app import create_app
@@ -109,7 +110,7 @@ def field(number, value):
 def test_v2_protobuf_batch_keeps_every_result_and_64bit_sender(tmp_path):
     item = (field(1, 10) + field(2, '合成盲盒结果') + field(3, 1) + field(5, 100)
             + field(7, 100) + field(8, 'gold') + field(9, 'same-batch-id') + field(10, 1792700000))
-    sender = field(1, 2**50 + 123) + field(2, field(1, '合成新版用户'))
+    sender = field(1, 2**64 - 1) + field(2, field(1, '合成新版用户'))
     blind = field(2, 9) + field(3, '合成原始盲盒') + field(6, 200)
     pb = field(1, 123) + field(2, '合成旧名') + field(9, blind) + field(10, item) * 2 + field(15, sender)
     packet = {'cmd': 'SEND_GIFT_V2', 'data': {'pb': base64.b64encode(pb).decode()}}
@@ -117,11 +118,11 @@ def test_v2_protobuf_batch_keeps_every_result_and_64bit_sender(tmp_path):
     assert len(decoded) == 2
     assert len({x['source_key'] for x in decoded}) == 2
     assert decoded[0]['author'] == '合成新版用户'
-    assert decoded[0]['gift']['sender_uid'] == str(2**50 + 123)
+    assert decoded[0]['gift']['sender_uid'] == str(2**64 - 1)
     assert decoded[0]['gift']['event_type'] == 'SEND_GIFT_V2'
     assert decoded[0]['gift']['blind_gift']['original_gift_price'] == 200
     assert '盲盒结果' in decoded[0]['text'] and '结果标价 100' in decoded[0]['text']
-    assert '原始盲盒单价 200 金瓜子' in decoded[0]['text']
+    assert '原始盲盒价格原值 200（未换算）' in decoded[0]['text']
     store = Store(tmp_path / 'monitor.sqlite3')
     for message in decoded * 2:
         store.live_message('123456', message)
@@ -149,3 +150,59 @@ def test_callback_write_failure_is_logged_and_does_not_drop_remaining_frame(capl
                       + frame(gift(tid='after', coin_type='silver')), callback)
     assert seen == ['before', 'after']
     assert '直播事件回调失败' in caplog.text and 'synthetic write failure' in caplog.text
+
+
+def v2_frame(items, blind=None):
+    pb = b''.join(field(10, item) for item in items)
+    if blind is not None:
+        pb += field(9, blind)
+    return frame({'cmd': 'SEND_GIFT_V2', 'data': {'pb': base64.b64encode(pb).decode()}})
+
+
+@pytest.mark.parametrize('explicit_zero', [False, True])
+def test_v2_missing_amounts_are_null_and_explicit_zero_is_preserved(explicit_zero):
+    item = (field(1, 10) + field(2, '合成礼物') + field(3, 1) + field(8, 'gold')
+            + field(9, 'synthetic-order') + field(10, 1792700000))
+    blind = field(3, '合成盲盒')
+    if explicit_zero:
+        item += field(5, 0) + field(7, 0)
+        blind += field(6, 0)
+    message = messages(v2_frame([item], blind))[0]
+    expected = 0 if explicit_zero else None
+    assert message['gift']['price'] == expected
+    assert message['gift']['total_coin'] == expected
+    assert message['gift']['blind_gift']['original_gift_price'] == expected
+    if not explicit_zero:
+        assert '0 平台金币' not in message['text'] and '价格原值' not in message['text']
+    assert '单价' not in message['text'] and '金瓜子' not in message['text']
+
+
+def test_v2_missing_or_bad_timestamp_does_not_drop_following_result():
+    base = field(1, 10) + field(2, '合成礼物') + field(3, 1)
+    first = base + field(9, 'no-time')
+    second = base + field(9, 'good-time') + field(10, 1792700000)
+    result = messages(v2_frame([first, second]))
+    assert len(result) == 2
+    assert result[0]['gift']['time_source'] == 'received' and result[0]['gift']['event_at_utc'] is None
+    assert result[1]['gift']['time_source'] == 'event'
+    assert result[0]['source_key'] == messages(v2_frame([first, second]))[0]['source_key']
+    for message in result:
+        TimelineItem.model_validate({**message, 'id': 1, 'room_id': '123456', 'received_utc': message['at_utc']})
+    bad_first = first + field(10, 2**64 - 1)
+    kept = messages(v2_frame([bad_first, second]) + frame(gift()))
+    assert len(kept) == 2 and kept[0]['gift']['event_id'] == 'good-time'
+
+
+def test_v2_unique_order_ids_dedup_against_single_result_and_legacy(tmp_path):
+    base = field(1, 10) + field(2, '合成礼物') + field(3, 1) + field(10, 1792700000)
+    first = base + field(9, 'synthetic-order-1')
+    second = base + field(9, 'synthetic-order-2')
+    batch = messages(v2_frame([first, second]))
+    single = messages(v2_frame([first]))[0]
+    legacy = messages(frame(gift(num=1, giftId=10)))[0]
+    assert batch[0]['source_key'] == single['source_key'] == legacy['source_key']
+    store = Store(tmp_path / 'monitor.sqlite3')
+    for message in batch + [single, legacy]:
+        store.live_message('123456', message)
+    assert len(list(store.export_items())) == 2
+    store.close()
