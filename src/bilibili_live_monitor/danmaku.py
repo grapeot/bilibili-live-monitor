@@ -39,6 +39,7 @@ def gift_message(packet):
     user = data.get('user_info') or {}
     author = str(data.get('uname') or data.get('username') or user.get('uname') or '')[:200]
     gift = {'event_type': command, 'sender_uid': str(data['uid']) if data.get('uid') else None}
+    stable_identity = None
     if command == 'SEND_GIFT':
         gift.update(gift_id=str(data['giftId']), gift_name=str(data['giftName'])[:200],
                     num=integer(data['num'], minimum=1), coin_type=data.get('coin_type'),
@@ -47,23 +48,32 @@ def gift_message(packet):
         if data.get('blind_gift'):
             gift['blind_gift'] = data['blind_gift']
         identity = data.get('tid')
-        text = f"赠送 {gift['gift_name']} ×{gift['num']}"
+        text = f"{'盲盒结果：' if gift.get('blind_gift') else '赠送 '}{gift['gift_name']} ×{gift['num']}"
         if gift['total_coin'] is not None and gift['coin_type'] in ('gold', 'silver'):
-            text += f" · {gift['total_coin']} 平台{'金币' if gift['coin_type'] == 'gold' else '银币'}"
+            text += f" · {'结果标价 ' if gift.get('blind_gift') else ''}{gift['total_coin']} 平台{'金币' if gift['coin_type'] == 'gold' else '银币'}"
+        if gift.get('blind_gift') and gift['blind_gift'].get('original_gift_price') is not None:
+            original_price = integer(gift['blind_gift']['original_gift_price'])
+            text += f" · 原始盲盒单价 {original_price} 金瓜子"
     elif command == 'GUARD_BUY':
         gift.update(gift_id=str(data.get('gift_id', '')), gift_name=str(data.get('gift_name') or '大航海')[:200],
                     num=integer(data['num'], minimum=1), guard_level=integer(data['guard_level'], minimum=1),
-                    price=integer(data['price']) if data.get('price') is not None else None)
+                    coin_type='gold',
+                    guard_price_gold=integer(data['price']) if data.get('price') is not None else None)
         identity = data.get('order_id')
+        if gift['sender_uid']:
+            stable_identity = {'sender_uid': gift['sender_uid'], 'at_utc': at,
+                               'guard_level': gift['guard_level'], 'num': gift['num']}
         text = f"购买 {gift['gift_name']} ×{gift['num']}（大航海等级 {gift['guard_level']}）"
+        if gift['guard_price_gold'] is not None:
+            text += f" · 平台报告金额 {gift['guard_price_gold']} 金瓜子"
     else:  # SUPER_CHAT_MESSAGE，price的协议单位为人民币元，不与平台金币混加。
         gift.update(gift_name='醒目留言', num=1, price_yuan=integer(data['price']))
         identity = data.get('id')
         text = f"醒目留言 {gift['price_yuan']} 元：{str(data.get('message') or '')[:10000]}"
     identity = str(identity) if isinstance(identity, (int, str)) and str(identity) not in ('', '0') else None
     gift['event_id'] = identity
-    gift['dedup_basis'] = 'event_id' if identity else 'payload_hash'
-    fingerprint = json.dumps({'at_utc': at, 'author': author, 'gift': gift, 'text': text},
+    gift['dedup_basis'] = 'event_id' if identity else 'event_fields' if stable_identity else 'payload_hash'
+    fingerprint = json.dumps(stable_identity or {'at_utc': at, 'author': author, 'gift': gift, 'text': text},
                              ensure_ascii=False, sort_keys=True)
     key = command + ':' + (identity or hashlib.sha256(fingerprint.encode()).hexdigest())
     return {'kind': 'gift', 'gift': gift, 'text': text, 'author': author,

@@ -6,6 +6,7 @@ import brotli
 from fastapi.testclient import TestClient
 
 from bilibili_live_monitor.app import create_app
+from bilibili_live_monitor.browser import dispatch_messages
 from bilibili_live_monitor.config import Settings
 from bilibili_live_monitor.danmaku import messages
 from bilibili_live_monitor.models import TimelineItem
@@ -49,8 +50,11 @@ def test_guard_and_superchat_keep_distinct_value_units():
         'id': 789, 'start_time': 1792700000, 'uid': 456, 'user_info': {'uname': '合成用户'},
         'price': 30, 'message': '合成醒目留言'}}
     g, s = messages(frame(guard) + frame(sc))
-    assert g['gift']['price'] == 198000 and 'price_yuan' not in g['gift']
-    assert g['gift']['dedup_basis'] == 'payload_hash'
+    assert g['gift']['guard_price_gold'] == 198000 and 'price' not in g['gift'] and 'price_yuan' not in g['gift']
+    assert g['gift']['coin_type'] == 'gold' and '198000 金瓜子' in g['text']
+    assert g['gift']['dedup_basis'] == 'event_fields'
+    guard['data']['username'] = '合成改名'
+    assert messages(frame(guard))[0]['source_key'] == g['source_key']
     assert s['gift']['price_yuan'] == 30 and s['gift']['event_id'] == '789'
     assert '合成醒目留言' in s['text']
 
@@ -116,6 +120,8 @@ def test_v2_protobuf_batch_keeps_every_result_and_64bit_sender(tmp_path):
     assert decoded[0]['gift']['sender_uid'] == str(2**50 + 123)
     assert decoded[0]['gift']['event_type'] == 'SEND_GIFT_V2'
     assert decoded[0]['gift']['blind_gift']['original_gift_price'] == 200
+    assert '盲盒结果' in decoded[0]['text'] and '结果标价 100' in decoded[0]['text']
+    assert '原始盲盒单价 200 金瓜子' in decoded[0]['text']
     store = Store(tmp_path / 'monitor.sqlite3')
     for message in decoded * 2:
         store.live_message('123456', message)
@@ -129,3 +135,17 @@ def test_v2_bad_base64_and_proto_do_not_discard_next_legacy_event():
     for bad in ('not base64', base64.b64encode(b'\xff').decode(), ''):
         result = messages(frame({'cmd': 'SEND_GIFT_V2', 'data': {'pb': bad}}) + frame(gift()))
         assert len(result) == 1 and result[0]['gift']['event_type'] == 'SEND_GIFT'
+
+
+def test_callback_write_failure_is_logged_and_does_not_drop_remaining_frame(caplog):
+    seen = []
+
+    def callback(message):
+        if message['gift']['event_id'] == 'failed':
+            raise RuntimeError('synthetic write failure')
+        seen.append(message['gift']['event_id'])
+
+    dispatch_messages(frame(gift(tid='before')) + frame(gift(tid='failed'))
+                      + frame(gift(tid='after', coin_type='silver')), callback)
+    assert seen == ['before', 'after']
+    assert '直播事件回调失败' in caplog.text and 'synthetic write failure' in caplog.text

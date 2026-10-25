@@ -53,7 +53,7 @@ class RoomResponse(BaseModel):
 class GiftDetails(BaseModel):
     event_type: Literal['SEND_GIFT', 'SEND_GIFT_V2', 'GUARD_BUY', 'SUPER_CHAT_MESSAGE']
     event_id: str | None = None
-    dedup_basis: Literal['event_id', 'payload_hash']
+    dedup_basis: Literal['event_id', 'event_fields', 'payload_hash']
     sender_uid: str | None = Field(default=None, description='协议提供的UID，可能缺失或脱敏；不是保证稳定的观众身份')
     gift_id: str | None = None
     gift_name: str
@@ -64,6 +64,7 @@ class GiftDetails(BaseModel):
     batch_index: int | None = Field(default=None, ge=0, description='V2多结果批次中的索引，不丢弃盲盒每个结果')
     blind_gift: dict | None = Field(default=None, description='原始盲盒信息；结果礼物标价不代表实际付费金额')
     guard_level: int | None = None
+    guard_price_gold: int | None = Field(default=None, ge=0, description='GUARD_BUY.price原值，单位金瓜子；不与礼物单价混用，不乘num')
     price_yuan: int | None = Field(default=None, ge=0, description='仅醒目留言的协议人民币元金额')
 
 

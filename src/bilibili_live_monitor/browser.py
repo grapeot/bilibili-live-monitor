@@ -1,11 +1,22 @@
 import asyncio
 import base64
+import logging
 import re
 
 from playwright.async_api import async_playwright
 
 from .danmaku import messages
 from .recording import is_media_url
+
+logger = logging.getLogger(__name__)
+
+
+def dispatch_messages(frame, callback):
+    for message in messages(frame):
+        try:
+            callback(message)
+        except Exception:
+            logger.exception('直播事件回调失败；继续处理本帧后续事件')
 
 
 def room_url(value: str):
@@ -136,7 +147,7 @@ class Browser:
         if on_danmaku:
             def websocket(socket):
                 if '.chat.bilibili.com/' in socket.url:
-                    socket.on('framereceived', lambda frame: [on_danmaku(m) for m in messages(frame)])
+                    socket.on('framereceived', lambda frame: dispatch_messages(frame, on_danmaku))
             page.on('websocket', websocket)
         try:
             await page.add_init_script(MUTE_SCRIPT)

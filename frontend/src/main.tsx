@@ -9,7 +9,8 @@ type Room = {room_id:string; title:string; url:string; cover_url:string; status:
   recording_status:string;recorded_seconds:number;recording_files:number;recording_bytes:number;
   error:string|null; chunk_seconds:number; segments:Segment[];items:Item[]};
 type Item = {id:number;room_id:string;kind:'transcript'|'danmaku'|'gift';at_utc:string;received_utc:string;text:string;
-  author?:string|null;seq?:number|null;status?:string|null;error?:string|null};
+  author?:string|null;seq?:number|null;status?:string|null;error?:string|null;
+  gift?:{event_type:string;coin_type?:string|null;blind_gift?:object|null}|null};
 type Change = {kind:'room';data:Room}|{kind:'segment';data:Segment&{room_id:string}}|{kind:'item';data:Item};
 type State = {rooms:Room[]; queue_depth:number; queue_capacity:number; asr_ready:boolean;
   asr_enabled:boolean;
@@ -27,6 +28,9 @@ const api = async(path:string, init?:RequestInit) => {
   return result;
 };
 const time = (iso:string) => new Date(iso).toLocaleTimeString('zh-CN',{hour12:false});
+const giftLabel = (item:Item) => item.gift?.event_type==='GUARD_BUY'?'大航海':
+  item.gift?.event_type==='SUPER_CHAT_MESSAGE'?'醒目留言':item.gift?.blind_gift?'盲盒结果':
+  item.gift?.coin_type==='silver'?'银币礼物':item.gift?.coin_type==='gold'?'金币礼物':'礼物';
 
 function RoomPreview({room}:{room:Room}){
   const container=useRef<HTMLDivElement>(null);
@@ -68,7 +72,7 @@ const RoomCard = React.memo(function RoomCard({room,status,onError}:{room:Room;s
     <div className="timeline-tools"><button className="text-button" aria-pressed={following} onClick={()=>{setFollowing(true);if(scroller.current)scroller.current.scrollTop=scroller.current.scrollHeight}}>{following?'跟随最新':'已暂停·回最新'}</button><a href={base+'api/export?room_id='+room.room_id}>导出本房快照</a></div>
     <div className={'segments'+(following?' following':'')} ref={scroller} onScroll={e=>{const n=e.currentTarget;setFollowing(n.scrollHeight-n.scrollTop-n.clientHeight<32)}}>
       {!room.items.length?<p className="waiting">等待弹幕、礼物或首个音频切片…</p>:room.items.map(item=><div className={'segment '+item.kind+' '+(item.status||'')} key={item.id}>
-        <div className="segment-meta"><time>{time(item.at_utc)}</time><span>{item.kind==='gift'?'礼物 / 付费互动':item.kind==='danmaku'?'弹幕':`语音转写 #${item.seq} · ${labels[item.status||'']||item.status}`}</span></div>
+        <div className="segment-meta"><time>{time(item.at_utc)}</time><span>{item.kind==='gift'?giftLabel(item):item.kind==='danmaku'?'弹幕':`语音转写 #${item.seq} · ${labels[item.status||'']||item.status}`}</span></div>
         <p>{item.author&&<b className="chat-author">{item.author}：</b>}{item.text||item.error||(item.status==='silent'?'音量低于阈值，已跳过识别':item.status==='empty'?'本段未识别到文字':'等待识别…')}</p>
       </div>)}
     </div>
