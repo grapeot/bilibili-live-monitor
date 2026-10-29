@@ -59,8 +59,10 @@ def gift_message(packet):
             original_price = integer(gift['blind_gift']['original_gift_price'])
             text += f" · 原始盲盒价格原值 {original_price}（未换算）"
     elif command == 'GUARD_BUY':
-        gift.update(gift_id=str(data.get('gift_id', '')), gift_name=str(data.get('gift_name') or '大航海')[:200],
-                    num=integer(data['num'], minimum=1), guard_level=integer(data['guard_level'], minimum=1),
+        level = integer(data['guard_level'], minimum=1)
+        guard_name = {1: '总督', 2: '提督', 3: '舰长'}.get(level, '大航海')
+        gift.update(gift_id=str(data.get('gift_id', '')), gift_name=str(data.get('gift_name') or guard_name)[:200],
+                    num=integer(data['num'], minimum=1), guard_level=level,
                     coin_type='gold',
                     guard_price_gold=integer(data['price']) if data.get('price') is not None else None)
         identity = data.get('order_id')

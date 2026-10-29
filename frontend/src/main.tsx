@@ -28,7 +28,7 @@ const api = async(path:string, init?:RequestInit) => {
   return result;
 };
 const time = (iso:string) => new Date(iso).toLocaleTimeString('zh-CN',{hour12:false});
-const giftLabel = (item:Item) => item.gift?.event_type==='GUARD_BUY'?'大航海':
+const giftLabel = (item:Item) => item.gift?.event_type==='GUARD_BUY'?'上舰 · 大航海':
   item.gift?.event_type==='SUPER_CHAT_MESSAGE'?'醒目留言':item.gift?.blind_gift?'盲盒结果':
   item.gift?.coin_type==='silver'?'银币礼物':item.gift?.coin_type==='gold'?'金币礼物':'礼物';
 

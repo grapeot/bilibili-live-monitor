@@ -60,6 +60,44 @@ def test_guard_and_superchat_keep_distinct_value_units():
     assert '合成醒目留言' in s['text']
 
 
+@pytest.mark.parametrize(('level', 'name'), [(1, '总督'), (2, '提督'), (3, '舰长')])
+def test_guard_identity_survives_state_export_restart_and_room_scoped_dedup(tmp_path, level, name):
+    packet = {'cmd': 'GUARD_BUY', 'data': {
+        'start_time': 1792700000, 'uid': 456, 'username': '合成上舰用户',
+        'guard_level': level, 'num': 1}}
+    message = messages(frame(packet))[0]
+    assert message['author'] == '合成上舰用户'
+    assert message['gift']['gift_name'] == name and name in message['text']
+    assert message['gift']['guard_price_gold'] is None
+    path = tmp_path / 'monitor.sqlite3'
+    store = Store(path)
+    store.room({'room_id': '123456', 'url': 'https://live.bilibili.com/123456',
+                'title': '合成房间', 'status': 'stopped', 'chunk_seconds': 30,
+                'cover_url': '', 'error': None, 'muted': True, 'cycle_notice': False})
+    dispatch_messages(frame(packet) * 2, lambda item: store.live_message('123456', item))
+    item_events = [json.loads(event['data']) for event in store.events(0) if event['kind'] == 'item']
+    assert len(item_events) == 1 and item_events[0]['gift']['sender_uid'] == '456'
+    store.close()
+    restored = Store(path)
+    packet['data']['username'] = '合成改名用户'
+    renamed = messages(frame(packet))[0]
+    restored.live_message('123456', renamed)
+    restored.live_message('654321', renamed)
+    assert len(restored.items('123456')) == 1 and len(restored.items('654321')) == 1
+    restored.close()
+    with TestClient(create_app(Settings(data_dir=tmp_path))) as client:
+        response = client.get('/api/state')
+        assert response.status_code == 200
+        item = response.json()['rooms'][0]['items'][0]
+        exported = client.get('/api/export?room_id=123456')
+        assert exported.status_code == 200
+        rows = [json.loads(line) for line in exported.text.splitlines()]
+        assert len(rows) == 1
+        assert TimelineItem.model_validate(rows[0]).gift == TimelineItem.model_validate(item).gift
+        assert item['author'] == '合成上舰用户' and item['gift']['guard_level'] == level
+        assert TimelineItem.model_validate(item).gift.sender_uid == '456'
+
+
 def test_event_identity_dedup_restart_export_and_state_contract(tmp_path):
     store = Store(tmp_path / 'monitor.sqlite3')
     original = messages(frame(gift()))[0]
