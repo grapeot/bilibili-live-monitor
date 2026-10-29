@@ -8,6 +8,8 @@ from .browser import Browser
 from .config import load_settings
 from .offline_asr import configure_parser
 from .offline_asr import main as offline_asr_main
+from .rotation import configure_parser as configure_rotation
+from .rotation import main as rotation_main
 
 
 def main():
@@ -20,9 +22,12 @@ def main():
     discover = commands.add_parser('discover')
     discover.add_argument('--limit', type=int, default=10, choices=range(1, 101))
     configure_parser(commands)
+    configure_rotation(commands)
     args = parser.parse_args()
     if args.command == 'offline-asr':
         return offline_asr_main(args)
+    if args.command == 'rotate-live':
+        return rotation_main(args)
     settings = load_settings()
     if args.command == 'serve':
         import uvicorn
