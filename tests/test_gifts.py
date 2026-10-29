@@ -69,6 +69,7 @@ def test_guard_identity_survives_state_export_restart_and_room_scoped_dedup(tmp_
     assert message['author'] == '合成上舰用户'
     assert message['gift']['gift_name'] == name and name in message['text']
     assert message['gift']['guard_price_gold'] is None
+    assert message['gift']['gift_id'] is None
     path = tmp_path / 'monitor.sqlite3'
     store = Store(path)
     store.room({'room_id': '123456', 'url': 'https://live.bilibili.com/123456',
@@ -96,6 +97,16 @@ def test_guard_identity_survives_state_export_restart_and_room_scoped_dedup(tmp_
         assert TimelineItem.model_validate(rows[0]).gift == TimelineItem.model_validate(item).gift
         assert item['author'] == '合成上舰用户' and item['gift']['guard_level'] == level
         assert TimelineItem.model_validate(item).gift.sender_uid == '456'
+
+
+@pytest.mark.parametrize(('gift_id', 'expected'), [(None, None), ('', None), (' ', None),
+                                                 (False, None), ([], None), (10003, '10003'),
+                                                 ('10003', '10003')])
+def test_guard_optional_gift_id(gift_id, expected):
+    packet = {'cmd': 'GUARD_BUY', 'data': {
+        'start_time': 1792700000, 'uid': 456, 'username': '合成用户',
+        'guard_level': 3, 'num': 1, 'gift_id': gift_id}}
+    assert messages(frame(packet))[0]['gift']['gift_id'] == expected
 
 
 def test_event_identity_dedup_restart_export_and_state_contract(tmp_path):

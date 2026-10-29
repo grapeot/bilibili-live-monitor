@@ -61,7 +61,9 @@ def gift_message(packet):
     elif command == 'GUARD_BUY':
         level = integer(data['guard_level'], minimum=1)
         guard_name = {1: '总督', 2: '提督', 3: '舰长'}.get(level, '大航海')
-        gift.update(gift_id=str(data.get('gift_id', '')), gift_name=str(data.get('gift_name') or guard_name)[:200],
+        gift_id = data.get('gift_id')
+        gift_id = str(gift_id) if type(gift_id) in (int, str) and str(gift_id).strip() else None
+        gift.update(gift_id=gift_id, gift_name=str(data.get('gift_name') or guard_name)[:200],
                     num=integer(data['num'], minimum=1), guard_level=level,
                     coin_type='gold',
                     guard_price_gold=integer(data['price']) if data.get('price') is not None else None)
