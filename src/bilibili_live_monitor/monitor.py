@@ -15,7 +15,7 @@ from .preview import Previews
 from .recording import Recording
 
 PAGE_INSPECTION_SCRIPT = '''pause => {
-    const v=document.querySelector('video');if(pause&&v&&!v.paused)v.pause();
+    if(pause)document.querySelectorAll('video').forEach(v=>{if(!v.paused)v.pause()});
     const selectors='.geetest_panel_box,.geetest_panel,iframe[src*="captcha"],'
         +'iframe[src*="passport"],.bili-mini-login,input[placeholder*="验证码"]';
     const visible=[...document.querySelectorAll(selectors)].some(e=>{
@@ -335,6 +335,18 @@ class Monitor:
     async def inspect_page(self, room, page, *, pause=False):
         result = await page.evaluate(PAGE_INSPECTION_SCRIPT, pause)
         attention = result.get('attention') if isinstance(result, dict) else None
+        if pause:
+            # 赛事等页面把播放器放在iframe内；主文档可能完全没有video。
+            for frame in page.frames:
+                if frame == page.main_frame:
+                    continue
+                try:
+                    child = await asyncio.wait_for(frame.evaluate(PAGE_INSPECTION_SCRIPT, True), 5)
+                    if isinstance(child, dict):
+                        attention = attention or child.get('attention')
+                except Exception:
+                    # 广告/播放器iframe可能正在导航或已销毁，不因此中断独立录像。
+                    continue
         if attention != room.get('attention'):
             room['attention'] = attention
             self.store.room(room)

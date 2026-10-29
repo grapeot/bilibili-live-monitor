@@ -69,6 +69,40 @@ def test_prefix_and_crash_recovery(tmp_path):
     store.close()
 
 
+@pytest.mark.asyncio
+async def test_pause_inspects_child_frames_without_interrupting_on_detach(tmp_path):
+    store = Store(tmp_path / 'frame_monitor.db')
+    monitor = Monitor(Settings(data_dir=tmp_path), store)
+    calls = []
+
+    class Frame:
+        def __init__(self, name, detached=False):
+            self.name, self.detached = name, detached
+
+        async def evaluate(self, script, pause):
+            calls.append((self.name, pause))
+            if self.detached:
+                raise RuntimeError('Frame was detached')
+            return {'attention': None}
+
+    class Page(Frame):
+        @property
+        def frames(self):
+            return [self.main_frame, Frame('player'), Frame('advert', detached=True)]
+
+    page = Page('main')
+    page.main_frame = page
+    room = {'room_id': '123456'}
+    try:
+        await monitor.inspect_page(room, page, pause=True)
+        assert calls == [('main', True), ('player', True), ('advert', True)]
+        calls.clear()
+        await monitor.inspect_page(room, page, pause=False)
+        assert calls == [('main', False)]
+    finally:
+        store.close()
+
+
 def test_history_and_event_replay(tmp_path):
     path = tmp_path / 'state.db'
     store = Store(path)

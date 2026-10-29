@@ -294,6 +294,14 @@ async def test_attention_changes_are_observable_without_bypassing(tmp_path):
     class Page:
         attention = 'verification_or_login'
 
+        @property
+        def frames(self):
+            return [self]
+
+        @property
+        def main_frame(self):
+            return self
+
         async def evaluate(self, script, pause):
             assert 'captcha' in script
             return {'attention':self.attention}
