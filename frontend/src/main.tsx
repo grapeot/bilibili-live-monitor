@@ -8,8 +8,9 @@ type Room = {room_id:string; title:string; url:string; cover_url:string; status:
   record_mode:'none'|'audio'|'video';asr_enabled:boolean;preview_enabled:boolean;
   recording_status:string;recorded_seconds:number;recording_files:number;recording_bytes:number;
   error:string|null; chunk_seconds:number; segments:Segment[];items:Item[]};
-type Item = {id:number;room_id:string;kind:'transcript'|'danmaku';at_utc:string;received_utc:string;text:string;
-  author?:string|null;seq?:number|null;status?:string|null;error?:string|null};
+type Item = {id:number;room_id:string;kind:'transcript'|'danmaku'|'gift';at_utc:string;received_utc:string;text:string;
+  author?:string|null;seq?:number|null;status?:string|null;error?:string|null;
+  gift?:{event_type:string;coin_type?:string|null;blind_gift?:object|null;time_source?:string}|null};
 type Change = {kind:'room';data:Room}|{kind:'segment';data:Segment&{room_id:string}}|{kind:'item';data:Item};
 type State = {rooms:Room[]; queue_depth:number; queue_capacity:number; asr_ready:boolean;
   asr_enabled:boolean;
@@ -27,6 +28,9 @@ const api = async(path:string, init?:RequestInit) => {
   return result;
 };
 const time = (iso:string) => new Date(iso).toLocaleTimeString('zh-CN',{hour12:false});
+const giftLabel = (item:Item) => item.gift?.event_type==='GUARD_BUY'?'上舰 · 大航海':
+  item.gift?.event_type==='SUPER_CHAT_MESSAGE'?'醒目留言':item.gift?.blind_gift?'盲盒结果':
+  item.gift?.coin_type==='silver'?'银币礼物':item.gift?.coin_type==='gold'?'金币礼物':'礼物';
 
 function RoomPreview({room}:{room:Room}){
   const container=useRef<HTMLDivElement>(null);
@@ -63,12 +67,12 @@ const RoomCard = React.memo(function RoomCard({room,status,onError}:{room:Room;s
     <div className="card-body"><div className="room-heading"><a href={room.url} target="_blank" rel="noreferrer">{room.title.replace(/ - 哔哩哔哩直播.*$/,'')}</a><span className={'badge '+status}>{labels[status]||status}</span></div>
     <div className="room-sub"><span>房间 {room.room_id} · {room.chunk_seconds} 秒 / 段</span><button className="text-button" disabled={room.status==='stopped'} onClick={()=>api(`rooms/${room.room_id}/stop`,{method:'POST'}).catch(e=>onError(e.message))}>停止监控</button></div>
     {room.error&&<p className="room-error">{room.error}</p>}
-    <p className="room-sub">保存：{({none:'关闭',audio:'原始音频',video:'原始音视频'})[room.record_mode]} · ASR：{room.asr_enabled?'启用':'禁用'} · 弹幕：保存并显示</p>
+    <p className="room-sub">保存：{({none:'关闭',audio:'原始音频',video:'原始音视频'})[room.record_mode]} · ASR：{room.asr_enabled?'启用':'禁用'} · 弹幕 / 礼物：保存并显示</p>
     {room.record_mode!=='none'&&<p className="room-sub">录制 {room.recording_status==='recording'?'进行中':room.recording_status==='starting'?'启动中':room.recording_status==='stopped'?'已结束':room.recording_status} · {(room.recorded_seconds/60).toFixed(1)} 分钟 · {(room.recording_bytes/1e6).toFixed(1)} MB · {room.recording_files} 文件</p>}
     <div className="timeline-tools"><button className="text-button" aria-pressed={following} onClick={()=>{setFollowing(true);if(scroller.current)scroller.current.scrollTop=scroller.current.scrollHeight}}>{following?'跟随最新':'已暂停·回最新'}</button><a href={base+'api/export?room_id='+room.room_id}>导出本房快照</a></div>
     <div className={'segments'+(following?' following':'')} ref={scroller} onScroll={e=>{const n=e.currentTarget;setFollowing(n.scrollHeight-n.scrollTop-n.clientHeight<32)}}>
-      {!room.items.length?<p className="waiting">等待弹幕或首个音频切片…</p>:room.items.map(item=><div className={'segment '+item.kind+' '+(item.status||'')} key={item.id}>
-        <div className="segment-meta"><time>{time(item.at_utc)}</time><span>{item.kind==='danmaku'?'弹幕':`语音转写 #${item.seq} · ${labels[item.status||'']||item.status}`}</span></div>
+      {!room.items.length?<p className="waiting">等待弹幕、礼物或首个音频切片…</p>:room.items.map(item=><div className={'segment '+item.kind+' '+(item.status||'')} key={item.id}>
+        <div className="segment-meta"><time>{time(item.at_utc)}</time><span>{item.kind==='gift'?giftLabel(item)+(item.gift?.time_source==='received'?' · 接收时间':''):item.kind==='danmaku'?'弹幕':`语音转写 #${item.seq} · ${labels[item.status||'']||item.status}`}</span></div>
         <p>{item.author&&<b className="chat-author">{item.author}：</b>}{item.text||item.error||(item.status==='silent'?'音量低于阈值，已跳过识别':item.status==='empty'?'本段未识别到文字':'等待识别…')}</p>
       </div>)}
     </div>
@@ -124,7 +128,7 @@ function App(){
   }
   const active=state.active_count+state.pending_count;
   return <main>
-    <header><div><div className="eyebrow">本地 CDP 静音捕获 · Qwen3-ASR</div><h1>B站多路直播监控看板</h1><p>多房间弹幕与本地语音转写，同一条时间线。</p></div>
+    <header><div><div className="eyebrow">本地 CDP 静音捕获 · Qwen3-ASR</div><h1>B站多路直播监控看板</h1><p>多路直播语音、弹幕与礼物混合时间线。</p></div>
       <div className="header-actions"><button className="secondary" onClick={async()=>{try{if(document.fullscreenElement)await document.exitFullscreen();else await document.documentElement.requestFullscreen()}catch(e){setError((e as Error).message)}}}>{fullscreen?'退出全屏':'进入全屏'}</button><span className={'connection '+(connected?'online':'')}><i/>{connected?'实时连接正常':'正在重连'}</span></div></header>
     <section className="metrics">
       <div><span>监控任务（含重连 / 启动）</span><strong>{active}<small> 路</small></strong></div>
@@ -149,7 +153,7 @@ function App(){
     <div className="section-title"><h2>直播间 <span>{state.rooms.length}</span></h2><a className="export-link" href={base+'api/export'}>导出全部快照</a></div>
     {state.rooms.length===0&&<section className="empty">当前暂无监控房间，请输入直播间链接或房间号开始监听。</section>}
     <section className="grid">{state.rooms.map(room=><RoomCard key={room.room_id} room={room} status={room.status==='capturing'&&state.inflight?.room_id===room.room_id?'transcribing':room.status} onError={setError}/>)}</section>
-    <p className="footnote">每房间显示最近80条弹幕与转写；完整时间线、识别指标及错误记录保存于本地SQLite，可导出JSONL。游戏声和背景音乐可能造成误识别。</p>
+    <p className="footnote">每房间显示最近80条弹幕、礼物与转写；完整时间线保存于本地SQLite，可导出JSONL。金币、银币与SC人民币金额分开；盲盒结果标价不代表真实付费或主播净收入。游戏声和背景音乐可能造成误识别。</p>
   </main>;
 }
 createRoot(document.getElementById('root')!).render(<React.StrictMode><App/></React.StrictMode>);

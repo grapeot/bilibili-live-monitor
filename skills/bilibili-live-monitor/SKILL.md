@@ -52,6 +52,10 @@ python -m bilibili_live_monitor run --until 2030-01-01T22:00:00-08:00
 
 SQLite保存完整segments、timeline和SSE事件。UI最近80条item、20段识别数据不代表存储上限。支持全宽、全屏、自动向下跟随，上翻时暂停跟随。
 
+采集器复用页面原有WebSocket连接捕获礼物与付费互动事件，支持JSON `SEND_GIFT`、protobuf `SEND_GIFT_V2`（含单条消息内多个盲盒结果）、`GUARD_BUY`及`SUPER_CHAT_MESSAGE`。事件统一以`kind=gift`写入SQLite timeline，并进入SSE `item`、`GET /api/state`、JSONL导出与前端混合时间线；UI仍只显示最近80项。忽略`COMBO_SEND`累计通知，避免重复记账；去重优先采用订单标识，大航海缺订单但有UID时采用发送者、事件时间、等级与数量等事件字段，其他情况回退payload hash；不承诺识别全部语义相同的重发。V2多结果保留`batch_index`。历史未保存礼物报文，不能从旧录音回补礼物流。
+
+礼物字段包含事件类型、协议UID（可能缺失或脱敏）、事件/接收时间、订单标识、礼物名/数量及原始`price`、`total_coin`、`coin_type`。金额缺失用null，显式0保留0。协议事件时间缺失时，`event_at_utc=null`、`time_source=received`，`at_utc`仅使用接收时钟展示，不能用于精确的事件先后因果推断。统计时将金币、银币分开，大航海原始金额用`guard_price_gold`单列（单位金瓜子，不乘数量），SC人民币金额单列；界面分别标识银币礼物、金币礼物、盲盒结果、大航海与醒目留言。盲盒分别展示结果标价与未换算的原始价格字段，不推断原始字段的币种或单价，结果标价不代表真实付费或主播净收入。五房间180秒真实测试只有单结果V2金币礼物，8条均无UID、无盲盒/多结果；UID、多结果盲盒、上舰、SC与旧式礼物仅有合成测试覆盖，短样本不代表全量捕获或长期覆盖。
+
 - GET /api/state：房间、最近记录与运行指标。
 - POST /api/rooms：`{"url":"123456","chunk_seconds":30,"record_mode":"audio","asr_enabled":false,"preview_enabled":false}`。
 - POST /api/rooms/123456/stop：停止并清除本房间排队任务，取消inflight，迟到结果校验generation。
