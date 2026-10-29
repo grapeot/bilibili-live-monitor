@@ -13,7 +13,7 @@ description: 在Apple Silicon Mac运行B站常驻录制平台，通过AI控制�
 
 ## AI 操作者入口
 
-常驻目标、重启恢复、健康摘要与AI异步补位见 [平台运维子skill](platform-operations.md)。只注册本根skill，子skill按任务加载；真实路径、端口、模型和运行状态从本机私有overlay读取。
+常驻目标、重启恢复、健康摘要、开播巡检与补位见 [平台运维子skill](platform-operations.md)。`rotate-live`默认只读预演，显式`--execute`才停止已确认停播的来源并补位；定时频率与最终一次时间由外部调度器管理。只注册本根skill，子skill按任务加载；真实路径、端口、模型和运行状态从本机私有overlay读取。
 
 已有录制素材的盘点、可恢复本地转写与文本/能量判读边界见 [离线ASR子skill](offline-asr.md)。
 
@@ -49,6 +49,8 @@ python -m bilibili_live_monitor run --until 2030-01-01T22:00:00-08:00
 默认RECORD_MODE=audio、ASR_ENABLED=0、PREVIEW_ENABLED=0，新增房间可覆盖record_mode/asr_enabled/preview_enabled三个独立字段。ASR关闭时不加载模型、不创建识别PCM窗口或队列；看板显示禁用。ffmpeg复制原始压缩包分段写入DATA_DIR/recordings/<room_id>/，音频.mka、音视频.mkv。默认300秒分段，RECORDING_SEGMENT_SECONDS可配置。
 
 每房间独立Page并静音。仅启用ASR时，video.captureStream音轨经AudioContext(16000Hz)与AudioWorklet收PCM，Worklet输出置0不外放。ASR与缩略图都关闭时暂停网页视频，后台录制独立进行。复用网页已有WebSocket采集弹幕，不另建连接。缩略图仅显式启用、卡片可见且页面前台时请求。
+
+暂停播放不保证网页停止下载；同一页面也可能有额外播放器。监测资源时分开统计录制进程、浏览器和整机，不能把录制写入速率等同于总下载带宽，也不能把GPU进程CPU时间当成GPU利用率。可选同源`assets/resource_metrics.json`由本机采样器提供资源面板；无采样器时隐藏，数据超过30秒时标记失效。该私有运行文件不进Git，整机GPU和RSS共享页口径在面板中明确标注。
 
 SQLite保存完整segments、timeline和SSE事件。UI最近80条item、20段识别数据不代表存储上限。支持全宽、全屏、自动向下跟随，上翻时暂停跟随。
 

@@ -32,6 +32,46 @@ const giftLabel = (item:Item) => item.gift?.event_type==='GUARD_BUY'?'上舰 · 
   item.gift?.event_type==='SUPER_CHAT_MESSAGE'?'醒目留言':item.gift?.blind_gift?'盲盒结果':
   item.gift?.coin_type==='silver'?'银币礼物':item.gift?.coin_type==='gold'?'金币礼物':'礼物';
 
+type Resources = {epoch:number;sample_seconds:number;cpu_cores:number;rss_gib:number;
+  system_gpu_percent:number|null;external_download_mbps:number;external_upload_mbps:number;
+  chrome_download_mbps:number;ffmpeg_download_mbps:number;recording_write_mbps:number};
+
+function validResources(value:unknown):value is Resources{
+  if(!value||typeof value!=='object')return false;
+  const row=value as Record<string,unknown>;
+  const keys=['epoch','sample_seconds','cpu_cores','rss_gib','external_download_mbps',
+    'external_upload_mbps','chrome_download_mbps','ffmpeg_download_mbps','recording_write_mbps'];
+  return keys.every(k=>typeof row[k]==='number'&&Number.isFinite(row[k])&&(row[k] as number)>=0)
+    &&(row.system_gpu_percent===null||(typeof row.system_gpu_percent==='number'
+      &&Number.isFinite(row.system_gpu_percent)&&row.system_gpu_percent>=0&&row.system_gpu_percent<=100));
+}
+
+function ResourceMetrics(){
+  const [data,setData]=useState<Resources|null>(null);
+  const [now,setNow]=useState(Date.now());
+  useEffect(()=>{
+    const controller=new AbortController();let alive=true;
+    async function refresh(){
+      setNow(Date.now());
+      try{const response=await fetch(base+'assets/resource_metrics.json',{cache:'no-store',signal:controller.signal});
+        if(response.ok){const next:unknown=await response.json();if(alive&&validResources(next))setData(next)}}catch{/* 独立采样器可选；不影响监控。 */}
+    }
+    void refresh();const timer=setInterval(()=>void refresh(),5000);
+    return()=>{alive=false;controller.abort();clearInterval(timer)};
+  },[]);
+  if(!data)return null;
+  const stale=now-data.epoch*1000>30000;
+  return <section aria-label="机器资源与带宽">
+    <div className="metrics">
+      <div><span>监控 CPU · 1 核 = 100%</span><strong>{stale?'—':data.cpu_cores.toFixed(1)}<small> 核</small></strong></div>
+      <div><span>整机 GPU · 含其他应用</span><strong>{stale||data.system_gpu_percent==null?'—':data.system_gpu_percent.toFixed(0)}<small> %</small></strong></div>
+      <div><span>监控 RSS 合计 · 含共享页重复</span><strong>{stale?'—':data.rss_gib.toFixed(1)}<small> GiB</small></strong></div>
+      <div><span>监控外网下载 · 约 {data.sample_seconds.toFixed(0)} 秒均值</span><strong>{stale?'—':data.external_download_mbps.toFixed(1)}<small> Mbps</small></strong></div>
+    </div>
+    <p className="footnote">{stale?'资源采样已过期，等待采样器恢复。':`Chrome 下载 ${data.chrome_download_mbps.toFixed(1)} Mbps · ffmpeg 下载 ${data.ffmpeg_download_mbps.toFixed(1)} Mbps · 上传 ${data.external_upload_mbps.toFixed(1)} Mbps · 录制写入 ${(data.recording_write_mbps/8).toFixed(1)} MB/s。`} 网络值不含本机回环；连接切换可能低估。GPU 为整机即时值，不能全部归因于监控。</p>
+  </section>;
+}
+
 function RoomPreview({room}:{room:Room}){
   const container=useRef<HTMLDivElement>(null);
   const [visible,setVisible]=useState(false);
@@ -136,6 +176,7 @@ function App(){
       <div><span>ASR · 重启 {state.asr_restarts} / 重试 {state.asr_retries}</span><strong className="word">{!state.asr_enabled?'禁用':state.asr_ready?'已就绪':state.asr_error?'等待恢复':'正在加载'}</strong></div>
       <div><span>队列过载次数</span><strong className={state.overload_count?'warning':''}>{state.overload_count}</strong></div>
     </section>
+    <ResourceMetrics/>
     <form onSubmit={e=>{e.preventDefault();void add(url)}}>
       <input aria-label="直播间链接或房间号" placeholder="输入直播间链接或房间号" value={url} onChange={e=>setUrl(e.target.value)} required/>
       <select aria-label="切片窗口" value={seconds} onChange={e=>setSeconds(Number(e.target.value))}>{[5,10,20,30,60].map(n=><option key={n} value={n}>{n} 秒 / 段</option>)}</select>
