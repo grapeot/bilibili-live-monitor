@@ -50,6 +50,8 @@ python -m bilibili_live_monitor run --until 2030-01-01T22:00:00-08:00
 
 每房间独立Page并静音。仅启用ASR时，video.captureStream音轨经AudioContext(16000Hz)与AudioWorklet收PCM，Worklet输出置0不外放。ASR与缩略图都关闭时暂停网页视频，后台录制独立进行。复用网页已有WebSocket采集弹幕，不另建连接。缩略图仅显式启用、卡片可见且页面前台时请求。
 
+仅录制模式同时对顶层与子frame启用低渲染：根元素透明，并监听新增视频/自动播放以维持暂停。Chrome直播页不再显示画面，dashboard仍正常；页面布局、动画时序、脚本和WebSocket保留，ffmpeg继续独立录制。不全局冻结CSS动画，以免淡入式验证码始终透明而漏报。ASR或预览开启时不安装低渲染守卫，选项改变由平台关闭旧页再创建。`python scripts/verify_low_render.py --cdp-url <本机CDP>`可在独立合成页验证播放防护、静态/淡入验证码判据及非pause路径，不访问真实直播。
+
 暂停播放不保证网页停止下载；同一页面也可能有额外播放器。监测资源时分开统计录制进程、浏览器和整机，不能把录制写入速率等同于总下载带宽，也不能把GPU进程CPU时间当成GPU利用率。可选同源`assets/resource_metrics.json`由本机采样器提供资源面板；无采样器时隐藏，数据超过30秒时标记失效。该私有运行文件不进Git，整机GPU和RSS共享页口径在面板中明确标注。
 
 SQLite保存完整segments、timeline和SSE事件。UI最近80条item、20段识别数据不代表存储上限。支持全宽、全屏、自动向下跟随，上翻时暂停跟随。
