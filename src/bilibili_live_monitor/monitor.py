@@ -15,6 +15,20 @@ from .preview import Previews
 from .recording import Recording
 
 PAGE_INSPECTION_SCRIPT = '''pause => {
+    if(pause&&!window.__liveMonitorPauseGuard){
+        const stop=()=>document.querySelectorAll('video').forEach(v=>{if(!v.paused)v.pause()});
+        document.addEventListener('play',stop,true);
+        new MutationObserver(stop).observe(document,{childList:true,subtree:true});
+        window.__liveMonitorPauseGuard=true;
+    }
+    if(pause){
+        let style=document.getElementById('live-monitor-low-render');
+        if(!style){style=document.createElement('style');style.id='live-monitor-low-render';
+            document.documentElement.append(style)}
+        // 根节点opacity不继承，保留子元素验证码visibility/opacity判据与页面布局。
+        // 不冻结全局动画：验证码可能靠淡入动画从opacity=0变为可检测。
+        if(style.textContent!=='html{opacity:0!important}')style.textContent='html{opacity:0!important}';
+    }
     if(pause)document.querySelectorAll('video').forEach(v=>{if(!v.paused)v.pause()});
     const selectors='.geetest_panel_box,.geetest_panel,iframe[src*="captcha"],'
         +'iframe[src*="passport"],.bili-mini-login,input[placeholder*="验证码"]';
