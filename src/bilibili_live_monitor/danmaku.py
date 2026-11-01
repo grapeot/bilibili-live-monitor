@@ -14,6 +14,34 @@ from .gift_protocol import gift_items
 MAX_PACKET_BYTES = 4 * 1024 * 1024
 
 
+def user_identity(uid, *, anonymous=False):
+    value = str(uid) if isinstance(uid, (int, str)) and not isinstance(uid, bool) else ''
+    valid = value.isdigit() and int(value) > 0 and not anonymous
+    return {'sender_uid': value if valid else None,
+            'identity_status': 'uid' if valid else 'unresolved'}
+
+
+def guard_level(value):
+    return value if type(value) is int and value in (0, 1, 2, 3) else None
+
+
+def chat_message(info):
+    text = info[1]
+    if not isinstance(text, str) or not text.strip():
+        return None
+    at = event_time(info[0][4])
+    user = info[2]
+    medal = info[3] if len(info) > 3 and isinstance(info[3], list) else []
+    identity = user_identity(user[0])
+    key = hashlib.sha256(json.dumps(info, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+    return {'text': text[:10000], 'author': str(user[1])[:200], 'at_utc': at,
+            'source_key': key, **identity,
+            'guard_level': guard_level(info[7]) if len(info) > 7 else None,
+            'guard_source': 'danmaku_current_room',
+            'medal': {'level': medal[0], 'name': medal[1], 'room_id': str(medal[3])}
+            if len(medal) >= 4 else None}
+
+
 def event_time(value):
     timestamp = float(value)
     if timestamp > 10**11:
@@ -41,7 +69,8 @@ def gift_message(packet):
     at = event_at or datetime.now(timezone.utc).isoformat()
     user = data.get('user_info') or {}
     author = str(data.get('uname') or data.get('username') or user.get('uname') or '')[:200]
-    gift = {'event_type': command, 'sender_uid': str(data['uid']) if data.get('uid') else None,
+    sender = user_identity(data.get('uid'), anonymous=bool(data.get('is_mystery')))
+    gift = {'event_type': command, 'sender_uid': sender['sender_uid'],
             'time_source': 'event' if event_at else 'received', 'event_at_utc': event_at}
     stable_identity = None
     if command == 'SEND_GIFT':
@@ -84,8 +113,10 @@ def gift_message(packet):
     fingerprint = json.dumps(stable_identity or {'at_utc': event_at, 'author': author, 'gift': gift, 'text': text},
                              ensure_ascii=False, sort_keys=True)
     key = command + ':' + (identity or hashlib.sha256(fingerprint.encode()).hexdigest())
+    level = guard_level(data.get('guard_level', user.get('guard_level')))
     return {'kind': 'gift', 'gift': gift, 'text': text, 'author': author,
-            'at_utc': at, 'source_key': key}
+            'at_utc': at, 'source_key': key, **sender, 'guard_level': level,
+            'guard_source': 'purchase' if command == 'GUARD_BUY' else 'gift_event'}
 
 
 def packets(frame, depth=0):
@@ -118,10 +149,12 @@ def packets(frame, depth=0):
                 continue
 
 
-def messages(frame):
+def messages(frame, *, include_raw=False):
     result = []
     try:
         for packet in packets(frame):
+            if include_raw and isinstance(packet, dict):
+                result.append({'kind': 'raw_event', 'packet': packet})
             try:
                 if not isinstance(packet, dict):
                     continue
@@ -146,14 +179,9 @@ def messages(frame):
                     continue
                 if not str(command).startswith('DANMU_MSG'):
                     continue
-                info = packet['info']
-                text = info[1]
-                if not isinstance(text, str) or not text.strip():
-                    continue
-                at = event_time(info[0][4])
-                key = hashlib.sha256(json.dumps(info, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
-                result.append({'text': text[:10000], 'author': str(info[2][1])[:200],
-                               'at_utc': at, 'source_key': key})
+                message = chat_message(packet['info'])
+                if message:
+                    result.append(message)
             except (ValueError, TypeError, IndexError, KeyError, OverflowError, OSError, AttributeError, DecodeError):
                 continue
     except (ValueError, TypeError, IndexError, KeyError, OverflowError, OSError, zlib.error, brotli.error):

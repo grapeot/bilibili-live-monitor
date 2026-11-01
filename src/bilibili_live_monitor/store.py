@@ -17,6 +17,13 @@ class Store:
             PRAGMA journal_mode=WAL;
             CREATE TABLE IF NOT EXISTS rooms(room_id TEXT PRIMARY KEY, data TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS control(key TEXT PRIMARY KEY, data TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS raw_events(
+                id INTEGER PRIMARY KEY AUTOINCREMENT, room_id TEXT NOT NULL,
+                session_id TEXT, received_utc TEXT NOT NULL, command TEXT, data TEXT NOT NULL);
+            CREATE INDEX IF NOT EXISTS raw_room_time ON raw_events(room_id,received_utc);
+            CREATE TABLE IF NOT EXISTS guard_snapshots(
+                id INTEGER PRIMARY KEY AUTOINCREMENT, room_id TEXT NOT NULL,
+                observed_utc TEXT NOT NULL, data TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS segments(
                 id INTEGER PRIMARY KEY AUTOINCREMENT, room_id TEXT NOT NULL, seq INTEGER NOT NULL,
                 data TEXT NOT NULL, UNIQUE(room_id,seq));
@@ -87,10 +94,42 @@ class Store:
         self.item({**message, 'room_id': room_id, 'kind': 'danmaku'}, message['source_key'])
 
     def live_message(self, room_id, message):
+        now = utc_now()
+        kind = message.get('kind')
+        if kind in ('raw_event', 'transport'):
+            health = self.control('message_health', {})
+            current = health.setdefault(room_id, {})
+            if kind == 'raw_event':
+                packet = message['packet']
+                self.db.execute('INSERT INTO raw_events(room_id,session_id,received_utc,command,data) VALUES(?,?,?,?,?)',
+                                (room_id, message.get('session_id'), now, packet.get('cmd'),
+                                 json.dumps(packet, ensure_ascii=False)))
+                self.db.commit()
+                current['last_message_utc'] = now
+                current['raw_events'] = current.get('raw_events', 0) + 1
+            else:
+                changed = current.get('state') != message['state']
+                current.update(state=message['state'], state_changed_utc=now)
+                if message.get('frame_received'):
+                    current['last_frame_utc'] = now
+                if changed:
+                    self.event('message_transport', {'room_id': room_id, 'at_utc': now, **message})
+            self.save_control('message_health', health)
+            return
         if message.get('kind') == 'gift':
             self.item({**message, 'room_id': room_id}, message['source_key'])
         else:
             self.danmaku(room_id, message)
+
+    def guard_snapshot(self, snapshot):
+        with self.db:
+            self.db.execute('INSERT INTO guard_snapshots(room_id,observed_utc,data) VALUES(?,?,?)',
+                            (snapshot['room_id'], snapshot['observed_utc'], json.dumps(snapshot, ensure_ascii=False)))
+
+    def latest_guards(self, room_id):
+        row = self.db.execute('SELECT id,data FROM guard_snapshots WHERE room_id=? ORDER BY id DESC LIMIT 1',
+                              (room_id,)).fetchone()
+        return {'id': row['id'], **json.loads(row['data'])} if row else None
 
     def items(self, room_id, limit=80):
         rows = self.db.execute('SELECT id,data FROM timeline WHERE room_id=? '

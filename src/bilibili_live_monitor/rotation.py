@@ -89,7 +89,8 @@ async def inspect(context, candidates):
             'https://api.live.bilibili.com/xlive/web-room/v1/index/getRoomBaseInfo?' + query,
             timeout=20000)
         if response.status != 200:
-            raise RoomStatusRefused(f'房间状态接口HTTP {response.status}；不改动现有来源')
+            error = RoomStatusRefused if response.status in (401, 403, 412, 429) else RuntimeError
+            raise error(f'房间状态接口HTTP {response.status}；不改动现有来源')
         statuses.update(index_rooms(await response.json()))
     return statuses
 
@@ -97,6 +98,8 @@ async def inspect(context, candidates):
 async def rotate(args):
     control = Control(args.base_url)
     initial = control.call('platform')
+    if initial['policy'].get('mode') == 'fixed':
+        raise ValueError('固定房间守候由内置状态巡检管理，不使用换台巡检')
     if args.target > initial['capacity']:
         raise ValueError('目标超过现有容量；巡检不重启服务或扩容硬上限')
     if not initial['policy']['enabled']:

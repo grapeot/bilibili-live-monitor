@@ -132,6 +132,22 @@ def create_app(settings=None):
         except ValueError as error:
             raise HTTPException(409, str(error)) from error
 
+    @app.post('/api/platform/candidates/{room_id}/resume', status_code=202,
+              summary='操作者显式解除候选停用及状态接口拒绝')
+    async def resume_candidate(room_id: str):
+        try:
+            return app.state.platform.resume_candidate(room_id)
+        except (KeyError, ValueError) as error:
+            raise HTTPException(404, '平台候选不存在') from error
+
+    @app.get('/api/rooms/{room_id}/guards', summary='最新舰队榜单快照；非购买流水，complete表示本次覆盖')
+    async def guards(room_id: str):
+        try:
+            snapshot = app.state.monitor.store.latest_guards(app.state.platform.resolve_room_id(room_id))
+            return {k: v for k, v in snapshot.items() if k != 'raw_pages'} if snapshot else None
+        except ValueError as error:
+            raise HTTPException(422, str(error)) from error
+
     @app.get('/api/platform/events', summary='按游标读取平台动作回执，不夹带弹幕与转写')
     async def platform_events(after: int = 0, limit: int = 100):
         if after < 0 or not 1 <= limit <= 200:

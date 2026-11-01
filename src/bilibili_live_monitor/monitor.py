@@ -157,7 +157,7 @@ class Monitor:
                 else:
                     chat_dropped += 1
             elif self.generations.get(chat_context['room_id']) == chat_context['generation']:
-                self.store.live_message(chat_context['room_id'], message)
+                self.store.live_message(chat_context['room_id'], {**message, 'session_id': chat_context['generation']})
 
         async def on_resolved(resolved_page):
             room_id = room_url(resolved_page.url).rsplit('/', 1)[1]
@@ -250,6 +250,7 @@ class Monitor:
                         delay = min(30, self.settings.retry_delay * 2 ** (self.failures[room_id] - 1))
                         await asyncio.sleep(delay)
                         page.recording_url = None
+                        page.chat_last_frame = time.monotonic()
                         response = await page.reload(wait_until='domcontentloaded', timeout=30000)
                         if response and response.status in (403, 412, 429):
                             raise RuntimeError(f'recording_refused: HTTP {response.status}')
@@ -274,6 +275,8 @@ class Monitor:
                     reconnect = True
         finally:
             try:
+                self.store.live_message(room_id, {'kind': 'transport', 'state': 'disconnected',
+                                                 'session_id': generation})
                 await self.previews.stop(room_id)
                 await close_page(page)
             except Exception as error:
@@ -308,6 +311,8 @@ class Monitor:
                 recorder = Recording(self.settings, room)
                 await recorder.start(page.recording_url)
             while True:
+                if time.monotonic() - getattr(page, 'chat_last_frame', time.monotonic()) > 120:
+                    raise RuntimeError('chat_stalled：120秒无弹幕连接帧或心跳，重新建立页面连接')
                 if recorder:
                     await recorder.check()
                     if time.monotonic()-last_store >= 10:

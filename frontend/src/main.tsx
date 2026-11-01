@@ -9,6 +9,7 @@ type Room = {room_id:string; title:string; url:string; cover_url:string; status:
   recording_status:string;recorded_seconds:number;recording_files:number;recording_bytes:number;
   error:string|null; chunk_seconds:number; segments:Segment[];items:Item[]};
 type Item = {id:number;room_id:string;kind:'transcript'|'danmaku'|'gift';at_utc:string;received_utc:string;text:string;
+  sender_uid?:string|null;guard_level?:number|null;
   author?:string|null;seq?:number|null;status?:string|null;error?:string|null;
   gift?:{event_type:string;coin_type?:string|null;blind_gift?:object|null;time_source?:string}|null};
 type Change = {kind:'room';data:Room}|{kind:'segment';data:Segment&{room_id:string}}|{kind:'item';data:Item};
@@ -72,6 +73,38 @@ function ResourceMetrics(){
   </section>;
 }
 
+type WatchCandidate = {url:string;room_id?:string;title:string;blocked:boolean;blocked_alias?:boolean;watch_state?:string;
+  status_checked_utc?:string;status_error?:string;last_error?:string;guard_error?:string;
+  guard_snapshot?:{reported_total:number;complete:boolean;observed_utc:string}};
+type WatchSummary = {policy:{mode:string;enabled:boolean;fixed_rooms?:string[]};status_refused?:string;
+  candidates:WatchCandidate[];sources:{room_id:string;status:string;recording_status:string}[];
+  message_health:Record<string,{state?:string;last_message_utc?:string}>};
+
+function WatchStatus(){
+  const [summary,setSummary]=useState<WatchSummary|null>(null);
+  const [failed,setFailed]=useState(false);
+  useEffect(()=>{let alive=true;let timer:ReturnType<typeof setTimeout>;
+    async function refresh(){try{const data=await api('platform');if(alive){setSummary(data);setFailed(false)}}
+      catch{if(alive)setFailed(true)}finally{if(alive)timer=setTimeout(()=>void refresh(),5000)}}
+    void refresh();return()=>{alive=false;clearTimeout(timer)}},[]);
+  if(!summary)return failed?<p role="alert">守候状态读取失败，尚未取得有效结果。</p>:null;
+  if(summary.policy.mode!=='fixed')return null;
+  const names:Record<string,string>={waiting:'等待开播',live:'已开播，等待录制',unknown:'状态未知',
+    retrying:'录制恢复中',attention:'需要人工处理',recording_pending:'采集已启动',confirming_offline:'正在确认下播'};
+  return <section aria-label="固定房间守候"><h2>固定房间守候{!summary.policy.enabled?' · 已暂停':''}</h2>
+    {failed&&<p role="alert">守候状态刷新失败，以下为上次结果。</p>}
+    {summary.status_refused&&<p role="alert">状态接口暂停：{summary.status_refused}</p>}
+    {summary.candidates.filter(c=>!summary.policy.fixed_rooms?.length||summary.policy.fixed_rooms.includes(c.url)).map(c=>{const rid=c.room_id||c.url.split('/').at(-1)||'';
+      const source=summary.sources.find(r=>r.room_id===rid);const chat=summary.message_health[rid];
+      return <article key={c.url}><p><a href={c.url} target="_blank" rel="noreferrer">{c.title||rid}</a> · {
+        c.blocked||c.blocked_alias?'需要人工处理':!summary.policy.enabled?'已暂停':
+        source?.status==='capturing'&&source.recording_status==='recording'?'正在录制':
+        names[c.watch_state||'unknown']||'状态未知'} · 最近查播 {c.status_checked_utc?time(c.status_checked_utc):'尚未查询'}</p>
+        <p>弹幕连接：{chat?.state==='connected'?'已连接':chat?.state==='disconnected'?'已断开':chat?.state==='error'?'连接异常':'未确认'} · 最近消息 {chat?.last_message_utc?time(chat.last_message_utc):'尚无'} · 舰队快照：{c.guard_snapshot?`${c.guard_snapshot.reported_total} 人（${c.guard_snapshot.complete?'本次完整':'部分数据'}）`:'尚无'}</p>
+        {(c.status_error||c.last_error||c.guard_error)&&<p className="room-error">{c.status_error||c.last_error||c.guard_error}</p>}
+      </article>})}</section>;
+}
+
 function RoomPreview({room}:{room:Room}){
   const container=useRef<HTMLDivElement>(null);
   const [visible,setVisible]=useState(false);
@@ -113,7 +146,7 @@ const RoomCard = React.memo(function RoomCard({room,status,onError}:{room:Room;s
     <div className={'segments'+(following?' following':'')} ref={scroller} onScroll={e=>{const n=e.currentTarget;setFollowing(n.scrollHeight-n.scrollTop-n.clientHeight<32)}}>
       {!room.items.length?<p className="waiting">等待弹幕、礼物或首个音频切片…</p>:room.items.map(item=><div className={'segment '+item.kind+' '+(item.status||'')} key={item.id}>
         <div className="segment-meta"><time>{time(item.at_utc)}</time><span>{item.kind==='gift'?giftLabel(item)+(item.gift?.time_source==='received'?' · 接收时间':''):item.kind==='danmaku'?'弹幕':`语音转写 #${item.seq} · ${labels[item.status||'']||item.status}`}</span></div>
-        <p>{item.author&&<b className="chat-author">{item.author}：</b>}{item.text||item.error||(item.status==='silent'?'音量低于阈值，已跳过识别':item.status==='empty'?'本段未识别到文字':'等待识别…')}</p>
+        <p>{item.author&&<b className="chat-author" title={item.sender_uid?`UID ${item.sender_uid}`:'身份未确认'}>{item.author}{item.guard_level?` · ${{1:'总督',2:'提督',3:'舰长'}[item.guard_level]||'大航海'}`:''}：</b>}{item.text||item.error||(item.status==='silent'?'音量低于阈值，已跳过识别':item.status==='empty'?'本段未识别到文字':'等待识别…')}</p>
       </div>)}
     </div>
     <footer>{room.asr_enabled?<><span>等待 {latest?`${(latest.queue_wait_ms/1000).toFixed(1)}s`:'—'}</span><span>推理 {latest?`${(latest.infer_ms/1000).toFixed(1)}s`:'—'}</span><span>{latest?`${latest.rms_dbfs} dBFS`:'等待音频'}</span><span>覆盖 {latest?.coverage_ratio!=null?`${(latest.coverage_ratio*100).toFixed(0)}%`:'—'}</span></>:<span>ASR 禁用 · 不创建识别音频队列</span>}</footer>
@@ -177,6 +210,7 @@ function App(){
       <div><span>队列过载次数</span><strong className={state.overload_count?'warning':''}>{state.overload_count}</strong></div>
     </section>
     <ResourceMetrics/>
+    <WatchStatus/>
     <form onSubmit={e=>{e.preventDefault();void add(url)}}>
       <input aria-label="直播间链接或房间号" placeholder="输入直播间链接或房间号" value={url} onChange={e=>setUrl(e.target.value)} required/>
       <select aria-label="切片窗口" value={seconds} onChange={e=>setSeconds(Number(e.target.value))}>{[5,10,20,30,60].map(n=><option key={n} value={n}>{n} 秒 / 段</option>)}</select>
