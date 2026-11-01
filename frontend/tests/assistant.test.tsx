@@ -25,7 +25,7 @@ describe('助手操作',()=>{
     await screen.findByText('想听歌曲A');
     expect(screen.getByText('用户A')).toBeTruthy();
     expect(screen.getByText(/读音待确认/)).toBeTruthy();
-    expect(screen.getByText('灯牌观众')).toBeTruthy();
+    expect(screen.getByText('送灯牌待跟进')).toBeTruthy();
     expect(screen.getByText('点歌单')).toBeTruthy();
     fireEvent.change(screen.getByLabelText('想听歌曲A状态'),{target:{value:'responded'}});
     await waitFor(()=>expect(requests.some(r=>r.body?.expected_version===1&&r.body?.status==='responded')).toBe(true));
@@ -88,5 +88,23 @@ describe('助手操作',()=>{
       candidates:[{character:'余',readings:['yú','tú','xú']}]}};
     render(<Assistant/>);await screen.findByText('想听歌曲A');
     expect(screen.getByLabelText('昵称读音').textContent?.trim()).toBe('余(yú / tú / xú)');
+  });
+  it('送礼跟进显示礼物数量和接收时间，保留原名拼音',async()=>{
+    card={...card,id:'medal:gift:111',kind:'medal',eligible:true,title:'粉丝团灯牌送礼跟进',
+      qualification_rule:'fan_club_gift_v1',gift_quantity:3,first_gift_at:'2030-01-01T00:00:00Z'};
+    render(<Assistant/>);await screen.findByText('粉丝团灯牌送礼跟进');
+    expect(screen.getByText('送灯牌待跟进')).toBeTruthy();
+    expect(screen.getByText(/粉丝团灯牌 ×3 · 首次收到/)).toBeTruthy();
+    expect(document.querySelector('time')?.getAttribute('dateTime')).toBe('2030-01-01T00:00:00Z');
+    expect(screen.getByText('用户A')).toBeTruthy();
+    expect(screen.getByLabelText('昵称读音').textContent).toContain('yòng hù A');
+    expect(screen.getByText(/佩戴粉丝牌等级不计入/)).toBeTruthy();
+  });
+  it('旧佩戴牌误建卡隐藏且不会被显示历史开关带回',async()=>{
+    card={...card,id:'medal:111',kind:'medal',eligible:true,title:'旧佩戴牌卡'};
+    render(<Assistant/>);await screen.findByText('送灯牌待跟进');
+    expect(screen.queryByText('旧佩戴牌卡')).toBeNull();
+    fireEvent.click(screen.getByLabelText('显示已完成 / 已忽略，供恢复或撤销'));
+    expect(screen.queryByText('旧佩戴牌卡')).toBeNull();
   });
 });

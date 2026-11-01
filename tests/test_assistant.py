@@ -127,7 +127,7 @@ def test_evidence_details_keep_referenced_revision(store):
     assert detail['data']['text'] == '想听歌曲A'
 
 
-def test_medals_unknown_guard_wrong_room_song_and_full_roster(store):
+def test_badges_and_rosters_alone_never_create_gift_followup(store):
     store.ingest([event(medal={'room_id': '123456', 'level': 1}, guard_level=None)])
     store.derive_medals()
     assert store.card('medal:1') is None
@@ -135,15 +135,11 @@ def test_medals_unknown_guard_wrong_room_song_and_full_roster(store):
     assert store.card('medal:1') is None
     stamp = '2030-01-01T00:00:01+00:00'
     store.derive_medals({'complete': True, 'members': [], 'observed_utc': stamp})
-    assert store.card('medal:1')['eligible'] is True
+    assert not any(c['kind'] == 'medal' for c in store.cards())
     store.derive_medals({'complete': True, 'members': [{'sender_uid': '1'}], 'observed_utc': stamp})
-    assert not store.card('medal:1')['eligible']
-    store.apply({'actions': [action(store)]}, 1, offered(store))
-    store.derive_medals({'complete': True, 'members': [], 'observed_utc': stamp})
-    assert not store.card('medal:1')['eligible']
     store.ingest([event(2, sender_uid='2', medal={'room_id': '654321', 'level': 1}, guard_level=0)])
     store.derive_medals()
-    assert store.card('medal:2') is None
+    assert not any(c['kind'] == 'medal' for c in store.cards())
 
 
 def test_pronunciation_conservative_and_originals_unchanged(store):

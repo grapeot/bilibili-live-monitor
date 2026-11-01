@@ -4,6 +4,8 @@ type Scope = {room_id:string;session_id:string;since:string;source_session:strin
 type Ref = {id:string;version:number};
 type Card = {id:string;kind:'chat'|'medal'|'song';title:string;status:string;version:number;
   author:string;uid?:string;manual:boolean;eligible?:boolean;evidence:Ref[];
+  first_gift_at?:string|null;last_gift_at?:string|null;gift_quantity?:number;
+  qualification_rule?:string;
   pronunciation:{text:string;uncertain:boolean;override:boolean;unknown?:string[];
     candidates?:{character:string;readings:string[]}[]};guard_observation?:unknown};
 type Snapshot = {config:Scope;cards:Card[];evidence:{id:string;version:number;latest_version?:number;data:Record<string,unknown>}[];
@@ -56,6 +58,7 @@ export function Assistant(){
   function cardView(card:Card){return <article className="assistant-card" key={card.id}>
     <p><strong>{card.author||'身份未确认'}</strong>{card.pronunciation.text&&<small className="reading" aria-label="昵称读音"> {conciseReading(card.pronunciation)}{card.pronunciation.uncertain?' · 读音待确认':''}{!!card.pronunciation.unknown?.length&&` · 未知读音：${card.pronunciation.unknown.join('、')}`}</small>}</p>
     <p>{card.title}</p><p className="room-sub">{card.kind==='song'&&card.status==='pending'?'待确认':names[card.status]}{card.manual?' · 人工确认':''}</p>
+    {card.kind==='medal'&&card.first_gift_at&&<p className="room-sub">粉丝团灯牌 ×{card.gift_quantity} · 首次收到 <time dateTime={card.first_gift_at}>{new Date(card.first_gift_at).toLocaleTimeString('zh-CN',{hour12:false})}</time></p>}
     <div className="assistant-actions"><label>状态 <select aria-label={card.title+'状态'} disabled={busy} value={card.status}
       onChange={e=>void mutate('cards/'+encodeURIComponent(card.id),'PATCH',{session,expected_version:card.version,status:e.target.value})}>
       {choices[card.kind].map(s=><option value={s} key={s}>{s==='pending'&&card.kind==='song'?'待确认':names[s]}</option>)}</select></label>
@@ -84,10 +87,10 @@ export function Assistant(){
       <details><summary>运行诊断</summary><p>源事件游标：{data.worker.cursor||0}；AI 已完成观察序号：{data.worker.ai_cursor||0}（两个序号不是同一计数）。最近分析完成：{data.worker.last_analysis?new Date(data.worker.last_analysis*1000).toLocaleTimeString('zh-CN',{hour12:false}):'尚无'}</p></details>
       <label><input type="checkbox" checked={history} onChange={e=>setHistory(e.target.checked)}/>显示已完成 / 已忽略，供恢复或撤销</label>
       <div className="assistant-columns">{(['chat','medal','song'] as const).map(kind=>{
-        const cards=data.cards.filter(c=>c.kind===kind&&(kind!=='medal'||c.eligible)
+        const cards=data.cards.filter(c=>c.kind===kind&&(kind!=='medal'||(c.eligible&&c.qualification_rule==='fan_club_gift_v1'))
           &&(history||kind==='song'||c.status==='pending'));
-        return <section key={kind}><h2>{{chat:'未回应弹幕',medal:'灯牌观众',song:'点歌单'}[kind]} <small>{cards.length}</small></h2>
-          {kind==='medal'&&<p className="room-sub">有当前主播灯牌、已确认非舰长、尚未观察到点歌；不是刚点亮名单。</p>}
+        return <section key={kind}><h2>{{chat:'未回应弹幕',medal:'送灯牌待跟进',song:'点歌单'}[kind]} <small>{cards.length}</small></h2>
+          {kind==='medal'&&<p className="room-sub">本场收到粉丝团灯牌礼物、已确认非舰长，且尚未完成点歌跟进；佩戴粉丝牌等级不计入。</p>}
           {cards.length?cards.map(cardView):<p className="waiting">暂无符合条件的记录</p>}
         </section>})}</div></>}
   </section>;

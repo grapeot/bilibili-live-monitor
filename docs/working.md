@@ -1,5 +1,19 @@
 # 工作记录
 
+## G1：多笔送灯牌的有界判断证据（2026-11-01）
+- 完整阅读 `.local/gift_rule_review.md` 后修复G1：gift_evidence及累计数量/首末时间保留完整，新增最多3条qualification_evidence（首份有效gift与必要guard/identity）；主evidence合并最多9条状态依据，始终不超过原工具12条限制，不调高schema上限。
+- AI只须保留资格witness并附本次语音，前次有效状态依据在重算后继续保留于有界窗口，超出窗口的旧依据仍留history/observations。模型上下文去除完整gift_evidence清单，改为gift_receipt_count与有界引用；API审计仍解析全部送礼引用。
+- 新增12/16笔不同tid目标礼物的真实Store→worker→工具动作参数化回归，其中16笔场景还模拟旧版全量证据卡。完成动作可成功应用；连续12轮状态更新后主证据仍≤12、status≤9；后续送礼不复活已完成状态，manual锁继续拒绝AI覆盖，全部礼物数量/首末时间/观察和历史证据保留。
+- 全套 `pytest -q --basetemp=.local/pytest-witness-final` **307 passed（7.90秒）**，ruff与diff检查通过。无UI变更，复用前轮6 Node + 9 DOM及frontend build通过结果。未执行git写操作、生产访问或真实模型调用。修复等待主线程独立复核。
+
+## 灯牌改为实际送礼事件（2026-11-01）
+- 按用户纠正，中栏改名“送灯牌待跟进”。不再根据佩戴粉丝牌/等级触发，只接受当前固定room/source/since内结构化 `SEND_GIFT`/`SEND_GIFT_V2`、`gift_id='34001'`且`gift_name='粉丝团灯牌'`的非盲盒原子礼物；普通礼物、同名异ID、同ID异名、假面盲盒/黑猫提灯及文本提及不计。
+- 使用新规则 `fan_club_gift_v1` 和 `medal:gift:<uid>`，旧佩戴牌误建卡eligible置false但保留status/manual/evidence/history，不把旧错误AI结论迁给新送礼卡。前端也要求新规则标记，尚未重算的旧卡仍隐藏。
+- 目标礼物必须成为资格证据；新增gift_evidence、first_gift_at/last_gift_at（接收时间）和去重累计gift_quantity，界面显示首次收到时间及数量。保留原名与简洁拼音。身份/guard不明不假定非舰长，后续同UID明确entry/chat可补足；B3的观测时间优先级不变。
+- 已完成/人工操作状态不因重算或再次送礼而恢复pending。观察到点歌不等于完成，pending/queued点歌仍可跟进；sung/rejected终态或显式done/dismissed结束跟进。模型只更新状态，不决定送礼资格。口头赠歌/别名关联仍是已知缺口，本补丁不宣称修复；已核实的Hallucination完成状态由主线程可撤销人工纠正并留证。
+- 已更新旧真实Store回归中错误的佩戴牌触发预期，新增30项后端参数化用例与2项DOM回归。`pytest -q --basetemp=.local/pytest-gift-final` **305 passed（7.70秒）**；ruff、git diff --check通过；前端 **6 Node + 9 DOM通过**，TypeScript/Vite构建通过。全部使用合成源库/协议/HTTP或模型mock，没有生产/API/真实模型访问，没有git写操作。
+- 部署只需主线程构建/加载新前端并重启助手sidecar和worker，复用原助手DB与固定场次参数，等待首次资格重算；不重启录制后端、Chrome或ASR，不删库或重置cursor。实际部署与独立复核未由实现线程执行。
+
 ## PR19 独立审阅修复（2026-11-01）
 - 完整读取 `.local/assistant_review.md`，针对 B1/B2/B3 和 N1 修复；本轮没有 git 写操作、生产访问、真实外部模型调用或部署，复核与推送交主线程。
 - B1：持久保存 generation 首条事件序号与最早观测时间。旧来源积压、旧来源迟到消息、无 session 的 startup-gap 不触发暂停；指定来源之后真正新 generation 仍暂停并跨重启保留。旧版仅有 `source_mismatch` 的状态库从源事件只读重建分类，不重置读取/AI游标，不重复生成卡片。

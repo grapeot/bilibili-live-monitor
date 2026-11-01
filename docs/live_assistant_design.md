@@ -1,6 +1,6 @@
 # 直播助手：设计与运行合同
 
-直播助手把已经采到的弹幕和语音整理成主播可操作的待办。原来的快照页仍是默认页，完整保留录制控制、时间线和导出。新页按房间展示未回应弹幕、灯牌观众与点歌单，人工可以改状态、恢复及撤销；每个判断都能展开查看证据。
+直播助手把已经采到的弹幕和语音整理成主播可操作的待办。原来的快照页仍是默认页，完整保留录制控制、时间线和导出。新页按房间展示未回应弹幕、送灯牌待跟进与点歌单，人工可以改状态、恢复及撤销；每个判断都能展开查看证据。这里的灯牌专指用户实际赠送的“粉丝团灯牌”礼物，不指昵称旁佩戴的粉丝牌或等级。
 
 本次实现和文档由 GPT-6.1 SOL 完成。产品运行时只调用 Ollama Cloud 的 `deepseek-v4.1-flash`，`think:false`。验证只用虚构数据和 mock，不访问正式浏览器、数据库、API 或外部模型。
 
@@ -20,11 +20,23 @@ worker 每轮读取上游 `/api/platform`，检查目标房间查播新鲜度、
 
 助手 SQLite 使用 WAL。`meta` 保存固定参数、cursor、运行状态、调用次数和错误；`observations` 保留每次被接受的事件及版本；`evidence` 保存各 timeline ID 最新版本；`cards` 保存弹幕、点歌和灯牌派生项；`history` 保存变更前后值用于撤销；`overrides` 保存昵称读音。原 timeline 与原始报文从不删除或改写。
 
-弹幕到达即创建 pending 卡片，AI 可以标为 responded/dismissed。点歌单状态为 pending/queued/sung/rejected，标题须有证据。灯牌资格只由真实 medal.room_id 和明确 guard_level=0 或同场新鲜完整舰队快照推导；缺失和 unknown 不视为非舰长。榜单只在自身观测时点表达资格，不宣称刚点亮灯牌。已有任何点歌观察（包括拒绝、已唱）就不再进入“尚未观察到点歌”名单。
+弹幕到达即创建 pending 卡片，AI 可以标为 responded/dismissed。点歌单状态为 pending/queued/sung/rejected，标题须有证据。送灯牌资格由本场固定 room/source/since 内的结构化送礼事件确定，不读取 `medal.level`、`medal.room_id` 或文本关键词。
 
-灯牌、身份和明确 guard 字段按 `received_utc`（缺失时回退 `at_utc`）的实际观测时间选最新值，不能按导入/ASR修订时间覆盖。舰队快照按 `observed_utc` 选取，同一 UID 只有比明确 guard 事件更新的快照才可覆盖；时间相同保留事件证据。完整榜单缺席才可证明该次观测下非舰长，部分榜单缺席不更新资格。因此旧完整空榜不能覆盖其后的 `GUARD_BUY`。卡片只附加实际用于资格判断的榜单证据。
+礼物匹配必须同时满足 `kind=gift`、`gift.event_type` 为 `SEND_GIFT` 或 `SEND_GIFT_V2`、字符串 `gift_id='34001'`、精确 `gift_name='粉丝团灯牌'`、正整数 `num`，且不存在非null的盲盒来源字段（实现拒绝任何非null `blind_gift`，包括空对象）。名字相同但ID不同、ID相同但名字不同、假面盲盒结果、黑猫提灯、普通礼物、仅在文字中提及均不计入。V2先经现有protobuf解析器展开为原子礼物，使用同一规则；不把COMBO_SEND累计通知重复计数。未知协议类型或缺少必需身份字段保守不计。
 
-人工和 AI 都可把已有灯牌待办设为 pending/done/dismissed，只改变显示状态，不改变真实资格。AI 不可新建灯牌项或改写昵称、标题、eligible、guard/medal 字段；必须保留观众来源证据，再附加回应/完成的语音证据。`status_evidence` 独立保存判断证据，后续资格刷新仍保留；manual 锁、证据版本及卡片版本校验与其他卡片相同。
+发送者用明确UID关联，不按昵称匹配。优先顶层 `sender_uid`，缺失时允许礼物内的字符串UID；两处均有值但冲突则拒绝，显式 unresolved 身份也拒绝。礼物到达时 guard 未知可先保存观察，后续同UID的entry/chat明确guard或新鲜完整榜单再补资格；缺失和unknown不视为非舰长。
+
+身份和明确 guard 字段按 `received_utc`（缺失时回退 `at_utc`）的实际观测时间选最新值，不能按导入/ASR修订时间覆盖。舰队快照按 `observed_utc` 选取，同一 UID 只有比明确 guard 事件更新的快照才可覆盖；时间相同保留事件证据。完整榜单缺席才可证明该次观测下非舰长，部分榜单缺席不更新资格。因此旧完整空榜不能覆盖其后的 `GUARD_BUY`。卡片只附加实际用于资格判断的榜单证据。
+
+同UID本场聚合成一张 `medal:gift:<uid>` 卡片，`qualification_rule=fan_club_gift_v1`。`gift_evidence` 保留每条目标礼物的ID/version；`gift_quantity`按去重后原子事件的num累计，`first_gift_at/last_gift_at`为最早/最晚接收时间（缺失才回退事件时间），UI明确显示“首次收到”而不是声称精确送出时刻。原始事件时间仍在展开证据内。已有卡片收到第二次礼物只更新数量/证据，不重置status或manual锁。
+
+完整礼物审计和一次AI判断的证据分开：`gift_evidence`不截断；`qualification_evidence`只保留首份有效礼物及最新必要guard/identity，去重后最多3条。卡片主`evidence`由这组资格witness加最近最多9条`status_evidence`组成，总数不超过工具既有12条限制。AI只须回传资格witness并附本次语音，不须复制每一笔送礼。重算保留有界状态证据；更早状态证据仍在history/observations，不删除原始记录。API仍解析完整gift_evidence供审计，但模型上下文只显示gift_receipt_count、统计和有界witness，不传全量礼物引用清单。
+
+待跟进的显示条件是目标礼物已观察、已确认非舰长、且尚未完成跟进。仅观察到点歌不等于完成：song pending/queued仍可留在此栏；同UID有sung/rejected的终态点歌则排除。人工或AI将本卡设为done/dismissed后默认隐藏，显示历史开关可查看仍符合送礼/guard资格的已处理卡。恢复状态由人工决定。
+
+旧版因佩戴粉丝牌生成的 `medal:<uid>` 不转换为送礼卡：重算将其eligible置false，保留原状态、manual锁、证据与history；新规则卡使用独立ID，避免把旧错误判断转移到真实送礼。前端也要求新规则标记，旧卡即使尚未来得及重算也不展示。
+
+人工和 AI 都可把已有送礼待办设为 pending/done/dismissed，只改变显示状态，不决定送礼资格。AI 不可新建灯牌项或改写昵称、标题、eligible、gift/guard字段；必须保留实际礼物和观众来源证据，再附加跟进/完成的语音证据。`status_evidence` 独立保存判断证据，后续资格刷新仍保留；manual 锁、证据版本及卡片版本校验与其他卡片相同。
 
 AI 一轮动作在一个事务内校验：room/session、存在且版本仍一致的证据、目标卡片版本、工具与字段白名单、状态枚举。任何一项失败则整轮回滚。新建卡片 expected_version=0；编辑卡片须等于当前版本。上下文中没提供的卡片不允许模型编辑。人工变更产生 manual 锁，即使后续 AI 看到新版本也不能改；只有人工恢复/改状态能继续调整。撤销是新版本而非版本倒退，仍保留 manual 锁，避免旧推理覆盖。ASR 同 ID 的修订增加证据版本，等待 debounce 后用最新版本替换旧上下文；响应中的旧证据版本会拒绝。
 
@@ -42,6 +54,8 @@ AI 一轮动作在一个事务内校验：room/session、存在且版本仍一�
 
 只在助手响应中生成昵称读音；原名独立保留，快照与欢迎文案不变。`pypinyin` 带声调、heteronym 模式；多音字保留原字并显示候选读音，`candidates` 返回候选，整名标记不确定，不替用户选定读法。通过 Unicode 字名识别扩展区汉字；未收录的𠮷等字保留原字，`unknown` 返回该字，UI标记未知读音；英文不强加拼音。用户 override 优先。读音是显示辅助，不作为 UID 或身份匹配依据。ASR 错字、未采到弹幕、昵称重名、缺失 UID、过期榜单都可能影响判断；显示证据而不声称完整覆盖。卡片历史与证据保存在本地私有运行 DB。
 
+口头赠歌、昵称别名与语音中的对象关联仍有缺口，模型可能误判某人点歌已完成。本次只纠正送礼资格，不实现别名记忆或歌曲识别架构，也不自动批量改写既有完成状态。主线程对已核实的误判用可撤销人工操作修正并留证。
+
 ## 启动与回滚范围
 
 先构建前端；激活本 worktree `.venv`。由主线程注入 `OLLAMA_API_KEY`（只读取环境，不写日志、前端或 Git）。命令示例均为虚构参数：
@@ -58,10 +72,14 @@ worker 首次启动登记场次，serve 可先启动（列表为空）。可加 
 
 部署由主线程执行：在原 supervisor ownership 下启动两进程、验证助手状态，再把既有 Tailscale 8447 代理目标从 8765 切到 8766。无需重启录制、ASR 或 Chrome。回滚把代理切回 8765，回收仅两个新进程，保留助手 DB 以便审计。实现线程不执行这些生产操作。当前范围不包括自动回复、自动欢迎改写、跨场复用画像、多服务协调或对既有采集 schema 的迁移。
 
+本次送礼语义修正部署只需构建前端并重启助手sidecar/worker，沿用同一助手库、room/session/source/since与owner配置；不重启8765、录制、Chrome或ASR。worker首次重算会从已保存的本场证据创建真实礼物卡、隐藏旧佩戴牌卡，cursor/history不删除、不回退。旧卡版本更新可能令在途手工操作返回409，刷新即可。上线应核验新卡gift_evidence、时间/数量和旧卡隐藏情况；无需为本补丁重放真实模型请求。
+
 ## 离线验收结果
 
 `tests/test_assistant.py` 与 `tests/test_assistant_proxy.py` 使用虚构事件和 HTTP mock 检查事件幂等、持久恢复、跨场拒绝、ASR 修订、人工版本保护、全事务回滚、工具契约、超时/预算/owner、下播不可复活，以及流式代理首块和断开资源回收。`frontend/tests/assistant.test.tsx` 检查状态修改、恢复/撤销、证据、读音 override 与冲突提示。
 
 PR19独立审阅后新增 `tests/test_assistant_review.py`，通过真实Store和协议构造旧→当前→后继来源、无session管理占位、旧完整榜单→购买上舰、乱序观测和语音关闭灯牌等场景；还验证旧版误熔断恢复与真正后继保护、medal人工锁和证据版本、异基数游标不作为UI进度对照。
 
-修复后全套 **275项 pytest**、ruff、前端 **11项测试（6 Node + 5 DOM）** 与TypeScript/Vite构建通过。沿用欢迎tick测试并保留原补丁。尚无真实模型或直播语义准确率验收，未做生产切换；PR推送、独立复核和deploy交还主线程。
+送礼语义修正补充了真实Store/旧JSON和V2 protobuf回归：高等级佩戴牌不触发、普通/同名异ID/同ID异名/盲盒不触发、固定场次范围、未知guard等待后续entry/chat、舰长排除、去重与时间/数量、人工完成不复活、旧卡隐藏且history保留。旧回归也已改为先发生目标礼物，不再固化佩戴牌触发的错误预期。
+
+G1另补12/16笔不同tid目标礼物与连续状态更新的真实Store→worker→工具回归，检查有界witness可完成操作、旧全量卡收敛、完整礼物审计及manual保护。修复后全套 **307项 pytest**、ruff通过；无UI改动，复用前轮 **15项前端测试（6 Node + 9 DOM）** 与TypeScript/Vite构建通过结果。沿用欢迎tick测试并保留原补丁。本实现线程未访问生产、未调用真实模型、未做生产切换；独立复核、PR推送和助手重启交还主线程。

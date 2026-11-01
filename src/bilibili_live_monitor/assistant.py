@@ -49,6 +49,29 @@ def observed_time(data):
         return float('-inf')
 
 
+GIFT_FOLLOWUP_RULE = 'fan_club_gift_v1'
+MAX_STATUS_EVIDENCE = 9  # 至多3条资格witness，合计不超过工具的12条上限。
+
+
+def fan_club_gift(item):
+    """只认结构化原子送礼；同名盲盒结果、佩戴牌和文本均不能证明送灯牌。"""
+    gift = item.get('gift')
+    if (item.get('kind') != 'gift' or not isinstance(gift, dict)
+            or gift.get('event_type') not in ('SEND_GIFT', 'SEND_GIFT_V2')
+            or gift.get('gift_id') != '34001' or gift.get('gift_name') != '粉丝团灯牌'
+            or gift.get('blind_gift') is not None
+            or type(gift.get('num')) is not int or gift['num'] <= 0
+            or item.get('identity_status') == 'unresolved'):
+        return None
+    uid, nested_uid = item.get('sender_uid'), gift.get('sender_uid')
+    if uid and nested_uid and uid != nested_uid:
+        return None
+    uid = uid or nested_uid
+    if not isinstance(uid, str) or not uid.isdigit() or int(uid) <= 0:
+        return None
+    return uid, gift['num']
+
+
 class Strict(BaseModel):
     model_config = ConfigDict(extra='forbid', strict=True)
 
@@ -199,21 +222,26 @@ class AssistantStore:
         config = self.get('config')
         if not config:
             return
-        # 最近可识别身份事件；unknown 不覆盖更早的明确字段。
-        users = {}
+        # 资格只由本场目标礼物触发；其它事件只补充同UID身份与guard证据。
+        users, gifts = {}, {}
         for row in self.db.execute('SELECT id,version,data FROM evidence ORDER BY changed'):
             item = json.loads(row['data'])
-            uid = item.get('sender_uid')
+            at = observed_time(item)
+            if (item.get('room_id') != config['room_id'] or item.get('session_id') != config['source_session']
+                    or at < datetime.fromisoformat(config['since']).timestamp()):
+                continue
+            target = fan_club_gift(item)
+            if target:
+                gift_uid, num = target
+                gifts.setdefault(gift_uid, []).append({
+                    'id': row['id'], 'version': row['version'], 'num': num,
+                    'at': item.get('received_utc') or item['at_utc'], 'epoch': at})
+            uid = target[0] if target else item.get('sender_uid')
             if not uid:
                 continue
-            u = users.setdefault(uid, {'author': '', 'medal': None, 'guard': None, 'refs': {},
-                                      'medal_at': float('-inf'), 'guard_at': float('-inf'),
+            u = users.setdefault(uid, {'author': '', 'guard': None, 'refs': {},
+                                      'guard_at': float('-inf'),
                                       'identity_at': float('-inf')})
-            at = observed_time(item)
-            if item.get('medal') is not None and at >= u['medal_at']:
-                u['medal'] = item['medal']
-                u['medal_at'] = at
-                u['refs']['medal'] = {'id': row['id'], 'version': row['version']}
             if type(item.get('guard_level')) is int and at >= u['guard_at']:
                 u['guard'] = item['guard_level']
                 u['guard_at'] = at
@@ -222,11 +250,16 @@ class AssistantStore:
                 u['author'] = item.get('author') or u['author']
                 u['identity_at'] = at
                 u['refs']['identity'] = {'id': row['id'], 'version': row['version']}
-        requested = {c.get('uid') for c in self.cards() if c['kind'] == 'song'}
+        completed = {c.get('uid') for c in self.cards()
+                     if c['kind'] == 'song' and c['status'] in ('sung', 'rejected')}
         members = {str(m.get('sender_uid')) for m in (snapshot or {}).get('members', [])}
         with self.db:
+            # 不把旧佩戴牌卡上的AI结论迁移到实际礼物跟进；原卡和变更历史仍可审计。
+            for old in self.cards():
+                if old['kind'] == 'medal' and old.get('qualification_rule') != GIFT_FOLLOWUP_RULE and old.get('eligible'):
+                    self.save_card({**old, 'eligible': False, 'version': old['version']+1})
             for uid, u in users.items():
-                medal = u['medal'] or {}
+                received = sorted(gifts.get(uid, []), key=lambda g: (g['epoch'], g['id']))
                 guard = u['guard']
                 snapshot_applies = (snapshot and observed_time(snapshot) > u['guard_at']
                                     and (uid in members or snapshot.get('complete')))
@@ -235,18 +268,34 @@ class AssistantStore:
                         guard = 3
                     elif snapshot.get('complete'):
                         guard = 0
-                eligible = (str(medal.get('room_id')) == config['room_id']
-                            and isinstance(medal.get('level'), (int, float)) and medal['level'] > 0
-                            and guard == 0 and uid not in requested)
-                cid = 'medal:'+uid
+                eligible = bool(received) and guard == 0 and uid not in completed
+                cid = 'medal:gift:'+uid
                 old = self.card(cid)
                 if not old and not eligible:
                     continue
                 card = old or {'id': cid, 'kind': 'medal', 'status': 'pending', 'manual': False,
-                               'version': 0, 'title': '尚未观察到点歌', 'uid': uid}
-                refs = list({r['id']: r for r in u['refs'].values()}.values())
-                refs += [r for r in card.get('status_evidence', []) if r not in refs]
-                next_card = {**card, 'author': u['author'], 'eligible': eligible, 'evidence': refs}
+                               'version': 0, 'title': '粉丝团灯牌送礼跟进', 'uid': uid}
+                gift_refs = [{'id': g['id'], 'version': g['version']} for g in received]
+                witness = gift_refs[:1]
+                for ref in u['refs'].values():
+                    if ref not in witness:
+                        witness.append(ref)
+                gift_ids = {r['id'] for r in gift_refs}
+                status_refs = [r for r in card.get('status_evidence', [])
+                               if r not in witness and r['id'] not in gift_ids][-MAX_STATUS_EVIDENCE:]
+                refs = witness + [r for r in status_refs if r not in witness]
+                previous_refs = card.get('evidence', [])
+                ordered_refs = []
+                for ref in previous_refs + refs:
+                    if ref in refs and ref not in ordered_refs:
+                        ordered_refs.append(ref)
+                refs = ordered_refs
+                next_card = {**card, 'author': u['author'], 'eligible': eligible, 'evidence': refs,
+                             'qualification_evidence': witness, 'status_evidence': status_refs,
+                             'qualification_rule': GIFT_FOLLOWUP_RULE, 'gift_evidence': gift_refs,
+                             'gift_quantity': sum(g['num'] for g in received),
+                             'first_gift_at': received[0]['at'] if received else None,
+                             'last_gift_at': received[-1]['at'] if received else None}
                 next_card.pop('guard_observation', None)
                 if snapshot_applies:
                     next_card['guard_observation'] = {
@@ -303,12 +352,20 @@ class AssistantStore:
                         raise Conflict('AI 证据不存在、过期或不在上下文')
                     items.append(ev['data'])
                 if action.kind == 'medal':
-                    required = {r['id'] for r in old['evidence']
-                                if self.evidence(r['id'])['data']['kind'] != 'transcript'}
+                    witness = old['qualification_evidence']
+                    required = {r['id'] for r in witness}
                     if not required.issubset({r['id'] for r in refs}):
-                        raise ValueError('灯牌状态必须保留观众来源证据')
+                        raise ValueError('灯牌状态必须保留资格witness')
+                    gift_ids = {r['id'] for r in old['gift_evidence']}
+                    status_refs = []
+                    for ref in old.get('status_evidence', []) + refs:
+                        if ref not in witness and ref['id'] not in gift_ids:
+                            if ref in status_refs:
+                                status_refs.remove(ref)
+                            status_refs.append(ref)
+                    status_refs = status_refs[-MAX_STATUS_EVIDENCE:]
                     self.save_card({**old, 'status': action.status, 'version': action.expected_version+1,
-                                    'evidence': refs, 'status_evidence': refs})
+                                    'evidence': witness + status_refs, 'status_evidence': status_refs})
                     continue  # 只改待办状态，不接收 AI 的昵称、标题、资格或榜单改写。
                 origin = next((i for i in items if i['kind'] == 'danmaku'), None)
                 if not old and not origin:
@@ -336,7 +393,7 @@ class AssistantStore:
         readings = dict(self.db.execute('SELECT name,reading FROM overrides'))
         cards = [{**c, 'pronunciation': pronunciation(c.get('author', ''), readings.get(c.get('author', '')))}
                  for c in self.cards()]
-        refs = {(r['id'], r['version']) for c in cards for r in c['evidence']}
+        refs = {(r['id'], r['version']) for c in cards for r in c['evidence'] + c.get('gift_evidence', [])}
         evidence = []
         for eid, version in refs:
             row = self.db.execute('SELECT data FROM observations WHERE evidence_id=? AND version=? LIMIT 1',
