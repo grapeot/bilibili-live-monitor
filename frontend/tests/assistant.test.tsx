@@ -59,9 +59,34 @@ describe('助手操作',()=>{
     expect(screen.getByText(/源事件游标：1001；AI 已完成观察序号：2/)).toBeTruthy();
   });
   it('显示多音字候选与扩展汉字未知提示，原名保留',async()=>{
-    card={...card,author:'重𠮷',pronunciation:{text:'重(zhòng / chóng) 𠮷',uncertain:true,override:false,unknown:['𠮷']}};
+    card={...card,author:'重𠮷',pronunciation:{text:'重(zhòng / chóng) 𠮷',uncertain:true,override:false,unknown:['𠮷'],
+      candidates:[{character:'重',readings:['zhòng','chóng']}]}};
     render(<Assistant/>);await screen.findByText('想听歌曲A');
     expect(screen.getByText('重𠮷')).toBeTruthy();
-    expect(screen.getByText(/重\(zhòng \/ chóng\).*读音待确认.*未知读音：𠮷/)).toBeTruthy();
+    expect(screen.getByLabelText('昵称读音').textContent?.trim()).toBe('zhòng 𠮷 · 读音待确认 · 未知读音：𠮷');
+    fireEvent.click(screen.getByText('证据与读音'));
+    expect(screen.getByLabelText('完整读音').textContent).toBe('重(zhòng / chóng) 𠮷');
+    expect(screen.getByText(/不代表读音已确认/)).toBeTruthy();
+  });
+  it('主行只显示每字首候选，详情保留全部候选且不改原数据',async()=>{
+    const pronunciation={text:'余(yú / tú / xú) shēng 余(yú / tú / xú)',uncertain:true,override:false,
+      candidates:[{character:'余',readings:['yú','tú','xú']}]};
+    card={...card,author:'余生余',pronunciation};
+    render(<Assistant/>);await screen.findByText('想听歌曲A');
+    const main=screen.getByLabelText('昵称读音');
+    expect(main.textContent?.trim()).toBe('yú shēng yú · 读音待确认');
+    expect(main.textContent).not.toMatch(/tú|xú|[()]/);
+    const detail=screen.getByLabelText('完整读音');
+    expect(detail.closest('details')?.open).toBe(false);
+    fireEvent.click(screen.getByText('证据与读音'));
+    expect(detail.closest('details')?.open).toBe(true);
+    expect(detail.textContent).toBe(pronunciation.text);
+    expect(pronunciation.candidates[0].readings).toEqual(['yú','tú','xú']);
+  });
+  it('人工覆盖读音不因候选列表而简化',async()=>{
+    card={...card,pronunciation:{text:'余(yú / tú / xú)',uncertain:false,override:true,
+      candidates:[{character:'余',readings:['yú','tú','xú']}]}};
+    render(<Assistant/>);await screen.findByText('想听歌曲A');
+    expect(screen.getByLabelText('昵称读音').textContent?.trim()).toBe('余(yú / tú / xú)');
   });
 });

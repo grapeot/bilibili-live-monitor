@@ -4,7 +4,8 @@ type Scope = {room_id:string;session_id:string;since:string;source_session:strin
 type Ref = {id:string;version:number};
 type Card = {id:string;kind:'chat'|'medal'|'song';title:string;status:string;version:number;
   author:string;uid?:string;manual:boolean;eligible?:boolean;evidence:Ref[];
-  pronunciation:{text:string;uncertain:boolean;override:boolean;unknown?:string[]};guard_observation?:unknown};
+  pronunciation:{text:string;uncertain:boolean;override:boolean;unknown?:string[];
+    candidates?:{character:string;readings:string[]}[]};guard_observation?:unknown};
 type Snapshot = {config:Scope;cards:Card[];evidence:{id:string;version:number;latest_version?:number;data:Record<string,unknown>}[];
   worker:{status?:string;last_error?:string;calls?:number;cursor?:number;ai_cursor?:number;
     pending_observations?:number;last_observation?:number;last_analysis?:number}};
@@ -18,6 +19,13 @@ async function api(path:string, init?:RequestInit){
 const names:Record<string,string>={pending:'待处理',responded:'已回应',dismissed:'已忽略',queued:'待唱',sung:'已唱',rejected:'已拒绝',done:'已完成'};
 const choices={chat:['pending','responded','dismissed'],medal:['pending','done','dismissed'],song:['pending','queued','sung','rejected']};
 const workerNames:Record<string,string>={live:'运行中',paused:'暂停：等待可靠直播状态',ended:'本场已结束',budget_paused:'调用预算已用完',retry_pending:'等待重试'};
+
+function conciseReading(pronunciation:Card['pronunciation']){
+  if(pronunciation.override)return pronunciation.text;
+  return (pronunciation.candidates||[]).reduce((text,candidate)=>candidate.readings.length?
+    text.split(`${candidate.character}(${candidate.readings.join(' / ')})`).join(candidate.readings[0]):text,
+  pronunciation.text);
+}
 
 export function Assistant(){
   const [sessions,setSessions]=useState<Scope[]>([]);
@@ -46,7 +54,7 @@ export function Assistant(){
     finally{setBusy(false)}
   }
   function cardView(card:Card){return <article className="assistant-card" key={card.id}>
-    <p><strong>{card.author||'身份未确认'}</strong>{card.pronunciation.text&&<small className="reading"> {card.pronunciation.text}{card.pronunciation.uncertain?' · 读音待确认':''}{!!card.pronunciation.unknown?.length&&` · 未知读音：${card.pronunciation.unknown.join('、')}`}</small>}</p>
+    <p><strong>{card.author||'身份未确认'}</strong>{card.pronunciation.text&&<small className="reading" aria-label="昵称读音"> {conciseReading(card.pronunciation)}{card.pronunciation.uncertain?' · 读音待确认':''}{!!card.pronunciation.unknown?.length&&` · 未知读音：${card.pronunciation.unknown.join('、')}`}</small>}</p>
     <p>{card.title}</p><p className="room-sub">{card.kind==='song'&&card.status==='pending'?'待确认':names[card.status]}{card.manual?' · 人工确认':''}</p>
     <div className="assistant-actions"><label>状态 <select aria-label={card.title+'状态'} disabled={busy} value={card.status}
       onChange={e=>void mutate('cards/'+encodeURIComponent(card.id),'PATCH',{session,expected_version:card.version,status:e.target.value})}>
@@ -54,6 +62,8 @@ export function Assistant(){
       <button disabled={busy} onClick={()=>void mutate('cards/'+encodeURIComponent(card.id)+'/undo','POST',{session,expected_version:card.version})}>撤销上次状态</button>
     </div>
     <details><summary>证据与读音</summary>
+      {card.pronunciation.text&&<p aria-label="完整读音">{card.pronunciation.text}</p>}
+      {card.pronunciation.uncertain&&<p>主行使用词典首候选供速读，不代表读音已确认；完整候选如上，未知字保留原字，可在下方覆盖读音。</p>}
       {card.evidence.map(ref=>{const e=data?.evidence.find(e=>e.id===ref.id&&e.version===ref.version);return <div key={`${ref.id}:${ref.version}`}>
         <p>证据 {ref.id} · 引用版本 {ref.version}{e?.latest_version&&e.latest_version!==ref.version?' · 已有修订，请复核':''}</p><pre>{JSON.stringify(e?.data,null,2)}</pre></div>})}
       {card.guard_observation!=null&&<pre>{JSON.stringify(card.guard_observation,null,2)}</pre>}

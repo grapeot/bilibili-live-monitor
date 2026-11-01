@@ -27,5 +27,5 @@ form{flex-wrap:wrap}form label{display:flex;align-items:center;gap:6px;white-spa
 .assistant-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
 .assistant-card details{margin-top:14px}
 .assistant-card form{display:flex;flex-wrap:wrap;padding:8px 0;gap:8px}
-.reading{display:block;color:#a6b7cb}
+.reading{display:block;color:#475569;font-size:14px;line-height:1.5}
 @media(max-width:960px){.assistant-columns{grid-template-columns:1fr}}
