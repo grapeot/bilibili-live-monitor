@@ -1,5 +1,6 @@
 import json
 import struct
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 from fastapi.testclient import TestClient
@@ -93,4 +94,37 @@ def test_raw_identity_allows_idempotent_replay_without_collapsing_new_notificati
         store.live_message('123456', row)
     assert store.like_summary('123456') == {'notifications': 2, 'identified_users': 1}
     assert store.db.execute('SELECT count(*) FROM raw_events').fetchone()[0] == 2
+    store.close()
+
+
+def test_historical_total_cannot_overwrite_concurrent_newer_total(tmp_path):
+    path = tmp_path/'monitor.sqlite3'
+    store = Store(path)
+    store.live_message('123456', {'kind': 'like_total', 'reported_total': 100,
+                                 'received_utc': '2026-01-01T10:00:00+00:00'})
+    original_control = store.control
+    futures = []
+
+    def newer():
+        other = Store(path)
+        other.live_message('123456', {'kind': 'like_total', 'reported_total': 300,
+                                     'received_utc': '2026-01-01T10:02:00+00:00'})
+        other.close()
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        def interleaving(key, default=None):
+            result = original_control(key, default)
+            if key.startswith('like_total') and not futures:
+                futures.append(pool.submit(newer))
+                if not store.db.in_transaction:
+                    futures[0].result(timeout=5)
+            return result
+        store.control = interleaving
+        store.live_message('123456', {'kind': 'like_total', 'reported_total': 200,
+                                     'received_utc': '2026-01-01T10:01:00+00:00'})
+        futures[0].result(timeout=5)
+    store.control = original_control
+    assert store.like_summary('123456')['reported_total'] == 300
+    totals = [json.loads(e['data'])['summary']['reported_total'] for e in store.events(0) if e['kind'] == 'likes']
+    assert totals[-1] == 300
     store.close()

@@ -37,6 +37,8 @@ class Store:
             CREATE INDEX IF NOT EXISTS timeline_room_time ON timeline(room_id,at_utc,id);
             CREATE INDEX IF NOT EXISTS timeline_room_received
                 ON timeline(room_id,json_extract(data,'$.received_utc'),id);
+            CREATE INDEX IF NOT EXISTS timeline_likes
+                ON timeline(room_id,json_extract(data,'$.sender_uid')) WHERE kind='like';
         ''')
         # 旧数据库升级时补齐转写时间线；不触发历史SSE重放。
         self.db.execute('''INSERT OR IGNORE INTO timeline(room_id,kind,source_key,at_utc,data)
@@ -98,12 +100,17 @@ class Store:
         now = message.get('received_utc') or utc_now()
         kind = message.get('kind')
         if kind == 'like_total':
-            totals = self.control('like_totals', {})
-            previous = totals.get(room_id)
-            if previous is None or datetime.fromisoformat(now) >= datetime.fromisoformat(previous['observed_utc']):
-                totals[room_id] = {'reported_total': message['reported_total'], 'observed_utc': now}
-                self.save_control('like_totals', totals)
-                self.event('likes', {'room_id': room_id, 'summary': self.like_summary(room_id)})
+            observed = datetime.fromisoformat(now).astimezone(timezone.utc).isoformat(timespec='microseconds')
+            data = json.dumps({'reported_total': message['reported_total'], 'observed_utc': observed})
+            # 条件更新与SSE事件同事务，历史回放不能覆盖另一连接刚提交的新累计值。
+            with self.db:
+                cursor = self.db.execute('''INSERT INTO control(key,data) VALUES(?,?)
+                    ON CONFLICT(key) DO UPDATE SET data=excluded.data
+                    WHERE json_extract(excluded.data,'$.observed_utc') >= json_extract(control.data,'$.observed_utc')''',
+                    (f'like_total:{room_id}', data))
+                if cursor.rowcount:
+                    self.db.execute("INSERT INTO events(kind,data) VALUES('likes',?)",
+                        (json.dumps({'room_id': room_id, 'summary': self.like_summary(room_id)}, ensure_ascii=False),))
             return
         if kind in ('raw_event', 'transport'):
             health = self.control('message_health', {})
@@ -144,7 +151,7 @@ class Store:
     def like_summary(self, room_id):
         count, users = self.db.execute("SELECT count(*),count(DISTINCT json_extract(data,'$.sender_uid')) "
                                       "FROM timeline WHERE room_id=? AND kind='like'", (room_id,)).fetchone()
-        return {**self.control('like_totals', {}).get(room_id, {}),
+        return {**self.control(f'like_total:{room_id}', {}),
                 'notifications': count, 'identified_users': users}
 
     def guard_snapshot(self, snapshot):
