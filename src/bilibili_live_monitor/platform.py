@@ -79,8 +79,10 @@ class Platform:
                 candidate['attempts'] = old['reconnect_attempts']
             candidate['next_attempt'] = max(candidate.get('next_attempt', 0),
                                             time.time()+remaining_delay(old.get('next_retry_utc')))
-            if refused(old.get('error') or '') or 'retry_exhausted:' in (old.get('error') or ''):
-                candidate.update(blocked=True, selected=False, last_error=old['error'])
+            if (refused(old.get('error') or '') or 'retry_exhausted:' in (old.get('error') or '')
+                    or old.get('reconnect_attempts', 0) >= self.settings.max_reconnects):
+                candidate.update(blocked=True, selected=False,
+                                 last_error=old.get('error') or 'retry_exhausted: 重试预算已耗尽')
             if self.policy.mode == 'fixed':
                 candidate.update(live_status=None, offline_checks=0, watch_state='unknown')
         self.active, self.launching = {}, {}
@@ -343,8 +345,12 @@ class Platform:
         if refused(error) or 'retry_exhausted:' in error or candidate['attempts'] >= self.settings.max_reconnects:
             candidate['blocked'] = True
             candidate['watch_state'] = 'attention'
+        if candidate['blocked'] and not refused(error) and 'retry_exhausted:' not in error:
+            error = f'retry_exhausted: 连续失败{candidate["attempts"]}次；{error}'
+            candidate['last_error'] = error
         if room:
             room.update(reconnect_attempts=candidate['attempts'],
+                        error=error, status='error',
                         next_retry_utc=None if candidate['blocked'] else datetime.fromtimestamp(
                             candidate['next_attempt'], timezone.utc).isoformat())
             self.store.room(room)

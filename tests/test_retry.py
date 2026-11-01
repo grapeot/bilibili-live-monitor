@@ -318,3 +318,28 @@ async def test_real_stable_pcm_zero_wins_over_stale_candidate_on_restart(tmp_pat
     assert current['attempts'] == 1 and not current['blocked']
     await monitor.close()
     store.close()
+
+
+@pytest.mark.parametrize(('count','error'), [(19,'startup timeout'), (0,'recording_refused: HTTP 403'),
+                                           (0,'HTTP 412'), (0,'HTTP 429')])
+def test_crash_between_retry_room_and_candidate_commits_keeps_terminal_lock(tmp_path,monkeypatch,count,error):
+    store = Store(tmp_path/'test.db')
+    monitor = Monitor(Settings(data_dir=tmp_path),store)
+    platform = Platform(monitor)
+    platform.import_candidates([Candidate(url='123456')])
+    c = next(iter(platform.candidates.values()))
+    c.update(room_id='123456',attempts=count,blocked=False)
+    platform.save()
+    store.room({'room_id':'123456','url':c['url'],'status':'stopped',
+                'reconnect_attempts':count,'error':None})
+    def crash():
+        raise SystemExit('crash after room commit')
+    monkeypatch.setattr(platform,'save',crash)
+    with pytest.raises(SystemExit):
+        platform.failed(c,error)
+    restored = Platform(monitor)
+    recovered = next(iter(restored.candidates.values()))
+    assert recovered['blocked']
+    assert recovered['attempts'] == count+1
+    assert recovered['last_error']
+    store.close()
