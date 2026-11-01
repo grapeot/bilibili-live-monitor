@@ -38,5 +38,5 @@ def interaction_data(data):
     return {'uid': event.uinfo.uid or event.uid,
             'uname': event.uinfo.base.name or event.username,
             'is_mystery': event.uinfo.base.is_mystery,
-            'msg_type': event.msg_type, 'timestamp': event.timestamp,
+            'msg_type': event.msg_type, 'timestamp': event.timestamp, 'timestamp_ms': event.timestamp_ms,
             'trigger_time': event.trigger_time, 'guard_level': event.guard_type}

@@ -71,6 +71,21 @@ def test_legacy_entry_received_time_fallback_and_effect_not_double_counted():
     assert len(messages(frame(old)+frame(effect))) == 1
 
 
+def test_millisecond_only_timestamp_and_distinct_anonymous_entries():
+    payload = field(1, 123)+field(2, b'synthetic')+field(5, 1)+field(8, 1792700000123)
+    p = {'cmd': 'INTERACT_WORD_V2', 'data': {'pb': base64.b64encode(payload).decode()}}
+    item = messages(frame(p))[0]
+    assert item['at_utc'] == '2026-10-22T20:13:20.123000+00:00'
+    assert item['entry']['time_source'] == 'event'
+    first = {'cmd': 'INTERACT_WORD', 'data': {'uid': 123, 'uname': 'synthetic1',
+             'msg_type': 1, 'timestamp': 1792700000, 'is_mystery': True}}
+    second = {'cmd': first['cmd'], 'data': {**first['data'], 'uid': 456, 'uname': 'synthetic2'}}
+    a, b = messages(frame(first)+frame(second))
+    assert a['source_key'] != b['source_key']
+    assert a['sender_uid'] is b['sender_uid'] is None
+    assert a['author'] == b['author'] == '神秘人'
+
+
 def test_entry_persists_replay_dedup_reentry_and_api_contract(tmp_path):
     store = Store(tmp_path/'monitor.sqlite3')
     store.room({'room_id': '123456', 'url': 'https://live.bilibili.com/123456',

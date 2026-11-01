@@ -162,10 +162,10 @@ def entry_message(packet):
     author = '神秘人' if anonymous else str(base.get('name') or data.get('uname') or data.get('username') or '')[:200]
     if not author and not identity['sender_uid']:
         return None
-    timestamp = integer(data.get('timestamp') or 0)
+    timestamp = integer(data.get('timestamp_ms') or data.get('timestamp') or 0)
     at = event_time(timestamp) if timestamp else datetime.now(timezone.utc).isoformat()
     fields = [identity['sender_uid'], timestamp, str(data.get('trigger_time') or ''), author]
-    if not timestamp:
+    if anonymous or not timestamp:
         fields.append(data)
     key = 'entry:' + hashlib.sha256(json.dumps(fields, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
     return {'kind': 'entry', 'author': author or '未命名用户', 'text': '进入直播间',
