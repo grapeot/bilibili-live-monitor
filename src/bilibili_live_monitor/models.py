@@ -35,6 +35,8 @@ class SegmentResponse(BaseModel):
 
 
 class RoomResponse(BaseModel):
+    reconnect_attempts: int = 0
+    next_retry_utc: str | None = None
     record_mode: Literal['none', 'audio', 'video'] = 'audio'
     asr_enabled: bool = False
     preview_enabled: bool = False

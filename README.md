@@ -69,6 +69,8 @@ SQLite完整存储 `segments`、`timeline` 和SSE事件，不因页面显示窗�
 
 - `GET /api/state`：房间、最近20段识别数据、80条时间线及运行指标。
 - `POST /api/rooms`：如 `{"url":"123456","asr_enabled":true}`。旧`chunk_seconds`参数兼容接收，但实时流式输入固定5秒。
+
+断流恢复默认等待2、4、8秒逐步翻倍，上限300秒；达到上限后每5分钟重试，连续20次失败后明确停止自动重试。连续有效采集60秒才清零，短暂恢复不重置预算。`MAX_RECONNECTS`、`RETRY_DELAY`、`RETRY_MAX_DELAY`可配置；明确接口拒绝仍需人工处理。浏览器保留一张空白保活页，避免关闭最后一个直播页后连查播上下文也消失。
 - `POST /api/rooms/123456/stop`：停止并取消本房间排队与识别任务。
 - `GET /api/events`：SSE，支持Last-Event-ID重连。
 - `GET /api/export`：完整混合时间线JSONL，可加 `?room_id=123456`。

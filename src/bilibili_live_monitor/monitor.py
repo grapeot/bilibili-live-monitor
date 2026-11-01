@@ -13,6 +13,7 @@ from .browser import Browser, close_page, ensure_playing, room_url
 from .capture import close_pcm, read_pcm, start_pcm
 from .preview import Previews
 from .recording import Recording
+from .retry import backoff_delay, remaining_delay
 
 PAGE_INSPECTION_SCRIPT = '''pause => {
     if(pause&&!window.__liveMonitorPauseGuard){
@@ -134,7 +135,8 @@ class Monitor:
                 'asr_restarts': self.asr.restart_count, 'asr_retries': self.asr.retry_count,
                 'asr_error': self.asr.last_error}
 
-    async def add(self, value, seconds, *, record_mode=None, asr_enabled=None, preview_enabled=None):
+    async def add(self, value, seconds, *, record_mode=None, asr_enabled=None, preview_enabled=None,
+                  retry_attempts=0):
         seconds = 5  # 实时采音固定每5秒送入流式上下文；旧API参数不再控制独立切片。
         options = {'record_mode': self.settings.record_mode if record_mode is None else record_mode,
                    'asr_enabled': self.settings.asr_enabled if asr_enabled is None else asr_enabled,
@@ -174,8 +176,10 @@ class Monitor:
                 chat_context.update(room_id=room_id, generation=generation)
                 previous.update(next((r for r in self.store.rooms() if r['room_id'] == room_id), {}))
                 self.store.room({**previous, 'room_id': room_id, 'url': room_url(resolved_page.url),
+                                 'source_url': url,
                                  'title': room_id, 'cover_url': '',
-                                  'chunk_seconds': seconds, 'status': 'reconnecting',
+                                   'chunk_seconds': seconds, 'status': 'reconnecting',
+                                   'reconnect_attempts': max(previous.get('reconnect_attempts', 0), retry_attempts),
                                   'error': None, 'muted': True, 'cycle_notice': False, **options})
                 for message in chat_buffer:
                     on_danmaku(message)
@@ -187,6 +191,10 @@ class Monitor:
                                     f'startup-gap:{generation}')
 
         try:
+            saved = next((r for r in self.store.rooms() if r.get('url') == url or r.get('source_url') == url or
+                          r['room_id'] == url.rsplit('/', 1)[-1]), {})
+            if delay := remaining_delay(saved.get('next_retry_utc')):
+                await asyncio.sleep(delay)
             page = await self.browser.page(url, on_danmaku=on_danmaku, on_resolved=on_resolved,
                                            require_playback=options['asr_enabled'] or options['preview_enabled'])
             canonical = room_url(page.url)
@@ -205,12 +213,14 @@ class Monitor:
                                document.querySelector('video')?.poster || ''}}''')
                 if self.generations.get(room_id) != chat_context['generation']:
                     raise ValueError('房间启动已取消')
-                room = {'room_id': room_id, 'url': canonical, **metadata, 'chunk_seconds': seconds,
+                room = {'room_id': room_id, 'url': canonical, 'source_url': url, **metadata, 'chunk_seconds': seconds,
                          'status': 'capturing', 'error': None, 'muted': True,
                          'cycle_notice': False, **options, 'recording_status': 'disabled' if options['record_mode'] == 'none' else 'starting',
-                          'recorded_seconds': previous.get('recorded_seconds', 0),
-                          'recording_files': previous.get('recording_files', 0),
-                          'recording_bytes': previous.get('recording_bytes', 0)}
+                           'recorded_seconds': previous.get('recorded_seconds', 0),
+                           'recording_files': previous.get('recording_files', 0),
+                           'recording_bytes': previous.get('recording_bytes', 0),
+                           'reconnect_attempts': max(previous.get('reconnect_attempts', 0), retry_attempts),
+                           'next_retry_utc': previous.get('next_retry_utc')}
                 if previous.get('recording_session'):
                     room['recording_session'] = previous['recording_session']
                 self.store.room(room)
@@ -245,24 +255,58 @@ class Monitor:
 
     async def capture(self, room, page, generation):
         room_id = room['room_id']
-        self.failures[room_id] = 0
+        self.failures[room_id] = room.get('reconnect_attempts', 0)
         try:
+            if delay := remaining_delay(room.get('next_retry_utc')):
+                await asyncio.sleep(delay)
             reconnect = False
             while self.generations.get(room_id) == generation:
                 try:
                     if reconnect:
-                        delay = min(30, self.settings.retry_delay * 2 ** (self.failures[room_id] - 1))
+                        delay = backoff_delay(self.failures[room_id], self.settings.retry_delay,
+                                              self.settings.retry_max_delay)
                         await asyncio.sleep(delay)
-                        page.recording_url = None
-                        page.chat_last_frame = time.monotonic()
-                        response = await page.reload(wait_until='domcontentloaded', timeout=30000)
-                        if response and response.status in (403, 412, 429):
-                            raise RuntimeError(f'recording_refused: HTTP {response.status}')
-                        if room.get('asr_enabled', True) or room.get('preview_enabled'):
-                            await page.wait_for_function(
-                                'document.querySelector("video")?.readyState >= 2', timeout=30000)
-                            await ensure_playing(page)
-                        room.update(status='capturing', error=None)
+                        if page.is_closed():
+                            if self.pages.get(room_id) is page:
+                                self.pages.pop(room_id, None)
+                            buffered, validated = [], False
+                            dropped = 0
+                            def on_message(message):
+                                nonlocal dropped
+                                if self.generations.get(room_id) == generation:
+                                    if validated:
+                                        self.store.live_message(room_id, {**message, 'session_id': generation})
+                                    elif len(buffered) < 200:
+                                        buffered.append(message)
+                                    else:
+                                        dropped += 1
+                            replacement = await self.browser.page(room['url'], on_danmaku=on_message,
+                                require_playback=room.get('asr_enabled', True) or room.get('preview_enabled'))
+                            try:
+                                if room_url(replacement.url).rsplit('/', 1)[-1] != room_id:
+                                    raise RuntimeError('恢复页面跳转到其他房间')
+                            except BaseException:
+                                await close_page(replacement)
+                                raise
+                            page = replacement
+                            self.pages[room_id] = page
+                            validated = True
+                            for message in buffered:
+                                on_message(message)
+                            buffered.clear()
+                            if dropped:
+                                self.store.event('reconnect_message_gap', {'room_id': room_id, 'dropped': dropped})
+                        else:
+                            page.recording_url = None
+                            page.chat_last_frame = time.monotonic()
+                            response = await page.reload(wait_until='domcontentloaded', timeout=30000)
+                            if response and response.status in (403, 412, 429):
+                                raise RuntimeError(f'recording_refused: HTTP {response.status}')
+                            if room.get('asr_enabled', True) or room.get('preview_enabled'):
+                                await page.wait_for_function(
+                                    'document.querySelector("video")?.readyState >= 2', timeout=30000)
+                                await ensure_playing(page)
+                        room.update(status='capturing', error=None, next_retry_utc=None)
                         self.store.room(room)
                     await self.session_cycles(room, page, generation)
                 except asyncio.CancelledError:
@@ -270,9 +314,16 @@ class Monitor:
                 except Exception as error:
                     self.failures[room_id] += 1
                     exhausted = ('recording_refused' in str(error) or
-                                 self.failures[room_id] >= self.settings.max_reconnects)
+                                  self.failures[room_id] >= self.settings.max_reconnects)
+                    delay = backoff_delay(self.failures[room_id], self.settings.retry_delay,
+                                          self.settings.retry_max_delay)
+                    reason = f'{type(error).__name__}: {error}'
+                    if exhausted and 'recording_refused' not in str(error):
+                        reason = f'retry_exhausted: 连续失败{self.failures[room_id]}次；{reason}'
                     room.update(status='error' if exhausted else 'reconnecting',
-                                error=f'{type(error).__name__}: {error}')
+                                reconnect_attempts=self.failures[room_id],
+                                next_retry_utc=None if exhausted else iso_ms((time.time()+delay)*1000),
+                                error=reason)
                     self.store.room(room)
                     if exhausted:
                         break
@@ -329,6 +380,8 @@ class Monitor:
                 if (recorder is not None and not reset_budget and time.monotonic()-healthy_started >= 60 and
                         recorder.progress_seconds >= 60):
                     self.failures[room['room_id']] = 0
+                    room.update(reconnect_attempts=0, next_retry_utc=None)
+                    self.store.room(room)
                     reset_budget = True
                 if not room.get('asr_enabled', True) and not room.get('preview_enabled'):
                     # 保留网页弹幕WebSocket，暂停本地视频解码；录制由ffmpeg独立拉流。
@@ -418,7 +471,11 @@ class Monitor:
                 self.submit(segment, pcm, generation)
                 offset += len(pcm)//2
                 if room.get('record_mode', 'none') == 'none':
-                    self.failures[room_id] = 0  # 纯ASR通路以通过校验的完整PCM窗口作为恢复标准。
+                    # 短暂恢复不清零，连续有效采集60秒才重置失败预算。
+                    if offset >= 16000*60 and self.failures[room_id]:
+                        self.failures[room_id] = 0
+                        room.update(reconnect_attempts=0, next_retry_utc=None)
+                        self.store.room(room)
         finally:
             self.finish_stream(stream_id, generation)
             if not page.is_closed():
