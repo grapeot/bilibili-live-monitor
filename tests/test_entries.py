@@ -71,7 +71,8 @@ def test_legacy_entry_received_time_fallback_and_effect_not_double_counted():
     assert len(messages(frame(old)+frame(effect))) == 1
 
 
-def test_millisecond_only_timestamp_and_distinct_anonymous_entries():
+def test_millisecond_only_timestamp_and_distinct_anonymous_entries(monkeypatch):
+    monkeypatch.setattr('bilibili_live_monitor.danmaku.time.time', lambda: 1792700000)
     payload = field(1, 123)+field(2, b'synthetic')+field(5, 1)+field(8, 1792700000123)
     p = {'cmd': 'INTERACT_WORD_V2', 'data': {'pb': base64.b64encode(payload).decode()}}
     item = messages(frame(p))[0]
@@ -84,6 +85,18 @@ def test_millisecond_only_timestamp_and_distinct_anonymous_entries():
     assert a['source_key'] != b['source_key']
     assert a['sender_uid'] is b['sender_uid'] is None
     assert a['author'] == b['author'] == '神秘人'
+
+
+def test_conflicting_milliseconds_do_not_move_entry_hours_into_future(monkeypatch):
+    monkeypatch.setattr('bilibili_live_monitor.danmaku.time.time', lambda: 1792700000)
+    payload = (field(1, 123)+field(2, b'synthetic')+field(5, 1)
+               +field(7, 1792700000)+field(8, 1792717100123))
+    p = {'cmd': 'INTERACT_WORD_V2', 'data': {'pb': base64.b64encode(payload).decode()}}
+    item = messages(frame(p))[0]
+    assert item['at_utc'] == '2026-10-22T20:13:20+00:00'
+    assert item['entry']['time_field'] == 'timestamp'
+    p['data']['pb'] = base64.b64encode(field(1, 123)+field(5, 1)+field(8, 1792717100123)).decode()
+    assert messages(frame(p))[0]['entry']['time_source'] == 'received'
 
 
 def test_entry_persists_replay_dedup_reentry_and_api_contract(tmp_path):

@@ -2,6 +2,7 @@
 import hashlib
 import json
 import struct
+import time
 import zlib
 from collections import Counter
 from datetime import datetime, timezone
@@ -162,7 +163,12 @@ def entry_message(packet):
     author = '神秘人' if anonymous else str(base.get('name') or data.get('uname') or data.get('username') or '')[:200]
     if not author and not identity['sender_uid']:
         return None
-    timestamp = integer(data.get('timestamp_ms') or data.get('timestamp') or 0)
+    seconds = integer(data.get('timestamp') or 0)
+    millis = integer(data.get('timestamp_ms') or 0)
+    # 真实消息的timestamp_ms可能偏离数小时；只有与秒字段一致才用其精度。
+    # 秒字段缺失时，毫秒字段还须接近本机接收时钟，否则标为接收时间。
+    matching_ms = millis and (millis//1000 == seconds if seconds else abs(millis/1000-time.time()) <= 60)
+    timestamp = millis if matching_ms else seconds
     at = event_time(timestamp) if timestamp else datetime.now(timezone.utc).isoformat()
     fields = [identity['sender_uid'], timestamp, str(data.get('trigger_time') or ''), author]
     if anonymous or not timestamp:
@@ -172,7 +178,8 @@ def entry_message(packet):
             'at_utc': at, 'source_key': key, **identity,
             'guard_level': guard_level(data.get('guard_level', data.get('guard_type'))),
             'guard_source': 'interaction_event',
-            'entry': {'event_type': packet['cmd'], 'time_source': 'event' if timestamp else 'received'}}
+            'entry': {'event_type': packet['cmd'], 'time_source': 'event' if timestamp else 'received',
+                      'time_field': 'timestamp_ms' if matching_ms else 'timestamp' if seconds else None}}
 
 
 def messages(frame, *, include_raw=False):
