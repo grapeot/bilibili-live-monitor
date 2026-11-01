@@ -144,7 +144,11 @@ class Store:
                                at_utc=raw[2], received_utc=raw[2])
             self.item({**message, 'room_id': room_id}, message['source_key'])
             if kind == 'like':
-                self.event('likes', {'room_id': room_id, 'summary': self.like_summary(room_id)})
+                with self.db:
+                    self.db.execute('BEGIN IMMEDIATE')
+                    summary = self.like_summary(room_id)
+                    self.db.execute("INSERT INTO events(kind,data) VALUES('likes',?)",
+                                    (json.dumps({'room_id': room_id, 'summary': summary}, ensure_ascii=False),))
         else:
             self.danmaku(room_id, message)
 
