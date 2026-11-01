@@ -1,0 +1,54 @@
+import React from 'react';
+import {afterEach, beforeEach, describe, expect, it, vi} from 'vitest';
+import {cleanup, fireEvent, render, screen, waitFor} from '@testing-library/react';
+import {Assistant} from '../src/Assistant';
+
+const scope={room_id:'123456',session_id:'session',since:'2030-01-01T00:00:00Z',source_session:'generation'};
+let card:Record<string,unknown>;
+let requests:{url:string;body?:Record<string,unknown>}[];
+beforeEach(()=>{
+  card={id:'chat:1',kind:'chat',title:'想听歌曲A',status:'pending',version:1,author:'用户A',manual:false,
+    evidence:[{id:'1',version:1}],pronunciation:{text:'yòng hù A',uncertain:true,override:false}};
+  requests=[];
+  vi.stubGlobal('fetch',vi.fn(async(url:string,init?:RequestInit)=>{
+    const body=init?.body?JSON.parse(String(init.body)):undefined;requests.push({url,body});
+    if(url.endsWith('/sessions'))return {ok:true,json:async()=>[scope]};
+    if(url.includes('/cards/')){card={...card,status:body.status||'pending',version:Number(card.version)+1,manual:true};return {ok:true,json:async()=>card}}
+    if(url.endsWith('/pronunciation'))return {ok:true,json:async()=>({ok:true})};
+    return {ok:true,json:async()=>({config:scope,cards:[card],evidence:[{id:'1',version:1,data:{text:'想听歌曲A',author:'用户A'}}],worker:{status:'live'}})};
+  }));
+});
+afterEach(()=>{cleanup();vi.unstubAllGlobals()});
+describe('助手操作',()=>{
+  it('显示三栏、原名与读音，并用版本操作和恢复',async()=>{
+    render(<Assistant/>);
+    await screen.findByText('想听歌曲A');
+    expect(screen.getByText('用户A')).toBeTruthy();
+    expect(screen.getByText(/读音待确认/)).toBeTruthy();
+    expect(screen.getByText('灯牌观众')).toBeTruthy();
+    expect(screen.getByText('点歌单')).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('想听歌曲A状态'),{target:{value:'responded'}});
+    await waitFor(()=>expect(requests.some(r=>r.body?.expected_version===1&&r.body?.status==='responded')).toBe(true));
+    await waitFor(()=>expect(screen.queryByText('想听歌曲A')).toBeNull());
+    fireEvent.click(screen.getByLabelText('显示已完成 / 已忽略，供恢复或撤销'));
+    await screen.findByText('想听歌曲A');
+    fireEvent.click(screen.getByText('撤销上次状态'));
+    await waitFor(()=>expect(requests.some(r=>r.url.endsWith('/undo')&&r.body?.expected_version===2)).toBe(true));
+  });
+  it('展开真实证据并保存读音覆盖',async()=>{
+    render(<Assistant/>);await screen.findByText('想听歌曲A');
+    fireEvent.click(screen.getByText('证据与读音'));
+    expect(screen.getByText(/证据 1/)).toBeTruthy();
+    fireEvent.change(screen.getByLabelText('用户A读音覆盖'),{target:{value:'yòng hù A'}});
+    fireEvent.click(screen.getByText('保存读音'));
+    await waitFor(()=>expect(requests.some(r=>r.url.endsWith('/pronunciation')&&r.body?.reading==='yòng hù A')).toBe(true));
+  });
+  it('版本冲突保持错误可见并刷新',async()=>{
+    const original=fetch;
+    vi.stubGlobal('fetch',vi.fn(async(url:string,init?:RequestInit)=>url.includes('/cards/')?
+      {ok:false,json:async()=>({detail:'卡片已经更新，请刷新后重试'})}:original(url,init)));
+    render(<Assistant/>);await screen.findByText('想听歌曲A');
+    fireEvent.change(screen.getByLabelText('想听歌曲A状态'),{target:{value:'responded'}});
+    expect(await screen.findByRole('alert')).toHaveProperty('textContent','卡片已经更新，请刷新后重试');
+  });
+});

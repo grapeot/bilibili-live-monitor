@@ -1,5 +1,19 @@
 # 工作记录
 
+## 直播助手与独立 sidecar（2026-11-01）
+- 设计与实现由 GPT-6.1 SOL 完成，产品 runtime 默认 Ollama Cloud `deepseek-v4.1-flash`、`think:false`。设计、schema、工具契约、盲区和部署回滚见 `docs/live_assistant_design.md`。
+- 新增独立助手状态库、只读事件 worker 和 FastAPI sidecar。固定 room/session/since/source generation，保存原始观察副本与证据修订、读取/AI双 cursor；工具操作使用原子校验和版本锁，人工操作永久优先。超时、非法响应、状态变化不推进 AI 完成进度；可配置调用频率、预算、上下文大小、owner PID/create_time。
+- 快照为默认页且持续保留其现有组件，助手可按已配置房间切换，支持未回应弹幕、符合条件的灯牌观众、点歌单、状态修改/恢复/撤销及证据展开。昵称带声调拼音和人工 override 只用于助手，原名与欢迎文案保留。unknown 舰长身份不纳入灯牌名单。
+- sidecar 提供新前端与助手 API，其他 API 流式代理到原后端，覆盖请求 body/query、SSE、断开关闭连接与资源采样文件透传。CLI 分开启动 serve/worker，每个 worker 独占一库，多房间可重复传 `serve --db`。不导入或操作现有后端/浏览器生命周期。
+- 验证：全套 `pytest -q --basetemp=.local/pytest-assistant-validation` **264 passed**（包含原14项欢迎tick测试）；`ruff check src tests`、`git diff --check` 通过；`npm test` 为既有6项与新增3项DOM操作测试全部通过；`npm run build` 通过；两个CLI子命令 `--help` 通过。新增32项后端用例覆盖幂等、重启cursor、跨场/跨房、ASR版本、人工保护、非法schema、runtime mock、超时/预算/下播/owner、源库误写拒绝、API及流式代理。
+- 测试与构建全部使用合成数据和 mock；未访问生产 Chrome/API/DB，未调用真实外部模型，未 commit/push/PR/merge/deploy。已部署欢迎tick的三文件改动完整保留。独立review与部署仍由主线程执行。
+- 已知覆盖边界：固定 source generation 改变后保守暂停；模型上下文为当前增量关联卡片加最近80项其他待办、8段语音，历史全部保存但更早待办可能需要人工关联。实际直播语义准确率和生产切换尚未验证。
+
+## 欢迎冷却到期的周期判定（2026-11-01）
+- `WelcomeDecision.tick(now)`与新UID观察共用门槛、窗口清理和一次性领取状态。循环每轮在处理增量后检查，冷却期间290/295秒积累的两名有效候选可在300秒无新报文时触发；窗口恰好30秒仍有效，乱序接收时间中的过期候选也会清除。
+- 保留本场首次观察身份、调用方传入的minimum/window/cooldown、单次退出与连续批次、发送前账本、失败不重发和开播检查。周期触发的`trigger_raw_id`记录最后消费的游标，不表示该报文刚刚到达。未扩大解析命令或错误恢复范围。
+- 新增14项离线测试，包含周期执行链、无第三人触发、三批冷却、过期/少于门槛/身份去重、暂停恢复后窗口过期、下播及发送前状态变化、失败后禁止重启。全套232项pytest、ruff、Python sdist/wheel及前端TypeScript/Vite构建通过；仅使用合成测试数据库与浏览器/发送替身。
+
 ## 单场持续欢迎与下播退出（2026-11-01）
 - 用户授权当前一间直播：30秒至少2个本场首次观察UID，欢迎批次之间至少300秒，复用已批准文案。本场下播后结束全部录制、转写和欢迎，不再随下次开播恢复。
 - 单次欢迎CLI保留；新增单场CLI，持续消费同一观察流，成功后保留seen并清空已欢迎窗口，继承此前测试的成功时间计算冷却。状态未知或首次离线暂停发送，只有新鲜的两次离线确认才结束；部分发送不自动重试。

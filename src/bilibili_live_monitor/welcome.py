@@ -58,8 +58,13 @@ class WelcomeDecision:
             return None
         self.seen.add(uid)
         self.pending.append((received, uid, name))
-        while self.pending and self.pending[0][0] < now-self.window:
-            self.pending.popleft()
+        return self.tick(now)
+
+    def tick(self, now):
+        """冷却到期也检查候选；领取后须由sent显式开启下一批。"""
+        if self.fired:
+            return None
+        self.pending = deque(entry for entry in self.pending if entry[0] >= now-self.window)
         if len(self.pending) < self.minimum or (self.last_sent is not None and now-self.last_sent < self.cooldown):
             return None
         self.fired = True
@@ -286,6 +291,7 @@ async def run_welcome(database: Path, room_id: str, cdp_url: str, state_path: Pa
                         if activity != 'live':
                             await asyncio.sleep(1)
                             continue
+                    entrants = None
                     for rid, received, raw in db.execute("SELECT id,received_utc,data FROM raw_events WHERE room_id=? AND id>? AND julianday(received_utc)>=julianday(?) ORDER BY id", (room_id,cursor,since)).fetchall():
                         cursor = rid
                         try:
@@ -301,11 +307,14 @@ async def run_welcome(database: Path, room_id: str, cdp_url: str, state_path: Pa
                             continue
                         entrants = decision.observe(item['sender_uid'], item['author'],
                                                     datetime.fromisoformat(received).timestamp(), time.time())
-                        if not entrants:
-                            continue
+                        if entrants:
+                            break
+                    # 无新事件或只有已见UID时也判定；与observe共用一次性领取状态。
+                    entrants = entrants or decision.tick(time.time())
+                    if entrants:
                         texts = welcome_messages([e[2] for e in entrants], limit)
                         status.update(status='sending', target_uids=[e[1] for e in entrants],
-                                      trigger_raw_id=rid, messages=texts, acknowledgments=[], limit=limit)
+                                      trigger_raw_id=cursor, messages=texts, acknowledgments=[], limit=limit)
                         save(state_path, status)  # 先留发送意图，异常退出后不可自动重发。
                         try:
                             for text in texts:

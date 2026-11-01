@@ -3,6 +3,7 @@ import {createRoot} from 'react-dom/client';
 import './style.css';
 import {giftLabel, giftText, type Gift} from './gifts';
 import {transcriptLabel} from './transcripts';
+import {Assistant} from './Assistant';
 
 type Segment = {seq:number; start_utc:string; end_utc:string; text:string; status:string;
   queue_wait_ms:number; infer_ms:number; rms_dbfs:number; error:string|null; coverage_ratio?:number|null};
@@ -164,7 +165,7 @@ const RoomCard = React.memo(function RoomCard({room,status,onError}:{room:Room;s
     </div></article>;
 });
 
-function App(){
+function SnapshotApp(){
   const [state,setState] = useState<State>({rooms:[],queue_depth:0,queue_capacity:20,asr_ready:false,asr_enabled:false,overload_count:0,inflight:null,active_count:0,pending_count:0,asr_restarts:0,asr_retries:0,asr_error:null});
   const [recordMode,setRecordMode]=useState('audio');
   const [asrEnabled,setAsrEnabled]=useState(false);
@@ -242,5 +243,12 @@ function App(){
     <section className="grid">{state.rooms.map(room=><RoomCard key={room.room_id} room={room} status={room.status==='capturing'&&state.inflight?.room_id===room.room_id?'transcribing':room.status} onError={setError}/>)}</section>
     <p className="footnote">每房间显示最近80条弹幕、礼物与转写；完整时间线保存于本地SQLite，可导出JSONL。付费金额统一显示电池（100金瓜子＝1电池，1元＝10电池）；免费礼物仍显示银币。盲盒花费与抽中礼物单价分列，均不代表主播净收入；导出保留协议原始单位。游戏声和背景音乐可能造成误识别。</p>
   </main>;
+}
+export function App(){
+  const [page,setPage]=useState<'snapshot'|'assistant'>('snapshot');
+  return <><nav className="top-nav" aria-label="页面">
+    <button aria-pressed={page==='snapshot'} onClick={()=>setPage('snapshot')}>快照</button>
+    <button aria-pressed={page==='assistant'} onClick={()=>setPage('assistant')}>直播助手</button>
+  </nav><div hidden={page!=='snapshot'}><SnapshotApp/></div>{page==='assistant'&&<main><Assistant/></main>}</>;
 }
 createRoot(document.getElementById('root')!).render(<React.StrictMode><App/></React.StrictMode>);
