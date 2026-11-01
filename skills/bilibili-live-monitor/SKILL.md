@@ -60,6 +60,8 @@ python -m bilibili_live_monitor run --until 2030-01-01T22:00:00-08:00
 
 发送链路支持浏览器实际使用的UTF-8 multipart表单及URLencoded表单；重复目标/文案字段拒绝发送。仅发送期间对目标页临时绕过Service Worker，确保请求经过校验，结束恢复原生SW处理并分离CDP会话。页面上限按ASCII宽1、非ASCII每UTF-16单元宽2计数；组合超限才拆两条，间隔5秒。完成后同时检查平台HTTP/code回执与采集到的完整弹幕回显，区分已确认、未确认和仅点击按钮。
 
+`scripts/welcome_session.py`仅在用户明确授权持续欢迎后使用，默认仍dry-run；参数另需`--api-url`，默认30秒至少2位新观察UID、300秒冷却，可用`--last-sent-at`继承前次发送时间。必须配合仅含目标房间的fixed/target=1策略和外部单场生命周期控制。未知或过期状态暂停；新鲜的两次离线确认结束本场。该CLI不会自行关闭录制后端，外部控制须持久禁用policy、回收自有进程并保留不可自动恢复的结束标记。单场账本`welcome_session_<room_id>.json`一旦启动，禁止自动重新执行；发送失败保留现场，不自动重发或重启发送器。
+
 临时断流默认按2秒起指数退避，300秒封顶，连续第20次失败后停止自动重试并标为人工处理；连续有效采集60秒才重置。`MAX_RECONNECTS=20`、`RETRY_DELAY=2`、`RETRY_MAX_DELAY=300`为对应配置。房间状态包含`reconnect_attempts`与`next_retry_utc`。明确403/412/429不走持续重试，仍须人工确认后resume。专用Chrome保留`about:blank#live-monitor-anchor`空白页供查播与下一次开播复用，不要把它当作无用标签页关闭。
 
 每房间独立Page并静音。仅启用ASR时，video.captureStream音轨经AudioContext(16000Hz)与AudioWorklet收PCM，Worklet输出置0不外放。ASR与缩略图都关闭时暂停网页视频，后台录制独立进行。复用网页已有WebSocket采集弹幕，不另建连接。缩略图仅显式启用、卡片可见且页面前台时请求。

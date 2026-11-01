@@ -65,6 +65,11 @@ class WelcomeDecision:
         self.fired = True
         return list(self.pending)
 
+    def sent(self, now):
+        self.last_sent = now
+        self.pending.clear()
+        self.fired = False
+
 
 def correct_page(url, room_id):
     parsed = urlsplit(url)
@@ -213,12 +218,15 @@ def save(path, data):
     temporary.replace(path)
 
 
-async def run_once(database: Path, room_id: str, cdp_url: str, state_path: Path, *, execute=False,
-                   since, minimum=4, window=30, cooldown=300, wait_seconds=600):
+async def run_welcome(database: Path, room_id: str, cdp_url: str, state_path: Path, *, execute=False,
+                      since, minimum=4, window=30, cooldown=300, wait_seconds=600,
+                      continuous=False, live_check=None, last_sent=None):
     if not room_id.isdigit():
         raise ValueError('房间号必须为数字')
     if wait_seconds <= 0:
         raise ValueError('等待时间必须大于零')
+    if continuous and live_check is None:
+        raise ValueError('单场持续欢迎必须提供开播状态检查')
     start = datetime.fromisoformat(since)
     if start.tzinfo is None:
         raise ValueError('观察起点必须包含时区')
@@ -229,6 +237,8 @@ async def run_once(database: Path, room_id: str, cdp_url: str, state_path: Path,
     with state_path.with_suffix(state_path.suffix+'.lock').open('a') as lock:
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         previous = json.loads(state_path.read_text()) if state_path.exists() else {}
+        if continuous and previous and previous.get('status') != 'authorized':
+            raise RuntimeError('本场欢迎任务已经启动过，禁止自动重新启动')
         if previous.get('status') in ('sending', 'sent', 'ambiguous'):
             raise RuntimeError('这份一次性任务已尝试发送，禁止重复；先人工核验回执')
         db = sqlite3.connect(database.resolve().as_uri()+'?mode=ro', uri=True)
@@ -246,11 +256,12 @@ async def run_once(database: Path, room_id: str, cdp_url: str, state_path: Path,
                     invalid_packets += 1
             db.commit()
             decision = WelcomeDecision(seen, minimum=minimum, window=window, cooldown=cooldown,
-                                       last_sent=previous.get('sent_at'))
-            status = {'status': 'armed' if execute else 'dry_run', 'room_id': room_id,
-                      'execute': execute, 'minimum': minimum, 'window': window, 'cooldown': cooldown,
-                      'armed_at': time.time(), 'baseline_raw_id': cursor, 'baseline_users': len(seen),
-                      'invalid_packets': invalid_packets, 'since': since}
+                                       last_sent=last_sent if last_sent is not None else previous.get('sent_at'))
+            status = {'status': ('running' if continuous else 'armed') if execute else 'dry_run', 'room_id': room_id,
+                       'execute': execute, 'minimum': minimum, 'window': window, 'cooldown': cooldown,
+                       'armed_at': time.time(), 'baseline_raw_id': cursor, 'baseline_users': len(seen),
+                      'invalid_packets': invalid_packets, 'since': since,
+                      'continuous': continuous, 'batches': [], 'last_sent_at': decision.last_sent}
             if not execute:
                 return status
             save(state_path, status)
@@ -263,7 +274,18 @@ async def run_once(database: Path, room_id: str, cdp_url: str, state_path: Path,
                 page = pages[0]
                 limit = await message_limit(page)
                 deadline = time.monotonic()+wait_seconds
-                while time.monotonic() < deadline:
+                while continuous or time.monotonic() < deadline:
+                    if continuous:
+                        activity = await live_check()
+                        status.update(live_state=activity, checked_at=time.time())
+                        if activity == 'ended':
+                            status.update(status='completed', reason='live_ended')
+                            save(state_path, status)
+                            return status
+                        save(state_path, status)
+                        if activity != 'live':
+                            await asyncio.sleep(1)
+                            continue
                     for rid, received, raw in db.execute("SELECT id,received_utc,data FROM raw_events WHERE room_id=? AND id>? AND julianday(received_utc)>=julianday(?) ORDER BY id", (room_id,cursor,since)).fetchall():
                         cursor = rid
                         try:
@@ -287,6 +309,10 @@ async def run_once(database: Path, room_id: str, cdp_url: str, state_path: Path,
                         save(state_path, status)  # 先留发送意图，异常退出后不可自动重发。
                         try:
                             for text in texts:
+                                if continuous and await live_check() != 'live':
+                                    status.update(status='stopped', reason='live_changed_during_batch')
+                                    save(state_path, status)
+                                    return status
                                 status['acknowledgments'].append(await send_chat(page, text, room_id=room_id))
                                 save(state_path, status)
                                 if len(texts) > 1:
@@ -297,6 +323,13 @@ async def run_once(database: Path, room_id: str, cdp_url: str, state_path: Path,
                             save(state_path, status)
                             raise
                         status.update(status='sent', sent_at=time.time())
+                        if continuous:
+                            status['batches'].append({k: status[k] for k in
+                                                      ('target_uids', 'trigger_raw_id', 'messages', 'acknowledgments', 'sent_at')})
+                            decision.sent(status['sent_at'])
+                            status.update(status='running', last_sent_at=decision.last_sent)
+                            save(state_path, status)
+                            continue
                         save(state_path, status)
                         return status
                     await asyncio.sleep(1)
@@ -305,3 +338,7 @@ async def run_once(database: Path, room_id: str, cdp_url: str, state_path: Path,
                 return status
         finally:
             db.close()
+
+
+async def run_once(*args, **kwargs):
+    return await run_welcome(*args, **kwargs)
