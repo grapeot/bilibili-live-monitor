@@ -16,6 +16,7 @@ from bilibili_live_monitor.welcome import (
     run_once,
     send_chat,
     send_endpoint,
+    send_fields,
     text_length,
     welcome_messages,
 )
@@ -90,9 +91,49 @@ async def test_dry_run_does_not_touch_chrome(tmp_path):
     assert not (tmp_path/'state.json').exists()
 
 
+class FakeRequest(SimpleNamespace):
+    @property
+    def post_data_buffer(self):
+        return self.post_data.encode('utf-8')
+
+
 def request(room='123456', text='合成测试'):
-    return SimpleNamespace(url='https://api.live.bilibili.com/msg/send', method='POST',
-                           post_data=urlencode({'roomid': room, 'msg': text}))
+    return FakeRequest(url='https://api.live.bilibili.com/msg/send', method='POST',
+                       headers={'content-type': 'application/x-www-form-urlencoded'},
+                       post_data=urlencode({'roomid': room, 'msg': text}))
+
+
+def attach_cdp(page):
+    cdp = SimpleNamespace(send=AsyncMock(), detach=AsyncMock())
+    page.context = SimpleNamespace(new_cdp_session=AsyncMock(return_value=cdp))
+    return cdp
+
+
+def multipart_request(pairs):
+    req = request()
+    boundary = 'synthetic-form-boundary'
+    req.headers = {'content-type': f'multipart/form-data; boundary={boundary}'}
+    req.post_data = ''.join(f'--{boundary}\r\nContent-Disposition: form-data; name="{key}"\r\n\r\n{value}\r\n'
+                            for key, value in pairs)+f'--{boundary}--\r\n'
+    return req
+
+
+def test_actual_browser_multipart_utf8_and_duplicate_fields():
+    req = multipart_request([('msg', '合成测试😀'), ('roomid', '123456'), ('csrf', 'synthetic')])
+    assert send_fields(req)['msg'] == ['合成测试😀']
+    assert authorized_send(req, '123456', '合成测试😀')
+    assert not authorized_send(req, '999999', '合成测试😀')
+    assert not authorized_send(req, '123456', '其他文案')
+    duplicate = multipart_request([('msg', '合成测试'), ('roomid', '123456'), ('roomid', '999999')])
+    assert not authorized_send(duplicate, '123456', '合成测试')
+    duplicate = multipart_request([('msg', '合成测试'), ('msg', '另一条'), ('roomid', '123456')])
+    assert not authorized_send(duplicate, '123456', '合成测试')
+
+
+def test_malformed_multipart_is_rejected():
+    req = request()
+    req.headers = {'content-type': 'multipart/form-data; boundary=missing'}
+    assert not authorized_send(req, '123456', '合成测试')
 
 
 class ResponseContext:
@@ -117,15 +158,19 @@ class ResponseContext:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('wire', ['urlencoded', 'multipart'])
 @pytest.mark.parametrize('query', ['', '?source=web'])
 @pytest.mark.parametrize('code', [0, -1])
-async def test_send_uses_one_click_without_retry(code, query):
+async def test_send_uses_one_click_without_retry(code, query, wire):
     field = SimpleNamespace(count=AsyncMock(return_value=1), input_value=AsyncMock(side_effect=['', '合成测试']),
                             evaluate=AsyncMock(), evaluate_all=AsyncMock(return_value=[80]))
     button = SimpleNamespace(count=AsyncMock(return_value=1), click=AsyncMock())
     page = SimpleNamespace(locator=lambda s: field if 'chat-input' in s else button,
                            url='https://live.bilibili.com/123456', request=request())
+    if wire == 'multipart':
+        page.request = multipart_request([('msg', '合成测试'), ('roomid', '123456')])
     page.request.url += query
+    cdp = attach_cdp(page)
     route = SimpleNamespace(request=page.request, abort=AsyncMock(), continue_=AsyncMock())
     async def install(matcher, guard):
         assert matcher(page.request.url)
@@ -145,6 +190,9 @@ async def test_send_uses_one_click_without_retry(code, query):
     route.continue_.assert_awaited_once()
     route.abort.assert_awaited_once()
     page.unroute.assert_awaited_once()
+    cdp.send.assert_any_await('Network.setBypassServiceWorker', {'bypass': True})
+    cdp.send.assert_any_await('Network.setBypassServiceWorker', {'bypass': False})
+    cdp.detach.assert_awaited_once()
 
 
 @pytest.mark.parametrize('body', [urlencode({'roomid': '999999', 'msg': '合成测试'}),
@@ -173,6 +221,7 @@ async def test_request_gate_blocks_changes_after_preflight(change, query):
     page = SimpleNamespace(url='https://live.bilibili.com/123456',
                            locator=lambda s: field if 'chat-input' in s else button,
                            unroute=AsyncMock())
+    cdp = attach_cdp(page)
     outgoing = request(room='999999' if change == 'room' else '123456',
                        text='草稿已改' if change == 'text' else '合成测试')
     outgoing.url += query
@@ -197,6 +246,8 @@ async def test_request_gate_blocks_changes_after_preflight(change, query):
     route.abort.assert_awaited_once()
     route.continue_.assert_not_awaited()
     page.unroute.assert_awaited_once()
+    cdp.send.assert_any_await('Network.setBypassServiceWorker', {'bypass': False})
+    cdp.detach.assert_awaited_once()
 
 
 def test_send_endpoint_query_and_other_host_cannot_bypass_guard():

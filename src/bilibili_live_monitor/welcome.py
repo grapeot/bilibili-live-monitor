@@ -7,6 +7,8 @@ import sqlite3
 import time
 from collections import deque
 from datetime import datetime, timezone
+from email.parser import BytesParser
+from email.policy import default
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
@@ -69,11 +71,37 @@ def correct_page(url, room_id):
     return parsed.scheme == 'https' and parsed.hostname == 'live.bilibili.com' and parsed.path.rstrip('/') == '/'+room_id
 
 
+def send_fields(request):
+    content_type = request.headers.get('content-type', '')
+    body = request.post_data_buffer or b''
+    if content_type.lower().startswith('application/x-www-form-urlencoded'):
+        return parse_qs(body.decode('utf-8'), keep_blank_values=True)
+    if not content_type.lower().startswith('multipart/form-data'):
+        return {}
+    message = BytesParser(policy=default).parsebytes(
+        b'Content-Type: '+content_type.encode('ascii')+b'\r\nMIME-Version: 1.0\r\n\r\n'+body)
+    if not message.is_multipart() or message.defects:
+        return {}
+    fields = {}
+    for part in message.iter_parts():
+        name = part.get_param('name', header='content-disposition')
+        if not name or part.get_content_disposition() != 'form-data' or part.get_filename() or part.is_multipart():
+            return {}
+        value = part.get_payload(decode=True).decode(part.get_content_charset() or 'utf-8')
+        fields.setdefault(name, []).append(value)
+    return fields
+
+
 def authorized_send(request, room_id, text):
     url = urlsplit(request.url)
-    fields = parse_qs(request.post_data or '', keep_blank_values=True)
-    return (request.method == 'POST' and url.scheme == 'https' and url.hostname == 'api.live.bilibili.com'
-            and url.path == '/msg/send' and fields.get('roomid') == [room_id] and fields.get('msg') == [text])
+    if not (request.method == 'POST' and url.scheme == 'https' and url.hostname == 'api.live.bilibili.com'
+            and url.path == '/msg/send'):
+        return False
+    try:
+        fields = send_fields(request)
+    except (ValueError, TypeError, AttributeError, LookupError):
+        return False
+    return fields.get('roomid') == [room_id] and fields.get('msg') == [text]
 
 
 def send_endpoint(url):
@@ -128,15 +156,26 @@ async def send_chat(page, text, *, room_id):
     if text_length(text) > await message_limit(page):
         raise RuntimeError('文案超出当前页面字数限制')
     accepted = None
+    diagnostics = []
     async def guard(route):
         nonlocal accepted
-        if accepted is not None or not correct_page(page.url, room_id) or not authorized_send(route.request, room_id, text):
+        allowed = accepted is None and correct_page(page.url, room_id) and authorized_send(route.request, room_id, text)
+        diagnostics.append({'path': urlsplit(route.request.url).path,
+                            'content_type': route.request.headers.get('content-type', '').split(';')[0],
+                            'allowed': allowed})
+        if not allowed:
             await route.abort()
         else:
             accepted = route.request
             await route.continue_()
-    await page.route(send_endpoint, guard)
+    cdp = await page.context.new_cdp_session(page)
+    routed = False
     try:
+        # 页面已有Service Worker会绕过Playwright route；仅本次发送临时走原生网络。
+        await cdp.send('Network.enable')
+        await cdp.send('Network.setBypassServiceWorker', {'bypass': True})
+        await page.route(send_endpoint, guard)
+        routed = True
         await field.evaluate('''(e,text) => {
             if(e.value) throw new Error('输入框已有草稿');
             const proto=e.tagName==='TEXTAREA'?HTMLTextAreaElement.prototype:HTMLInputElement.prototype;
@@ -149,11 +188,23 @@ async def send_chat(page, text, *, room_id):
             await page.locator('button.send-btn:visible').click()
         response = await pending.value
         result = await response.json()
+        diagnostics.append({'http_status': response.status, 'code': result.get('code')})
         if response.status != 200 or result.get('code') != 0 or response.request is not accepted:
             raise RuntimeError(f'发送未确认成功：HTTP {response.status}, code={result.get("code")}')
-        return {'http_status': response.status, 'code': result['code'], 'room_id': room_id, 'message': text}
+        return {'http_status': response.status, 'code': result['code'], 'room_id': room_id,
+                'message': text, 'diagnostics': diagnostics}
+    except BaseException as error:
+        error.send_diagnostics = diagnostics
+        raise
     finally:
-        await page.unroute(send_endpoint, guard)
+        try:
+            if routed:
+                await page.unroute(send_endpoint, guard)
+        finally:
+            try:
+                await cdp.send('Network.setBypassServiceWorker', {'bypass': False})
+            finally:
+                await cdp.detach()
 
 
 def save(path, data):
@@ -239,9 +290,10 @@ async def run_once(database: Path, room_id: str, cdp_url: str, state_path: Path,
                                 status['acknowledgments'].append(await send_chat(page, text, room_id=room_id))
                                 save(state_path, status)
                                 if len(texts) > 1:
-                                    await asyncio.sleep(2)
+                                    await asyncio.sleep(5)
                         except BaseException as error:
-                            status.update(status='ambiguous', error=f'{type(error).__name__}: {error}')
+                            status.update(status='ambiguous', error=f'{type(error).__name__}: {error}',
+                                          send_diagnostics=getattr(error, 'send_diagnostics', []))
                             save(state_path, status)
                             raise
                         status.update(status='sent', sent_at=time.time())
