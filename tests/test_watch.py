@@ -259,3 +259,43 @@ def test_guard_api_resolves_alias_and_omits_raw_pages(tmp_path):
         client.portal.call(seed)
         result = client.get('/api/rooms/42/guards').json()
         assert result['room_id'] == '123456' and 'raw_pages' not in result
+
+
+async def test_unresolved_stopped_room_does_not_freeze_other_fixed_room(tmp_path, monkeypatch):
+    platform = fixture(tmp_path)
+    platform.monitor.browser = object()
+    platform.import_candidates([Candidate(url='111'), Candidate(url='222'), Candidate(url='999')])
+    platform.configure(Policy(mode='fixed', fixed_rooms=['111', '222'], enabled=True, target_rooms=2))
+    platform.stop_candidate('222')
+    platform.stop_candidate('999')
+    async def read(*args):
+        return {'111': {'room_id': 111, 'uid': 123, 'live_status': 1}}
+    async def no_guards():
+        pass
+    monkeypatch.setattr('bilibili_live_monitor.platform.room_statuses', read)
+    platform.refresh_guards = no_guards
+    platform.next_status_check = float('inf')
+    await platform.refresh_statuses()
+    await settled(platform)
+    assert list(platform.active.values()) == ['111']
+    assert not platform.candidates['https://live.bilibili.com/111']['blocked_alias']
+    assert platform.candidates['https://live.bilibili.com/222']['blocked']
+    await platform.close()
+    platform.store.close()
+
+
+async def test_unresolved_stopped_alias_only_blocks_its_canonical_room(tmp_path, monkeypatch):
+    platform = fixture(tmp_path)
+    platform.monitor.browser = object()
+    platform.import_candidates([Candidate(url='42'), Candidate(url='123456')])
+    platform.configure(Policy(mode='fixed', fixed_rooms=['123456'], enabled=True, target_rooms=1))
+    platform.stop_candidate('42')
+    async def read(browser, candidates):
+        assert any(c['url'].endswith('/42') for c in candidates)
+        row = {'room_id': 123456, 'short_id': 42, 'uid': 123, 'live_status': 1}
+        return {'42': row, '123456': row}
+    monkeypatch.setattr('bilibili_live_monitor.platform.room_statuses', read)
+    await platform.refresh_statuses()
+    assert platform.candidates['https://live.bilibili.com/123456']['blocked_alias']
+    assert platform.candidates['https://live.bilibili.com/42']['room_id'] == '123456'
+    platform.store.close()

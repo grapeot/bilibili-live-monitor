@@ -192,8 +192,11 @@ class Platform:
                       if not c['blocked'] and c['url'] in self.fixed_urls()]
         if not candidates:
             return
+        unresolved_aliases = [dict(c) for c in self.candidates.values()
+                              if c['blocked'] and not c.get('room_id')]
         try:
-            statuses = await room_statuses(self.monitor.browser, candidates)
+            # 只读解析停用短号的归属，不重新打开或启动这些来源。
+            statuses = await room_statuses(self.monitor.browser, candidates + unresolved_aliases)
         except Exception as error:
             if self.revision != revision:
                 return
@@ -209,10 +212,13 @@ class Platform:
             return
         if self.revision != revision or self.policy.mode != 'fixed' or not self.policy.enabled:
             return
+        for c in unresolved_aliases:
+            row = statuses.get(c['url'].rsplit('/', 1)[-1])
+            if row:
+                self.candidates[c['url']]['room_id'] = str(row['room_id'])
         seen = set()
         blocked_ids = {identity for c in self.candidates.values() if c['blocked']
                        for identity in (c['url'].rsplit('/', 1)[-1], c.get('room_id')) if identity}
-        unresolved_block = any(c['blocked'] and not c.get('room_id') for c in self.candidates.values())
         for c in sorted(candidates, key=lambda c: c['url'] not in self.active):
             candidate = self.candidates[c['url']]
             row = statuses.get(c['url'].rsplit('/', 1)[-1]) or statuses.get(c.get('room_id'))
@@ -225,7 +231,7 @@ class Platform:
             candidate.update(room_id=canonical, anchor_uid=str(row.get('uid') or ''),
                              title=row.get('title') or candidate['title'])
             candidate['alias_duplicate'] = canonical in seen
-            candidate['blocked_alias'] = canonical in blocked_ids or (unresolved_block and c['url'] not in self.active)
+            candidate['blocked_alias'] = canonical in blocked_ids
             seen.add(canonical)
             previous_state = candidate.get('watch_state')
             candidate['offline_checks'] = candidate.get('offline_checks', 0) + 1 if state != 1 else 0
