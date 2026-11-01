@@ -56,6 +56,8 @@ python -m bilibili_live_monitor run --until 2030-01-01T22:00:00-08:00
 
 个人点赞通知作为`kind=like`保存，与平台累计点赞分开：`room.like_summary.reported_total`是最近收到的累计值，不能逐次相加或直接称作本次新增量；`notifications`是已保存通知条数，`identified_users`是其中可识别UID去重数，不是完整点赞人数。通知时间为接收时间，匿名身份保持隐藏。历史通知可依据`raw_event_id`核验与去重。
 
+`scripts/welcome_once.py`是独立的一次性欢迎助手，默认仅dry-run。只有用户明确批准文案、目标房间和一次发送后才加`--execute`；`--minimum 1`用于下一位新观察UID的单次测试，默认minimum=4、window=30、cooldown=300。它读取既有库中的入场通知，复用已登录Chrome正常输入框，成功后即退出，不启用常驻循环。状态文件记录发送意图；sending/sent/ambiguous状态禁止自动重跑，不根据超时猜测未发送。原始UID与文案回执只保存在私有路径。
+
 临时断流默认按2秒起指数退避，300秒封顶，连续第20次失败后停止自动重试并标为人工处理；连续有效采集60秒才重置。`MAX_RECONNECTS=20`、`RETRY_DELAY=2`、`RETRY_MAX_DELAY=300`为对应配置。房间状态包含`reconnect_attempts`与`next_retry_utc`。明确403/412/429不走持续重试，仍须人工确认后resume。专用Chrome保留`about:blank#live-monitor-anchor`空白页供查播与下一次开播复用，不要把它当作无用标签页关闭。
 
 每房间独立Page并静音。仅启用ASR时，video.captureStream音轨经AudioContext(16000Hz)与AudioWorklet收PCM，Worklet输出置0不外放。ASR与缩略图都关闭时暂停网页视频，后台录制独立进行。复用网页已有WebSocket采集弹幕，不另建连接。缩略图仅显式启用、卡片可见且页面前台时请求。
