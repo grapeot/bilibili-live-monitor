@@ -124,7 +124,7 @@ async def test_close_failure_still_releases_room_slot(tmp_path):
     monitor.pages['123456'] = Page()
     await monitor.capture(room, monitor.pages['123456'], '已失效的会话')
     assert '123456' not in monitor.tasks and '123456' not in monitor.pages
-    assert store.events(0)[0]['kind'] == 'cleanup_error'
+    assert any(event['kind'] == 'cleanup_error' for event in store.events(0))
     store.close()
 
 

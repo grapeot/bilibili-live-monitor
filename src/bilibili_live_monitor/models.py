@@ -80,6 +80,12 @@ class TimelineItem(BaseModel):
     author: str | None = None
     source_key: str | None = None
     gift: GiftDetails | None = None
+    sender_uid: str | None = None
+    identity_status: Literal['uid', 'unresolved'] | None = None
+    guard_level: int | None = None
+    guard_source: str | None = None
+    medal: dict | None = None
+    session_id: str | None = None
     seq: int | None = None
     status: SegmentStatus | None = None
     error: str | None = None

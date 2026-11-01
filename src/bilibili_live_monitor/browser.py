@@ -2,6 +2,7 @@ import asyncio
 import base64
 import logging
 import re
+import time
 
 from playwright.async_api import async_playwright
 
@@ -11,8 +12,8 @@ from .recording import is_media_url
 logger = logging.getLogger(__name__)
 
 
-def dispatch_messages(frame, callback):
-    for message in messages(frame):
+def dispatch_messages(frame, callback, *, include_raw=False):
+    for message in messages(frame, include_raw=include_raw):
         try:
             callback(message)
         except Exception:
@@ -138,6 +139,7 @@ class Browser:
         ctx = await self.connect()
         page = await ctx.new_page()
         page.recording_url = None
+        page.chat_last_frame = time.monotonic()
 
         def media_response(response):
             if response.status in (200, 206) and is_media_url(response.url):
@@ -147,7 +149,18 @@ class Browser:
         if on_danmaku:
             def websocket(socket):
                 if '.chat.bilibili.com/' in socket.url:
-                    socket.on('framereceived', lambda frame: dispatch_messages(frame, on_danmaku))
+                    last_report = 0
+                    def received(frame):
+                        nonlocal last_report
+                        page.chat_last_frame = time.monotonic()
+                        if page.chat_last_frame - last_report >= 15:
+                            on_danmaku({'kind': 'transport', 'state': 'connected', 'frame_received': True})
+                            last_report = page.chat_last_frame
+                        dispatch_messages(frame, on_danmaku, include_raw=True)
+                    on_danmaku({'kind': 'transport', 'state': 'connected'})
+                    socket.on('framereceived', received)
+                    socket.on('close', lambda: on_danmaku({'kind': 'transport', 'state': 'disconnected'}))
+                    socket.on('socketerror', lambda _: on_danmaku({'kind': 'transport', 'state': 'error'}))
             page.on('websocket', websocket)
         try:
             await page.add_init_script(MUTE_SCRIPT)

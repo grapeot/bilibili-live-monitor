@@ -97,6 +97,8 @@ async def inspect(context, candidates):
 async def rotate(args):
     control = Control(args.base_url)
     initial = control.call('platform')
+    if initial['policy'].get('mode') == 'fixed':
+        raise ValueError('固定房间守候由内置状态巡检管理，不使用换台巡检')
     if args.target > initial['capacity']:
         raise ValueError('目标超过现有容量；巡检不重启服务或扩容硬上限')
     if not initial['policy']['enabled']:
