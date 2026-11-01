@@ -3,6 +3,7 @@ import hashlib
 import json
 import struct
 import time
+import uuid
 import zlib
 from collections import Counter
 from datetime import datetime, timezone
@@ -183,16 +184,41 @@ def entry_message(packet, *, received_utc=None):
                       'time_field': 'timestamp_ms' if matching_ms else 'timestamp' if seconds else None}}
 
 
+def like_message(packet):
+    data = packet['data']
+    now = datetime.now(timezone.utc).isoformat()
+    if packet['cmd'] == 'LIKE_INFO_V3_UPDATE':
+        return {'kind': 'like_total', 'reported_total': integer(data['click_count']), 'at_utc': now}
+    user = data.get('uinfo') or {}
+    base = user.get('base') or {}
+    anonymous = bool(data.get('is_mystery') or base.get('is_mystery'))
+    identity = user_identity(user.get('uid') or data.get('uid'), anonymous=anonymous)
+    author = '神秘人' if anonymous else str(base.get('name') or data.get('uname') or '未命名用户')[:200]
+    guard = user.get('guard') or {}
+    return {'kind': 'like', 'author': author, 'text': '为主播点赞了', 'at_utc': now,
+            'source_key': 'like:'+uuid.uuid4().hex, **identity,
+            'guard_level': guard_level(guard.get('level')), 'guard_source': 'like_event',
+            'like': {'event_type': packet['cmd'], 'time_source': 'received',
+                     'count_basis': 'notification_not_click_count'}}
+
+
 def messages(frame, *, include_raw=False):
     result = []
     try:
         for packet in packets(frame):
+            raw_token = uuid.uuid4().hex if include_raw else None
             if include_raw and isinstance(packet, dict):
-                result.append({'kind': 'raw_event', 'packet': packet})
+                result.append({'kind': 'raw_event', 'packet': packet, '_raw_token': raw_token})
             try:
                 if not isinstance(packet, dict):
                     continue
                 command = packet.get('cmd', '')
+                if command in ('LIKE_INFO_V3_CLICK', 'LIKE_INFO_V3_UPDATE'):
+                    item = like_message(packet)
+                    if raw_token:
+                        item['_raw_token'] = raw_token
+                    result.append(item)
+                    continue
                 if command in ('INTERACT_WORD', 'INTERACT_WORD_V2'):
                     item = entry_message(packet)
                     if item:

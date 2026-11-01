@@ -37,6 +37,8 @@ class Store:
             CREATE INDEX IF NOT EXISTS timeline_room_time ON timeline(room_id,at_utc,id);
             CREATE INDEX IF NOT EXISTS timeline_room_received
                 ON timeline(room_id,json_extract(data,'$.received_utc'),id);
+            CREATE INDEX IF NOT EXISTS timeline_likes
+                ON timeline(room_id,json_extract(data,'$.sender_uid')) WHERE kind='like';
         ''')
         # 旧数据库升级时补齐转写时间线；不触发历史SSE重放。
         self.db.execute('''INSERT OR IGNORE INTO timeline(room_id,kind,source_key,at_utc,data)
@@ -95,17 +97,33 @@ class Store:
         self.item({**message, 'room_id': room_id, 'kind': 'danmaku'}, message['source_key'])
 
     def live_message(self, room_id, message):
-        now = utc_now()
+        now = message.get('received_utc') or utc_now()
         kind = message.get('kind')
+        if kind == 'like_total':
+            observed = datetime.fromisoformat(now).astimezone(timezone.utc).isoformat(timespec='microseconds')
+            data = json.dumps({'reported_total': message['reported_total'], 'observed_utc': observed})
+            # 条件更新与SSE事件同事务，历史回放不能覆盖另一连接刚提交的新累计值。
+            with self.db:
+                cursor = self.db.execute('''INSERT INTO control(key,data) VALUES(?,?)
+                    ON CONFLICT(key) DO UPDATE SET data=excluded.data
+                    WHERE json_extract(excluded.data,'$.observed_utc') >= json_extract(control.data,'$.observed_utc')''',
+                    (f'like_total:{room_id}', data))
+                if cursor.rowcount:
+                    self.db.execute("INSERT INTO events(kind,data) VALUES('likes',?)",
+                        (json.dumps({'room_id': room_id, 'summary': self.like_summary(room_id)}, ensure_ascii=False),))
+            return
         if kind in ('raw_event', 'transport'):
             health = self.control('message_health', {})
             current = health.setdefault(room_id, {})
             if kind == 'raw_event':
                 packet = message['packet']
-                self.db.execute('INSERT INTO raw_events(room_id,session_id,received_utc,command,data) VALUES(?,?,?,?,?)',
-                                (room_id, message.get('session_id'), now, packet.get('cmd'),
-                                 json.dumps(packet, ensure_ascii=False)))
+                cursor = self.db.execute('INSERT INTO raw_events(room_id,session_id,received_utc,command,data) VALUES(?,?,?,?,?)',
+                                 (room_id, message.get('session_id'), now, packet.get('cmd'),
+                                  json.dumps(packet, ensure_ascii=False)))
                 self.db.commit()
+                if not hasattr(self, '_raw_like'):
+                    self._raw_like = {}
+                self._raw_like[room_id] = (message.get('_raw_token'), cursor.lastrowid, now)
                 current['last_message_utc'] = now
                 current['raw_events'] = current.get('raw_events', 0) + 1
             else:
@@ -117,10 +135,28 @@ class Store:
                     self.event('message_transport', {'room_id': room_id, 'at_utc': now, **message})
             self.save_control('message_health', health)
             return
-        if message.get('kind') in ('gift', 'entry'):
+        if message.get('kind') in ('gift', 'entry', 'like'):
+            message = dict(message)
+            token = message.pop('_raw_token', None)
+            raw = getattr(self, '_raw_like', {}).get(room_id)
+            if kind == 'like' and token and raw and token == raw[0]:
+                message.update(source_key=f'like:raw:{raw[1]}', raw_event_id=raw[1],
+                               at_utc=raw[2], received_utc=raw[2])
             self.item({**message, 'room_id': room_id}, message['source_key'])
+            if kind == 'like':
+                with self.db:
+                    self.db.execute('BEGIN IMMEDIATE')
+                    summary = self.like_summary(room_id)
+                    self.db.execute("INSERT INTO events(kind,data) VALUES('likes',?)",
+                                    (json.dumps({'room_id': room_id, 'summary': summary}, ensure_ascii=False),))
         else:
             self.danmaku(room_id, message)
+
+    def like_summary(self, room_id):
+        count, users = self.db.execute("SELECT count(*),count(DISTINCT json_extract(data,'$.sender_uid')) "
+                                      "FROM timeline WHERE room_id=? AND kind='like'", (room_id,)).fetchone()
+        return {**self.control(f'like_total:{room_id}', {}),
+                'notifications': count, 'identified_users': users}
 
     def guard_snapshot(self, snapshot):
         with self.db:
