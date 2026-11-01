@@ -3,6 +3,7 @@ import asyncio
 import shutil
 import time
 from collections import Counter
+from datetime import datetime, timezone
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -74,8 +75,8 @@ class Platform:
         previous = {r['room_id']: r for r in self.store.rooms()}
         for candidate in self.candidates.values():
             old = previous.get(candidate.get('room_id'), {})
-            if candidate.get('selected') and old:
-                candidate['attempts'] = max(old.get('reconnect_attempts', 0), candidate['attempts']-1)
+            if 'reconnect_attempts' in old:
+                candidate['attempts'] = old['reconnect_attempts']
             candidate['next_attempt'] = max(candidate.get('next_attempt', 0),
                                             time.time()+remaining_delay(old.get('next_retry_utc')))
             if refused(old.get('error') or '') or 'retry_exhausted:' in (old.get('error') or ''):
@@ -327,7 +328,14 @@ class Platform:
                 self.event('reconcile_error', error=self.last_error)
             await asyncio.sleep(self.settings.platform_tick_seconds)
 
-    def failed(self, candidate, error):
+    def retry_room(self, candidate):
+        return next((r for r in self.store.rooms() if r['room_id'] == candidate.get('room_id') or
+                     r.get('url') == candidate['url'] or r['room_id'] == candidate['url'].rsplit('/', 1)[-1]), None)
+
+    def failed(self, candidate, error, *, already_counted=False):
+        room = self.retry_room(candidate)
+        count = room.get('reconnect_attempts', candidate['attempts']) if room else candidate['attempts']
+        candidate['attempts'] = count + (0 if already_counted else 1)
         candidate.update(selected=False, last_error=error,
                          next_attempt=time.time()+backoff_delay(candidate['attempts'],
                          self.settings.retry_delay, self.settings.retry_max_delay))
@@ -335,18 +343,25 @@ class Platform:
         if refused(error) or 'retry_exhausted:' in error or candidate['attempts'] >= self.settings.max_reconnects:
             candidate['blocked'] = True
             candidate['watch_state'] = 'attention'
+        if room:
+            room.update(reconnect_attempts=candidate['attempts'],
+                        next_retry_utc=None if candidate['blocked'] else datetime.fromtimestamp(
+                            candidate['next_attempt'], timezone.utc).isoformat())
+            self.store.room(room)
         self.save()
         self.event('source_failed', url=candidate['url'], error=error, blocked=candidate['blocked'])
 
     async def launch(self, candidate):
-        candidate['attempts'] += 1
+        previous = self.retry_room(candidate)
+        if previous and 'reconnect_attempts' in previous:
+            candidate['attempts'] = previous['reconnect_attempts']
         candidate['selected'] = True
         self.save()
         try:
             old = next((r for r in self.store.rooms() if r['room_id'] == candidate.get('room_id')), {})
             options = self.policy.model_dump(exclude={'enabled', 'target_rooms', 'mode', 'fixed_rooms'})
             room = await self.monitor.add(candidate['url'], self.settings.chunk_seconds,
-                                          retry_attempts=candidate['attempts']-1, **options)
+                                          retry_attempts=candidate['attempts'], **options)
             candidate['room_id'] = room['room_id']
             candidate['started_epoch'] = time.time()
             candidate['start_seconds'] = room.get('recorded_seconds', 0)
@@ -402,7 +417,7 @@ class Platform:
                 if rid in self.monitor.tasks:
                     await self.monitor.stop(rid)
                 self.active.pop(url)
-                self.failed(candidate, terminal)
+                self.failed(candidate, terminal, already_counted=True)
                 continue
             if (candidate['attempts'] and current.get('status') == 'capturing'
                     and current.get('reconnect_attempts', 0) == 0
@@ -423,7 +438,8 @@ class Platform:
                 self.event('broadcast_finished', url=url, room_id=rid)
             elif rid not in self.monitor.tasks:
                 self.active.pop(url)
-                self.failed(candidate, rooms.get(rid, {}).get('error') or 'capture_ended')
+                self.failed(candidate, rooms.get(rid, {}).get('error') or 'capture_ended',
+                            already_counted=bool(rooms.get(rid, {}).get('reconnect_attempts')))
             # 媒体无进度由每次Recording实例自己的40秒检查处理；外层不以旧启动时刻抢停恢复。
         # 先取消多余启动，再停止多余任务；不停止非平台拥有的手工任务。
         excess = max(0, len(self.monitor.tasks)+len(self.launching)-target)

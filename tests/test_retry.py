@@ -3,6 +3,8 @@ import time
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
+import pytest
+
 from bilibili_live_monitor.browser import Browser
 from bilibili_live_monitor.config import Settings
 from bilibili_live_monitor.monitor import Monitor
@@ -224,15 +226,16 @@ async def test_persisted_deadline_waits_before_opening_browser(tmp_path, monkeyp
     store.close()
 
 
-async def test_wrong_room_reconnect_never_publishes_early_messages(tmp_path):
+@pytest.mark.parametrize('redirect', ['https://live.bilibili.com/999999', 'https://passport.bilibili.com/login'])
+async def test_wrong_room_reconnect_never_publishes_early_messages(tmp_path, redirect):
     store = Store(tmp_path/'test.db')
     monitor = Monitor(Settings(data_dir=tmp_path,retry_delay=0,max_reconnects=2),store)
     monitor.generations['123456'] = 'generation'
     room = {'room_id':'123456','url':'https://live.bilibili.com/123456',
             'status':'capturing','record_mode':'none','asr_enabled':False}
     class Page:
-        closed = True
-        url = 'https://live.bilibili.com/999999'
+        closed = False
+        url = redirect
         def is_closed(self):
             return self.closed
         async def close(self):
@@ -242,12 +245,76 @@ async def test_wrong_room_reconnect_never_publishes_early_messages(tmp_path):
     async def page(url, **kwargs):
         kwargs['on_danmaku']({'text':'wrong room','source_key':'wrong','at_utc':'2026-11-01T00:00:00Z'})
         kwargs['on_danmaku']({'kind':'raw_event','packet':{'cmd':'SYNTHETIC'}})
-        return Page()
+        result = Page()
+        replacements.append(result)
+        return result
     monitor.session_cycles = cycles
     monitor.browser.page = page
+    replacements = []
     monitor.pages['123456'] = Page()
+    monitor.pages['123456'].closed = True
     await monitor.capture(room, monitor.pages['123456'], 'generation')
     assert not store.items('123456')
     assert store.db.execute('SELECT count(*) FROM raw_events').fetchone()[0] == 0
     assert '123456' not in monitor.pages
+    assert all(page.closed for page in replacements)
+    store.close()
+
+
+async def test_runtime_failures_are_authoritative_when_next_start_fails(tmp_path):
+    store = Store(tmp_path/'test.db')
+    monitor = Monitor(Settings(data_dir=tmp_path,retry_delay=0),store)
+    platform = Platform(monitor)
+    platform.import_candidates([Candidate(url='123456')])
+    c = next(iter(platform.candidates.values()))
+    c.update(room_id='123456',attempts=1)
+    store.room({'room_id':'123456','url':c['url'],'status':'stopped','reconnect_attempts':19})
+    async def fail(*args, **kwargs):
+        raise RuntimeError('startup failed after runtime failures')
+    monitor.browser.page = fail
+    await platform.launch(c)
+    assert c['attempts'] == 20 and c['blocked']
+    assert store.rooms()[0]['reconnect_attempts'] == 20
+    store.close()
+
+
+async def test_real_stable_pcm_zero_wins_over_stale_candidate_on_restart(tmp_path,monkeypatch):
+    store = Store(tmp_path/'test.db')
+    monitor = Monitor(Settings(data_dir=tmp_path,retry_delay=0,queue_size=100),store)
+    platform = Platform(monitor)
+    platform.import_candidates([Candidate(url='123456')])
+    c = next(iter(platform.candidates.values()))
+    c.update(room_id='123456',attempts=20,selected=True)
+    platform.save()
+    room = {'room_id':'123456','url':c['url'],'status':'capturing','record_mode':'none',
+            'asr_enabled':True,'reconnect_attempts':19}
+    store.room(room)
+    monitor.failures['123456'] = 19
+    count = 0
+    async def noop(*args):
+        pass
+    async def read(*args):
+        nonlocal count
+        count += 1
+        if count == 13:
+            raise asyncio.CancelledError()
+        return bytes(160000),{'started':1000,'ended':6000,'muted':True,'paused':False,
+            'track_live':True,'context_state':'running','missing_samples':0,'dropped_samples':0,
+            'media_advanced':5,'pauses':0,'play_error':None,'track_muted':False,
+            'track_enabled':True,'track_muted_ms':0}
+    monkeypatch.setattr('bilibili_live_monitor.monitor.start_pcm',noop)
+    monkeypatch.setattr('bilibili_live_monitor.monitor.close_pcm',noop)
+    monkeypatch.setattr('bilibili_live_monitor.monitor.read_pcm',read)
+    with pytest.raises(asyncio.CancelledError):
+        await monitor.capture_cycles(room,SimpleNamespace(is_closed=lambda:False),'generation')
+    assert store.rooms()[0]['reconnect_attempts'] == 0
+    restored = Platform(monitor)
+    current = next(iter(restored.candidates.values()))
+    assert current['attempts'] == 0
+    async def fail(*args, **kwargs):
+        raise RuntimeError('first new failure')
+    monitor.browser.page = fail
+    await restored.launch(current)
+    assert current['attempts'] == 1 and not current['blocked']
+    await monitor.close()
     store.close()

@@ -177,7 +177,8 @@ class Monitor:
                 previous.update(next((r for r in self.store.rooms() if r['room_id'] == room_id), {}))
                 self.store.room({**previous, 'room_id': room_id, 'url': room_url(resolved_page.url),
                                  'title': room_id, 'cover_url': '',
-                                  'chunk_seconds': seconds, 'status': 'reconnecting',
+                                   'chunk_seconds': seconds, 'status': 'reconnecting',
+                                   'reconnect_attempts': max(previous.get('reconnect_attempts', 0), retry_attempts),
                                   'error': None, 'muted': True, 'cycle_notice': False, **options})
                 for message in chat_buffer:
                     on_danmaku(message)
@@ -280,9 +281,12 @@ class Monitor:
                                         dropped += 1
                             replacement = await self.browser.page(room['url'], on_danmaku=on_message,
                                 require_playback=room.get('asr_enabled', True) or room.get('preview_enabled'))
-                            if room_url(replacement.url).rsplit('/', 1)[-1] != room_id:
+                            try:
+                                if room_url(replacement.url).rsplit('/', 1)[-1] != room_id:
+                                    raise RuntimeError('恢复页面跳转到其他房间')
+                            except BaseException:
                                 await close_page(replacement)
-                                raise RuntimeError('恢复页面跳转到其他房间')
+                                raise
                             page = replacement
                             self.pages[room_id] = page
                             validated = True

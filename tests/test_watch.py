@@ -66,10 +66,8 @@ async def test_fixed_transient_failure_retries_twenty_times_and_refusal_needs_re
     platform.configure(Policy(mode='fixed', enabled=True, target_rooms=1))
     c = next(iter(platform.candidates.values()))
     for _ in range(19):
-        c['attempts'] += 1
         platform.failed(c, 'network timeout')
     assert not c['blocked'] and c['next_attempt'] > 0
-    c['attempts'] += 1
     platform.failed(c, 'network timeout')
     assert c['blocked'] and c['watch_state'] == 'attention'
     platform.resume_candidate('123456')
