@@ -191,7 +191,7 @@ class Monitor:
                                     f'startup-gap:{generation}')
 
         try:
-            saved = next((r for r in self.store.rooms() if r.get('url') == url or
+            saved = next((r for r in self.store.rooms() if r.get('url') == url or r.get('source_url') == url or
                           r['room_id'] == url.rsplit('/', 1)[-1]), {})
             if delay := remaining_delay(saved.get('next_retry_utc')):
                 await asyncio.sleep(delay)

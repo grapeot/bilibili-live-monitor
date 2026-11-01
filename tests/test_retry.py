@@ -347,3 +347,26 @@ def test_crash_between_retry_room_and_candidate_commits_keeps_terminal_lock(tmp_
     assert recovered['attempts'] == count+1
     assert recovered['last_error']
     store.close()
+
+
+async def test_short_alias_resume_clears_canonical_room_budget(tmp_path):
+    store = Store(tmp_path/'test.db')
+    monitor = Monitor(Settings(data_dir=tmp_path,retry_delay=0),store)
+    platform = Platform(monitor)
+    platform.import_candidates([Candidate(url='42')])
+    c = next(iter(platform.candidates.values()))
+    c.update(blocked=True,attempts=20)
+    platform.save()
+    store.room({'room_id':'123456','url':'https://live.bilibili.com/123456',
+                'source_url':c['url'],'status':'error','error':'retry_exhausted:',
+                'reconnect_attempts':20,'next_retry_utc':None})
+    platform = Platform(monitor)
+    platform.resume_candidate('42')
+    assert store.rooms()[0]['reconnect_attempts'] == 0
+    c = next(iter(platform.candidates.values()))
+    async def fail(*args, **kwargs):
+        raise RuntimeError('first new failure')
+    monitor.browser.page = fail
+    await platform.launch(c)
+    assert c['attempts'] == 1 and not c['blocked']
+    store.close()

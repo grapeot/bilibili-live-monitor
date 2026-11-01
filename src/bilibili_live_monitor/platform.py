@@ -177,6 +177,7 @@ class Platform:
         url = room_url(url)
         matches = self.matching_candidates(url)
         ids = {identity for c in matches for identity in (c.get('room_id'), c['url'].rsplit('/', 1)[-1])}
+        ids.update(room['room_id'] for c in matches if (room := self.retry_room(c)) is not None)
         for candidate in matches:
             candidate.update(blocked=False, selected=False, attempts=0, next_attempt=0,
                              last_error=None, watch_state='unknown', live_status=None,
