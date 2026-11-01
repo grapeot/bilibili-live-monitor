@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 
 from bilibili_live_monitor.app import create_app
 from bilibili_live_monitor.config import Settings
-from bilibili_live_monitor.danmaku import messages
+from bilibili_live_monitor.danmaku import entry_message, messages
 from bilibili_live_monitor.models import TimelineItem
 from bilibili_live_monitor.store import Store
 
@@ -97,6 +97,8 @@ def test_conflicting_milliseconds_do_not_move_entry_hours_into_future(monkeypatc
     assert item['entry']['time_field'] == 'timestamp'
     p['data']['pb'] = base64.b64encode(field(1, 123)+field(5, 1)+field(8, 1792717100123)).decode()
     assert messages(frame(p))[0]['entry']['time_source'] == 'received'
+    historical = entry_message(p, received_utc='2026-10-22T20:13:23+00:00')
+    assert historical['at_utc'] == '2026-10-22T20:13:23+00:00'
 
 
 def test_entry_persists_replay_dedup_reentry_and_api_contract(tmp_path):

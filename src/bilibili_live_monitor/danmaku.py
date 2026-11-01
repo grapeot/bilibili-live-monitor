@@ -151,7 +151,7 @@ def packets(frame, depth=0):
                 continue
 
 
-def entry_message(packet):
+def entry_message(packet, *, received_utc=None):
     """只认 msg_type=1 入场；关注、分享和入场特效不重复计为到场。"""
     data = interaction_data(packet['data']) if packet['cmd'] == 'INTERACT_WORD_V2' else packet['data']
     if integer(data.get('msg_type', 0)) != 1:
@@ -167,9 +167,10 @@ def entry_message(packet):
     millis = integer(data.get('timestamp_ms') or 0)
     # 真实消息的timestamp_ms可能偏离数小时；只有与秒字段一致才用其精度。
     # 秒字段缺失时，毫秒字段还须接近本机接收时钟，否则标为接收时间。
-    matching_ms = millis and (millis//1000 == seconds if seconds else abs(millis/1000-time.time()) <= 60)
+    reference = datetime.fromisoformat(received_utc).timestamp() if received_utc else time.time()
+    matching_ms = millis and (millis//1000 == seconds if seconds else abs(millis/1000-reference) <= 60)
     timestamp = millis if matching_ms else seconds
-    at = event_time(timestamp) if timestamp else datetime.now(timezone.utc).isoformat()
+    at = event_time(timestamp) if timestamp else received_utc or datetime.now(timezone.utc).isoformat()
     fields = [identity['sender_uid'], timestamp, str(data.get('trigger_time') or ''), author]
     if anonymous or not timestamp:
         fields.append(data)
