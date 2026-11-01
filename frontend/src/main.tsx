@@ -2,6 +2,7 @@ import React, {useEffect, useLayoutEffect, useRef, useState} from 'react';
 import {createRoot} from 'react-dom/client';
 import './style.css';
 import {giftLabel, giftText, type Gift} from './gifts';
+import {transcriptLabel} from './transcripts';
 
 type Segment = {seq:number; start_utc:string; end_utc:string; text:string; status:string;
   queue_wait_ms:number; infer_ms:number; rms_dbfs:number; error:string|null; coverage_ratio?:number|null};
@@ -144,8 +145,9 @@ const RoomCard = React.memo(function RoomCard({room,status,onError}:{room:Room;s
     <div className="timeline-tools"><button className="text-button" aria-pressed={following} onClick={()=>{setFollowing(true);if(scroller.current)scroller.current.scrollTop=scroller.current.scrollHeight}}>{following?'跟随最新':'已暂停·回最新'}</button><a href={base+'api/export?room_id='+room.room_id}>导出本房快照</a></div>
     <div className={'segments'+(following?' following':'')} ref={scroller} onScroll={e=>{const n=e.currentTarget;setFollowing(n.scrollHeight-n.scrollTop-n.clientHeight<32)}}>
       {!room.items.length?<p className="waiting">等待弹幕、礼物或首个音频切片…</p>:room.items.map(item=><div className={'segment '+item.kind+' '+(item.status||'')} key={item.id}>
-        <div className="segment-meta"><time>{time(item.at_utc)}</time><span>{item.kind==='gift'?giftLabel(item.gift)+(item.gift?.time_source==='received'?' · 接收时间':''):item.kind==='danmaku'?'弹幕':item.transcript_version==='realtime'?`实时稿 #${item.seq} · ${item.is_final?'本窗已结束': '持续修订'}`:`语音转写 #${item.seq} · ${labels[item.status||'']||item.status}`}</span></div>
+        <div className="segment-meta"><time>{time(item.at_utc)}</time><span>{item.kind==='gift'?giftLabel(item.gift)+(item.gift?.time_source==='received'?' · 接收时间':''):item.kind==='danmaku'?'弹幕':item.transcript_version==='realtime'?transcriptLabel(item):`语音转写 #${item.seq} · ${labels[item.status||'']||item.status}`}</span></div>
         <p>{item.author&&<b className="chat-author" title={item.sender_uid?`UID ${item.sender_uid}`:'身份未确认'}>{item.author}{item.guard_level?` · ${{1:'总督',2:'提督',3:'舰长'}[item.guard_level]||'大航海'}`:''}：</b>}{(item.kind==='gift'?giftText(item.gift,item.text):item.text)||item.error||(item.status==='silent'?'音量低于阈值，已跳过识别':item.status==='empty'?'本段未识别到文字':'等待识别…')}</p>
+        {item.error&&item.text&&<p className="room-error">{item.error}</p>}
       </div>)}
     </div>
     <footer>{room.asr_enabled?<><span>等待 {latest?`${(latest.queue_wait_ms/1000).toFixed(1)}s`:'—'}</span><span>推理 {latest?`${(latest.infer_ms/1000).toFixed(1)}s`:'—'}</span><span>{latest?`${latest.rms_dbfs} dBFS`:'等待音频'}</span><span>覆盖 {latest?.coverage_ratio!=null?`${(latest.coverage_ratio*100).toFixed(0)}%`:'—'}</span></>:<span>ASR 禁用 · 不创建识别音频队列</span>}</footer>

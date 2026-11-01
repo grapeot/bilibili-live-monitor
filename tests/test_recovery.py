@@ -20,11 +20,12 @@ async def test_stop_releases_queue_and_inflight_without_dropping_other_room(tmp_
     store.room({'room_id': '123456', 'status': 'capturing'})
     monitor.generations.update({'123456': 'a', '234567': 'b'})
     started = asyncio.Event()
+    release = asyncio.Event()
 
     async def recognize(path, req_id, stream_id, sample_offset):
         if req_id.startswith('a:'):
             started.set()
-            await asyncio.Future()
+            await release.wait()
         return {'epoch': 'worker', 'infer_ms': 1, 'updates': [
             {'window_id': 'one', 'text': '合成B结果', 'stable_text': '',
              'start_seconds': 0, 'end_seconds': 1, 'final': False}]}
@@ -44,6 +45,7 @@ async def test_stop_releases_queue_and_inflight_without_dropping_other_room(tmp_
         submit('123456', 2, 'a')
         assert monitor.queue.full()
         await monitor.stop('123456')
+        release.set()
         assert not monitor.queue.full()
         submit('234567', 1, 'b')
         await asyncio.wait_for(monitor.queue.join(), 2)

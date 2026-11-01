@@ -78,6 +78,8 @@ class Monitor:
         self.browser = Browser(settings.cdp_url)
         self.asr = StreamingASR(settings)
         self.stream_rows = {}
+        self.stream_inputs = {}
+        self.pending_finishes = set()
         self.queue = AudioQueue(maxsize=settings.queue_size)
         self.tasks, self.pages, self.generations = {}, {}, {}
         self.pending = set()
@@ -418,9 +420,7 @@ class Monitor:
                 if room.get('record_mode', 'none') == 'none':
                     self.failures[room_id] = 0  # 纯ASR通路以通过校验的完整PCM窗口作为恢复标准。
         finally:
-            await self.queue.put(({'op': 'finish', 'stream_id': stream_id, 'room_id': room_id,
-                                   'origin_ms': origin_ms, 'session_id': generation},
-                                  None, time.monotonic(), generation))
+            self.finish_stream(stream_id, generation)
             if not page.is_closed():
                 try:
                     await close_pcm(page)
@@ -428,6 +428,8 @@ class Monitor:
                     self.store.event('capture_cleanup_error', {'room_id': room_id, 'error': str(error)})
 
     def submit(self, segment, pcm, generation):
+        segment['session_id'] = generation
+        self.stream_inputs[segment['stream_id']] = segment
         if self.queue.full():
             self.overload_count += 1
             segment.update(status='error', error='queue_overload：识别队列已满，本段已丢弃')
@@ -443,6 +445,13 @@ class Monitor:
             wav.setframerate(16000)
             wav.writeframes(pcm)
         self.queue.put_nowait((segment, path, time.monotonic(), generation))
+
+    def finish_stream(self, stream_id, generation):
+        if stream_id in self.pending_finishes or stream_id not in self.stream_inputs:
+            return
+        self.pending_finishes.add(stream_id)
+        self.queue.put_control(({**self.stream_inputs[stream_id], 'op': 'finish'},
+                                None, time.monotonic(), generation))
 
     def stream_error(self, segment, error):
         self.store.segment({**segment, 'seq': self.store.next_seq(segment['room_id']),
@@ -514,6 +523,9 @@ class Monitor:
             finally:
                 if path is not None:
                     path.unlink(missing_ok=True)
+                else:
+                    self.pending_finishes.discard(segment['stream_id'])
+                    self.stream_inputs.pop(segment['stream_id'], None)
                 self.inflight = None
                 self.inference_task = None
                 self.active_generation = None
@@ -545,14 +557,17 @@ class Monitor:
         self.generations.pop(room_id, None)
         self.cancel_queued(room_id)
         self.interrupt_streams(room_id=room_id)
-        if self.inflight and self.inflight['room_id'] == room_id and self.inference_task:
-            self.inference_task.cancel()
+        # 已发送的共享worker请求允许完成；generation已失效，结果不会再发布。
+        # 主动停止一个房间不应销毁其他房间的模型上下文。
         task = self.tasks.get(room_id)
         if task:
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
         if self.tasks.get(room_id) is task:
             self.tasks.pop(room_id, None)
+        for sid, segment in list(self.stream_inputs.items()):
+            if segment['room_id'] == room_id:
+                self.finish_stream(sid, segment.get('session_id'))
         room = next((r for r in self.store.rooms() if r['room_id'] == room_id), None)
         if room is None:
             raise KeyError(room_id)
@@ -561,7 +576,8 @@ class Monitor:
         return room
 
     def cancel_queued(self, room_id):
-        for segment, path, _, _ in self.queue.remove_where(lambda item: item[0]['room_id'] == room_id):
+        for segment, path, _, _ in self.queue.remove_where(
+                lambda item: item[0]['room_id'] == room_id and item[1] is not None):
             if path is not None:
                 path.unlink(missing_ok=True)
 
@@ -581,5 +597,7 @@ class Monitor:
             self.queue.task_done()
         for key in list(self.stream_rows):
             self.interrupt_streams(key[0])
+        self.stream_inputs.clear()
+        self.pending_finishes.clear()
         await self.asr.close()
         await self.browser.close()

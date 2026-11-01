@@ -10,6 +10,7 @@ def utc_now():
 
 class Store:
     def __init__(self, path: Path):
+        self.path = path.resolve()
         path.parent.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(path)
         self.db.row_factory = sqlite3.Row
@@ -139,20 +140,18 @@ class Store:
         return sorted(items, key=lambda item: (item['at_utc'], item['id']))
 
     def export_items(self, room_id=None):
-        # 截止ID固定，导出不追逐不断到来的新消息。
-        end = self.db.execute('SELECT COALESCE(MAX(id),0) FROM timeline').fetchone()[0]
-        cursor_time, cursor_id = '', 0
-        while True:
-            rows = self.db.execute(
-                'SELECT id,at_utc,data FROM timeline WHERE id<=? '
-                'AND (at_utc>? OR (at_utc=? AND id>?)) AND (? IS NULL OR room_id=?) '
-                'ORDER BY at_utc,id LIMIT 500',
-                (end, cursor_time, cursor_time, cursor_id, room_id, room_id)).fetchall()
-            if not rows:
-                break
-            for row in rows:
-                cursor_time, cursor_id = row['at_utc'], row['id']
-                yield {**json.loads(row['data']), 'id': row['id']}
+        # 独立只读事务冻结内容及排序键，流式修订不会令同一ID重复/漏导。
+        snapshot = sqlite3.connect(self.path.as_uri() + '?mode=ro', uri=True)
+        snapshot.row_factory = sqlite3.Row
+        try:
+            snapshot.execute('BEGIN')
+            cursor = snapshot.execute('SELECT id,data FROM timeline WHERE (? IS NULL OR room_id=?) '
+                                      'ORDER BY at_utc,id', (room_id, room_id))
+            while rows := cursor.fetchmany(500):
+                for row in rows:
+                    yield {**json.loads(row['data']), 'id': row['id']}
+        finally:
+            snapshot.close()
 
     def segments(self, room_id):
         rows = self.db.execute('SELECT data FROM segments WHERE room_id=? ORDER BY seq DESC LIMIT 20',
