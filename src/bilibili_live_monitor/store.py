@@ -117,7 +117,7 @@ class Store:
                     self.event('message_transport', {'room_id': room_id, 'at_utc': now, **message})
             self.save_control('message_health', health)
             return
-        if message.get('kind') == 'gift':
+        if message.get('kind') in ('gift', 'entry'):
             self.item({**message, 'room_id': room_id}, message['source_key'])
         else:
             self.danmaku(room_id, message)

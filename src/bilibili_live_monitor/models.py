@@ -83,13 +83,14 @@ class TimelineItem(BaseModel):
     is_final: bool | None = None
     id: int
     room_id: str
-    kind: Literal['transcript', 'danmaku', 'gift']
+    kind: Literal['transcript', 'danmaku', 'gift', 'entry']
     at_utc: str
     received_utc: str
     text: str = ''
     author: str | None = None
     source_key: str | None = None
     gift: GiftDetails | None = None
+    entry: dict | None = Field(default=None, description='平台入场通知来源及时间依据；不代表完整在线名单')
     sender_uid: str | None = None
     identity_status: Literal['uid', 'unresolved'] | None = None
     guard_level: int | None = None
@@ -103,7 +104,7 @@ class TimelineItem(BaseModel):
 
 class RoomState(RoomResponse):
     segments: list[SegmentResponse] = Field(description='该房间最近20条切片，按序号升序')
-    items: list[TimelineItem] = Field(default_factory=list, description='最近80条弹幕、礼物与转写，按事件时间升序')
+    items: list[TimelineItem] = Field(default_factory=list, description='最近80条弹幕、礼物、入场与转写，按事件时间升序')
 
 
 class Inflight(BaseModel):

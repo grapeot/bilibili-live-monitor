@@ -11,7 +11,8 @@ type Room = {room_id:string; title:string; url:string; cover_url:string; status:
   record_mode:'none'|'audio'|'video';asr_enabled:boolean;preview_enabled:boolean;
   recording_status:string;recorded_seconds:number;recording_files:number;recording_bytes:number;
   error:string|null; chunk_seconds:number; segments:Segment[];items:Item[]};
-type Item = {id:number;room_id:string;kind:'transcript'|'danmaku'|'gift';at_utc:string;received_utc:string;text:string;
+type Item = {id:number;room_id:string;kind:'transcript'|'danmaku'|'gift'|'entry';at_utc:string;received_utc:string;text:string;
+  entry?:{event_type:string;time_source:'event'|'received'}|null;
   transcript_version?:'realtime'|'offline'|null;stable_text?:string|null;is_final?:boolean|null;
   sender_uid?:string|null;guard_level?:number|null;
   author?:string|null;seq?:number|null;status?:string|null;error?:string|null;
@@ -142,12 +143,13 @@ const RoomCard = React.memo(function RoomCard({room,status,onError}:{room:Room;s
     <div className="room-sub"><span>房间 {room.room_id} · 流式输入 5 秒 · 上下文 ≤30 秒</span><button className="text-button" disabled={room.status==='stopped'} onClick={()=>api(`rooms/${room.room_id}/stop`,{method:'POST'}).catch(e=>onError(e.message))}>停止监控</button></div>
     {room.error&&<p className="room-error">{room.error}</p>}
     {!!room.reconnect_attempts&&<p className="room-sub">连续失败 {room.reconnect_attempts} 次{room.next_retry_utc?` · 下次重试 ${time(room.next_retry_utc)}`:''}</p>}
-    <p className="room-sub">保存：{({none:'关闭',audio:'原始音频',video:'原始音视频'})[room.record_mode]} · ASR：{room.asr_enabled?'启用':'禁用'} · 弹幕 / 礼物：保存并显示</p>
+    <p className="room-sub">保存：{({none:'关闭',audio:'原始音频',video:'原始音视频'})[room.record_mode]} · ASR：{room.asr_enabled?'启用':'禁用'} · 弹幕 / 礼物 / 入场：保存并显示</p>
+    <p className="room-sub">入场仅展示平台通知，不代表完整在线名单；未提供可靠离场状态。</p>
     {room.record_mode!=='none'&&<p className="room-sub">录制 {room.recording_status==='recording'?'进行中':room.recording_status==='starting'?'启动中':room.recording_status==='stopped'?'已结束':room.recording_status} · {(room.recorded_seconds/60).toFixed(1)} 分钟 · {(room.recording_bytes/1e6).toFixed(1)} MB · {room.recording_files} 文件</p>}
     <div className="timeline-tools"><button className="text-button" aria-pressed={following} onClick={()=>{setFollowing(true);if(scroller.current)scroller.current.scrollTop=scroller.current.scrollHeight}}>{following?'跟随最新':'已暂停·回最新'}</button><a href={base+'api/export?room_id='+room.room_id}>导出本房快照</a></div>
     <div className={'segments'+(following?' following':'')} ref={scroller} onScroll={e=>{const n=e.currentTarget;setFollowing(n.scrollHeight-n.scrollTop-n.clientHeight<32)}}>
       {!room.items.length?<p className="waiting">等待弹幕、礼物或首个音频切片…</p>:room.items.map(item=><div className={'segment '+item.kind+' '+(item.status||'')} key={item.id}>
-        <div className="segment-meta"><time>{time(item.at_utc)}</time><span>{item.kind==='gift'?giftLabel(item.gift)+(item.gift?.time_source==='received'?' · 接收时间':''):item.kind==='danmaku'?'弹幕':item.transcript_version==='realtime'?transcriptLabel(item):`语音转写 #${item.seq} · ${labels[item.status||'']||item.status}`}</span></div>
+        <div className="segment-meta"><time>{time(item.at_utc)}</time><span>{item.kind==='entry'?'入场通知'+(item.entry?.time_source==='received'?' · 接收时间':''):item.kind==='gift'?giftLabel(item.gift)+(item.gift?.time_source==='received'?' · 接收时间':''):item.kind==='danmaku'?'弹幕':item.transcript_version==='realtime'?transcriptLabel(item):`语音转写 #${item.seq} · ${labels[item.status||'']||item.status}`}</span>{item.kind==='entry'&&<span>{item.sender_uid?`UID ${item.sender_uid}`:'身份未确认'}</span>}</div>
         <p>{item.author&&<b className="chat-author" title={item.sender_uid?`UID ${item.sender_uid}`:'身份未确认'}>{item.author}{item.guard_level?` · ${{1:'总督',2:'提督',3:'舰长'}[item.guard_level]||'大航海'}`:''}：</b>}{(item.kind==='gift'?giftText(item.gift,item.text):item.text)||item.error||(item.status==='silent'?'音量低于阈值，已跳过识别':item.status==='empty'?'本段未识别到文字':'等待识别…')}</p>
         {item.error&&item.text&&<p className="room-error">{item.error}</p>}
       </div>)}
