@@ -1,5 +1,14 @@
 # 工作记录
 
+## 每房间持久 Agent 与自动上下文裁剪（2026-11-01）
+- 按已确认设计实现真正多轮工具循环。新增 `assistant_agent.py`，通过read_state、viewer_events、search_transcripts、read_evidence、record_alias、update_assistant、finish_analysis完成查证与写入；无新观察且无进行中分析时不调用模型。runtime仍为Ollama Cloud deepseek-v4.1-flash。
+- 助手库增量新增aliases、agent_runs、agent_calls、agent_exchanges、agent_audit。UID归属+别名唯一约束、证据当前版本、卡片manual/CAS约束保留；写动作、幂等回执、完整工具配对轮次同事务提交。重启恢复进行中分析，成功写动作重放不再执行；只读工具每轮刷新。原cards/cursor/observations/history及真实送礼规则不改语义。
+- 主播主动赠歌使用song_origin=gift、recipient_uid及明确UID身份和歌曲/已查证称呼转写证据，不再要求用户先发点歌弹幕。英文昵称机器翻译不算别名事实；无原文别名/明确对象证据的请求拒绝。已有误判仍由人工可撤销操作修正。
+- conversation按完整配对单元裁剪：默认200000阈值、120秒窗口，先移除旧轮次，再处理密集窗口。UTF8序列化字节数只是保守预算代理，Ollama实际prompt_eval_count单独观测；工具定义、当前输入、全部未完成工作状态与别名保留，必要状态超预算时显式暂停。原始观察、业务history、别名、审计轨迹不删。UI新增折叠的状态/工具原因/幂等回执/compaction/coverage指标。
+- 旧CLI参数继续有效；新增max-tool-turns=8、max-tools-per-turn=8、context-tokens=200000、recent-seconds=120、tool-result-bytes=16000。max-bytes默认由64000提高为800000，显式旧值仍遵守；实际发送以min(max-bytes,context-tokens)作保守字节预算。总调用预算每个模型轮次都扣费，工具轮次触顶暂停，不无限重开。
+- 新增13项离线Agent回归：真实Store+mock Ollama HTTP的14次响应跨轮查证、别名持久、重启/裁剪后主动赠歌及唱完；覆盖旧结果与manual竞争、事务中断无半对话、幂等重放、逐轮预算/超时恢复、跨scope拒绝、别名冲突、旧ASR证据只读、输入时序、200K/120秒和密集窗口裁剪。最近全套320项pytest、ruff、16项前端测试（6 Node+10 DOM）及TypeScript/Vite构建通过；无真实模型或生产访问，未做git写/PR/merge/deploy。
+- 主线程部署时沿用同一助手DB、固定room/session/source/since与owner，只重启助手sidecar/worker即可；不要重启8765、录制、Chrome或ASR。尚未验证真实模型的语义质量/延迟与生产切换，独立review和发布仍归主线程。
+
 ## G1：多笔送灯牌的有界判断证据（2026-11-01）
 - 完整阅读 `.local/gift_rule_review.md` 后修复G1：gift_evidence及累计数量/首末时间保留完整，新增最多3条qualification_evidence（首份有效gift与必要guard/identity）；主evidence合并最多9条状态依据，始终不超过原工具12条限制，不调高schema上限。
 - AI只须保留资格witness并附本次语音，前次有效状态依据在重算后继续保留于有界窗口，超出窗口的旧依据仍留history/observations。模型上下文去除完整gift_evidence清单，改为gift_receipt_count与有界引用；API审计仍解析全部送礼引用。

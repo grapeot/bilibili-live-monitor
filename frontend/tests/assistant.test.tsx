@@ -107,4 +107,23 @@ describe('助手操作',()=>{
     fireEvent.click(screen.getByLabelText('显示已完成 / 已忽略，供恢复或撤销'));
     expect(screen.queryByText('旧佩戴牌卡')).toBeNull();
   });
+  it('折叠展示agent查证轨迹和裁剪指标，不把字节伪称精确token',async()=>{
+    const original=fetch;
+    vi.stubGlobal('fetch',vi.fn(async(url:string,init?:RequestInit)=>{
+      const response=await original(url,init);
+      if(!url.includes('/state?'))return response;
+      const data=await response.json();
+      return {ok:true,json:async()=>({...data,agent:{status:'sleeping',compaction_count:2,
+        input_bytes:12000,byte_limit:200000,last_prompt_eval_count:3000,
+        aliases:[{uid:'111',alias:'清风老师',version:1}],
+        trace:[{at:1,tool:'record_alias',reason:'有原文称呼证据',cached:true}]}})};
+    }));
+    render(<Assistant/>);await screen.findByText('想听歌曲A');
+    const summary=screen.getByText('Agent 状态与查证轨迹');
+    expect(summary.closest('details')?.open).toBe(false);
+    fireEvent.click(summary);
+    expect(screen.getByText(/上下文裁剪 2 次/)).toBeTruthy();
+    expect(screen.getByText(/预算代理，不是精确token数/)).toBeTruthy();
+    expect(screen.getByText(/record_alias：有原文称呼证据.*未重复执行/)).toBeTruthy();
+  });
 });

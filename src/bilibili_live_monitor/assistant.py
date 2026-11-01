@@ -3,6 +3,7 @@ import json
 import sqlite3
 import time
 import unicodedata
+from contextlib import nullcontext
 from datetime import datetime
 from pathlib import Path
 from typing import Literal
@@ -90,6 +91,8 @@ class Action(Strict):
     status: Literal['pending', 'responded', 'dismissed', 'queued', 'sung', 'rejected', 'done']
     title: str = Field(min_length=1, max_length=300)
     evidence: list[EvidenceRef] = Field(min_length=1, max_length=12)
+    recipient_uid: str | None = None
+    song_origin: Literal['request', 'gift'] = 'request'
 
 
 class Actions(Strict):
@@ -127,6 +130,15 @@ class AssistantStore:
             CREATE TABLE IF NOT EXISTS history(
                 seq INTEGER PRIMARY KEY AUTOINCREMENT, card_id TEXT, before_data TEXT, after_data TEXT);
             CREATE TABLE IF NOT EXISTS overrides(name TEXT PRIMARY KEY, reading TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS aliases(
+                alias_key TEXT NOT NULL UNIQUE, uid TEXT NOT NULL, data TEXT NOT NULL,
+                PRIMARY KEY(uid,alias_key));
+            CREATE TABLE IF NOT EXISTS agent_runs(id TEXT PRIMARY KEY, data TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS agent_calls(key TEXT PRIMARY KEY, data TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS agent_exchanges(
+                id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL, at REAL NOT NULL, data TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS agent_audit(
+                id INTEGER PRIMARY KEY AUTOINCREMENT, at REAL NOT NULL, data TEXT NOT NULL);
         ''')
 
     def close(self):
@@ -326,11 +338,12 @@ class AssistantStore:
             self.save_card(card)
         return card
 
-    def apply(self, payload, target, offered):
+    def apply(self, payload, target, offered, *, commit=True, advance_cursor=True):
         actions = Actions.model_validate(payload).actions
         config = self.get('config')
-        with self.db:
-            self.db.execute('BEGIN IMMEDIATE')
+        with self.db if commit else nullcontext():
+            if commit:
+                self.db.execute('BEGIN IMMEDIATE')
             for action in actions:
                 if action.room_id != config['room_id'] or action.session_id != config['session_id']:
                     raise ValueError('AI 场次/房间不匹配')
@@ -368,8 +381,21 @@ class AssistantStore:
                                     'evidence': witness + status_refs, 'status_evidence': status_refs})
                     continue  # 只改待办状态，不接收 AI 的昵称、标题、资格或榜单改写。
                 origin = next((i for i in items if i['kind'] == 'danmaku'), None)
-                if not old and not origin:
+                if not old and action.song_origin == 'gift':
+                    uid = action.recipient_uid
+                    identities = [i for i in items if i.get('sender_uid') == uid and uid]
+                    names = {i.get('author') for i in identities if i.get('author')}
+                    names.update(r[0] for r in self.db.execute('SELECT alias_key FROM aliases WHERE uid=?', (uid,)))
+                    voices = [i for i in items if i['kind'] == 'transcript' and action.title in i.get('text', '')
+                              and any(len(name) >= 2 and name.casefold() in i.get('text', '').casefold()
+                                      for name in names)]
+                    if not identities or not voices:
+                        raise ValueError('主动赠歌需要明确UID身份和歌曲/称呼语音证据')
+                    origin = {**voices[0], 'sender_uid': uid, 'author': identities[0].get('author', '')}
+                elif not old and not origin:
                     raise ValueError('点歌项必须有弹幕来源')
+                elif not old and action.recipient_uid and origin.get('sender_uid') != action.recipient_uid:
+                    raise ValueError('点歌接收者与来源身份不匹配')
                 origin_id = (old or {}).get('origin_id') or (str(origin['id']) if origin else None)
                 if old and action.kind == 'chat' and action.card_id.removeprefix('chat:') not in {
                         r['id'] for r in refs}:
@@ -383,10 +409,12 @@ class AssistantStore:
                                 'title': action.title, 'status': action.status,
                                 'version': action.expected_version+1, 'manual': False, 'evidence': refs,
                                 'origin_id': origin_id,
+                                'song_origin': (old or {}).get('song_origin', action.song_origin),
                                 'uid': (old or {}).get('uid') or origin.get('sender_uid'),
                                 'author': (old or {}).get('author') or origin.get('author') or ''})
-            self.put('ai_cursor', target)
-            self.put('last_analysis', time.time())
+            if advance_cursor:
+                self.put('ai_cursor', target)
+                self.put('last_analysis', time.time())
             self.put('last_error', None)
 
     def state(self):
@@ -406,6 +434,10 @@ class AssistantStore:
                                   (self.get('ai_cursor', 0),)).fetchone()[0]
         latest = self.db.execute('SELECT max(changed) FROM evidence').fetchone()[0]
         return {'config': self.get('config'), 'cards': cards,
+                'agent': {**self.get('agent_metrics', {}), 'status': self.get('agent_status', 'sleeping'),
+                          'aliases': [json.loads(r[0]) for r in self.db.execute('SELECT data FROM aliases')],
+                          'trace': [json.loads(r[0]) for r in self.db.execute(
+                              'SELECT data FROM agent_audit ORDER BY id DESC LIMIT 20')]},
                 'evidence': evidence,
                 'worker': {'pending_observations': pending, 'last_observation': latest,
                            **{key: self.get(key) for key in

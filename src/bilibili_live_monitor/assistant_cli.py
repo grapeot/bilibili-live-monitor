@@ -39,7 +39,8 @@ def main():
         parser.error('owner-pid 与 owner-create-time 必须成对提供')
     config = WorkerConfig(**{f.name: getattr(args, f.name) for f in fields(defaults)})
     if min(config.timeout, config.interval, config.max_calls, config.max_events,
-           config.max_bytes, config.max_tokens) <= 0 or config.debounce < 0:
+           config.max_bytes, config.max_tokens, config.max_tool_turns, config.max_tools_per_turn,
+           config.context_tokens, config.recent_seconds, config.tool_result_bytes) <= 0 or config.debounce < 0:
         parser.error('预算、超时和间隔必须为正，debounce 不得为负')
     if Path(args.db).resolve() == Path(args.source_db).resolve():
         parser.error('助手数据库不能是源数据库')

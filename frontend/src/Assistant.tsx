@@ -9,6 +9,11 @@ type Card = {id:string;kind:'chat'|'medal'|'song';title:string;status:string;ver
   pronunciation:{text:string;uncertain:boolean;override:boolean;unknown?:string[];
     candidates?:{character:string;readings:string[]}[]};guard_observation?:unknown};
 type Snapshot = {config:Scope;cards:Card[];evidence:{id:string;version:number;latest_version?:number;data:Record<string,unknown>}[];
+  agent?:{status?:string;compaction_count?:number;dense_window_drops?:number;truncated_tool_results?:number;
+    truncated_query_results?:number;
+    input_bytes?:number;byte_limit?:number;last_prompt_eval_count?:number|null;
+    aliases?:{uid:string;alias:string;version:number}[];
+    trace?:{at:number;tool:string;reason:string;error?:string|null;cached?:boolean}[]};
   worker:{status?:string;last_error?:string;calls?:number;cursor?:number;ai_cursor?:number;
     pending_observations?:number;last_observation?:number;last_analysis?:number}};
 const base = import.meta.env.BASE_URL;
@@ -85,6 +90,13 @@ export function Assistant(){
     {error&&<p role="alert">{error}</p>}
     {data&&<><p className="room-sub">{workerNames[data.worker.status||'']||'等待 worker'} · 模型调用 {data.worker.calls||0} 次 · 待分析观察 {data.worker.pending_observations??0} 条 · 最近观察更新 {data.worker.last_observation?new Date(data.worker.last_observation*1000).toLocaleTimeString('zh-CN',{hour12:false}):'尚无'}{data.worker.last_error?' · '+data.worker.last_error:''}</p>
       <details><summary>运行诊断</summary><p>源事件游标：{data.worker.cursor||0}；AI 已完成观察序号：{data.worker.ai_cursor||0}（两个序号不是同一计数）。最近分析完成：{data.worker.last_analysis?new Date(data.worker.last_analysis*1000).toLocaleTimeString('zh-CN',{hour12:false}):'尚无'}</p></details>
+      {data.agent&&<details><summary>Agent 状态与查证轨迹</summary>
+        <p>{({sleeping:'休眠，等待新观察',working:'正在查证',turn_limit:'达到工具轮次上限',waiting_retry:'等待重试',budget_paused:'调用预算已用完'})[data.agent.status||'']||data.agent.status}
+          {' · '}上下文裁剪 {data.agent.compaction_count||0} 次 · 密集窗口移除 {data.agent.dense_window_drops||0} 轮 · 工具结果截断 {data.agent.truncated_tool_results||0} 次 · 查询覆盖截断 {data.agent.truncated_query_results||0} 次</p>
+        <p>最近输入 {data.agent.input_bytes??'—'} / {data.agent.byte_limit??'—'} UTF-8字节（预算代理，不是精确token数）；Ollama报告上次输入 {data.agent.last_prompt_eval_count??'未知'} tokens。</p>
+        {!!data.agent.aliases?.length&&<p>已查证称呼：{data.agent.aliases.map(a=>`${a.alias} → UID ${a.uid}`).join('；')}</p>}
+        <ol>{data.agent.trace?.map((entry,index)=><li key={`${entry.at}:${index}`}>{entry.tool}：{entry.reason}{entry.cached?' · 已有回执，未重复执行':''}{entry.error?` · ${entry.error}`:''}</li>)}</ol>
+      </details>}
       <label><input type="checkbox" checked={history} onChange={e=>setHistory(e.target.checked)}/>显示已完成 / 已忽略，供恢复或撤销</label>
       <div className="assistant-columns">{(['chat','medal','song'] as const).map(kind=>{
         const cards=data.cards.filter(c=>c.kind===kind&&(kind!=='medal'||(c.eligible&&c.qualification_rule==='fan_club_gift_v1'))
