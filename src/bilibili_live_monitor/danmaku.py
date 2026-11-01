@@ -10,6 +10,7 @@ import brotli
 from google.protobuf.message import DecodeError
 
 from .gift_protocol import gift_items
+from .interaction_protocol import interaction_data
 
 MAX_PACKET_BYTES = 4 * 1024 * 1024
 
@@ -149,6 +150,31 @@ def packets(frame, depth=0):
                 continue
 
 
+def entry_message(packet):
+    """只认 msg_type=1 入场；关注、分享和入场特效不重复计为到场。"""
+    data = interaction_data(packet['data']) if packet['cmd'] == 'INTERACT_WORD_V2' else packet['data']
+    if integer(data.get('msg_type', 0)) != 1:
+        return None
+    user = data.get('uinfo') or {}
+    base = user.get('base') or {}
+    anonymous = bool(data.get('is_mystery') or base.get('is_mystery'))
+    identity = user_identity(user.get('uid') or data.get('uid'), anonymous=anonymous)
+    author = '神秘人' if anonymous else str(base.get('name') or data.get('uname') or data.get('username') or '')[:200]
+    if not author and not identity['sender_uid']:
+        return None
+    timestamp = integer(data.get('timestamp') or 0)
+    at = event_time(timestamp) if timestamp else datetime.now(timezone.utc).isoformat()
+    fields = [identity['sender_uid'], timestamp, str(data.get('trigger_time') or ''), author]
+    if not timestamp:
+        fields.append(data)
+    key = 'entry:' + hashlib.sha256(json.dumps(fields, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+    return {'kind': 'entry', 'author': author or '未命名用户', 'text': '进入直播间',
+            'at_utc': at, 'source_key': key, **identity,
+            'guard_level': guard_level(data.get('guard_level', data.get('guard_type'))),
+            'guard_source': 'interaction_event',
+            'entry': {'event_type': packet['cmd'], 'time_source': 'event' if timestamp else 'received'}}
+
+
 def messages(frame, *, include_raw=False):
     result = []
     try:
@@ -159,6 +185,11 @@ def messages(frame, *, include_raw=False):
                 if not isinstance(packet, dict):
                     continue
                 command = packet.get('cmd', '')
+                if command in ('INTERACT_WORD', 'INTERACT_WORD_V2'):
+                    item = entry_message(packet)
+                    if item:
+                        result.append(item)
+                    continue
                 if command == 'SEND_GIFT_V2':
                     items = list(gift_items(packet['data']))
                     identities = Counter(str(data.get('tid')) for data in items if data.get('tid'))
