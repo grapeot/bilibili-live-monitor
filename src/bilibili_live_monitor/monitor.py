@@ -176,6 +176,7 @@ class Monitor:
                 chat_context.update(room_id=room_id, generation=generation)
                 previous.update(next((r for r in self.store.rooms() if r['room_id'] == room_id), {}))
                 self.store.room({**previous, 'room_id': room_id, 'url': room_url(resolved_page.url),
+                                 'source_url': url,
                                  'title': room_id, 'cover_url': '',
                                    'chunk_seconds': seconds, 'status': 'reconnecting',
                                    'reconnect_attempts': max(previous.get('reconnect_attempts', 0), retry_attempts),
@@ -212,7 +213,7 @@ class Monitor:
                                document.querySelector('video')?.poster || ''}}''')
                 if self.generations.get(room_id) != chat_context['generation']:
                     raise ValueError('房间启动已取消')
-                room = {'room_id': room_id, 'url': canonical, **metadata, 'chunk_seconds': seconds,
+                room = {'room_id': room_id, 'url': canonical, 'source_url': url, **metadata, 'chunk_seconds': seconds,
                          'status': 'capturing', 'error': None, 'muted': True,
                          'cycle_notice': False, **options, 'recording_status': 'disabled' if options['record_mode'] == 'none' else 'starting',
                            'recorded_seconds': previous.get('recorded_seconds', 0),

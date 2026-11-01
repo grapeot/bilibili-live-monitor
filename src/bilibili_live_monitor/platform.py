@@ -72,9 +72,8 @@ class Platform:
         self.candidates = saved.get('candidates', {})
         if self.policy.mode == 'fixed' and not self.policy.fixed_rooms:
             self.policy.fixed_rooms = list(self.candidates)[:self.policy.target_rooms]
-        previous = {r['room_id']: r for r in self.store.rooms()}
         for candidate in self.candidates.values():
-            old = previous.get(candidate.get('room_id'), {})
+            old = self.retry_room(candidate) or {}
             if 'reconnect_attempts' in old:
                 candidate['attempts'] = old['reconnect_attempts']
             candidate['next_attempt'] = max(candidate.get('next_attempt', 0),
@@ -332,7 +331,8 @@ class Platform:
 
     def retry_room(self, candidate):
         return next((r for r in self.store.rooms() if r['room_id'] == candidate.get('room_id') or
-                     r.get('url') == candidate['url'] or r['room_id'] == candidate['url'].rsplit('/', 1)[-1]), None)
+                     r.get('url') == candidate['url'] or r.get('source_url') == candidate['url'] or
+                     r['room_id'] == candidate['url'].rsplit('/', 1)[-1]), None)
 
     def failed(self, candidate, error, *, already_counted=False):
         room = self.retry_room(candidate)
