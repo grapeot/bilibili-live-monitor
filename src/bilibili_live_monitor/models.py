@@ -7,6 +7,10 @@ SegmentStatus = Literal['queued', 'transcribing', 'done', 'empty', 'silent', 'tr
 
 
 class SegmentResponse(BaseModel):
+    transcript_version: Literal['realtime', 'offline'] | None = None
+    stream_id: str | None = None
+    stable_text: str | None = None
+    is_final: bool | None = None
     room_id: str = Field(description='实际房间号', examples=['123456'])
     seq: int = Field(ge=1, description='该房间跨会话递增的音频段序号')
     start_utc: str = Field(description='本段采集开始时间，带时区ISO8601')
@@ -22,8 +26,8 @@ class SegmentResponse(BaseModel):
     muted: bool = Field(description='播放器是否静音')
     paused: bool = Field(description='播放器是否暂停，正常采集时为false')
     track_live: bool = Field(description='本段提交时音轨是否有效')
-    rms_dbfs: float = Field(description='解码后音频均方根电平，dBFS；不是语音置信度')
-    queue_wait_ms: int = Field(ge=0, description='排队等待毫秒，不含模型首次启动')
+    rms_dbfs: float = Field(description='最近一次输入音频均方根电平，dBFS；实时稿中不是整窗汇总或语音置信度')
+    queue_wait_ms: int = Field(ge=0, description='最近一次输入排队等待毫秒，不含模型首次启动')
     infer_ms: int = Field(ge=0, description='模型推理毫秒，不含首次加载')
     status: SegmentStatus = Field(description='处理状态；empty表示模型未输出文本')
     text: str = Field(description='模型原始文字，未做语义编辑')
@@ -71,6 +75,10 @@ class GiftDetails(BaseModel):
 
 
 class TimelineItem(BaseModel):
+    transcript_version: Literal['realtime', 'offline'] | None = None
+    stream_id: str | None = None
+    stable_text: str | None = None
+    is_final: bool | None = None
     id: int
     room_id: str
     kind: Literal['transcript', 'danmaku', 'gift']

@@ -1,6 +1,8 @@
 import React, {useEffect, useLayoutEffect, useRef, useState} from 'react';
 import {createRoot} from 'react-dom/client';
 import './style.css';
+import {giftLabel, giftText, type Gift} from './gifts';
+import {transcriptLabel} from './transcripts';
 
 type Segment = {seq:number; start_utc:string; end_utc:string; text:string; status:string;
   queue_wait_ms:number; infer_ms:number; rms_dbfs:number; error:string|null; coverage_ratio?:number|null};
@@ -9,9 +11,10 @@ type Room = {room_id:string; title:string; url:string; cover_url:string; status:
   recording_status:string;recorded_seconds:number;recording_files:number;recording_bytes:number;
   error:string|null; chunk_seconds:number; segments:Segment[];items:Item[]};
 type Item = {id:number;room_id:string;kind:'transcript'|'danmaku'|'gift';at_utc:string;received_utc:string;text:string;
+  transcript_version?:'realtime'|'offline'|null;stable_text?:string|null;is_final?:boolean|null;
   sender_uid?:string|null;guard_level?:number|null;
   author?:string|null;seq?:number|null;status?:string|null;error?:string|null;
-  gift?:{event_type:string;coin_type?:string|null;blind_gift?:object|null;time_source?:string}|null};
+  gift?:Gift|null};
 type Change = {kind:'room';data:Room}|{kind:'segment';data:Segment&{room_id:string}}|{kind:'item';data:Item};
 type State = {rooms:Room[]; queue_depth:number; queue_capacity:number; asr_ready:boolean;
   asr_enabled:boolean;
@@ -29,9 +32,6 @@ const api = async(path:string, init?:RequestInit) => {
   return result;
 };
 const time = (iso:string) => new Date(iso).toLocaleTimeString('zh-CN',{hour12:false});
-const giftLabel = (item:Item) => item.gift?.event_type==='GUARD_BUY'?'上舰 · 大航海':
-  item.gift?.event_type==='SUPER_CHAT_MESSAGE'?'醒目留言':item.gift?.blind_gift?'盲盒结果':
-  item.gift?.coin_type==='silver'?'银币礼物':item.gift?.coin_type==='gold'?'金币礼物':'礼物';
 
 type Resources = {epoch:number;sample_seconds:number;cpu_cores:number;rss_gib:number;
   system_gpu_percent:number|null;external_download_mbps:number;external_upload_mbps:number;
@@ -138,15 +138,16 @@ const RoomCard = React.memo(function RoomCard({room,status,onError}:{room:Room;s
   return <article className="card">
     <RoomPreview room={room}/>
     <div className="card-body"><div className="room-heading"><a href={room.url} target="_blank" rel="noreferrer">{room.title.replace(/ - 哔哩哔哩直播.*$/,'')}</a><span className={'badge '+status}>{labels[status]||status}</span></div>
-    <div className="room-sub"><span>房间 {room.room_id} · {room.chunk_seconds} 秒 / 段</span><button className="text-button" disabled={room.status==='stopped'} onClick={()=>api(`rooms/${room.room_id}/stop`,{method:'POST'}).catch(e=>onError(e.message))}>停止监控</button></div>
+    <div className="room-sub"><span>房间 {room.room_id} · 流式输入 5 秒 · 上下文 ≤30 秒</span><button className="text-button" disabled={room.status==='stopped'} onClick={()=>api(`rooms/${room.room_id}/stop`,{method:'POST'}).catch(e=>onError(e.message))}>停止监控</button></div>
     {room.error&&<p className="room-error">{room.error}</p>}
     <p className="room-sub">保存：{({none:'关闭',audio:'原始音频',video:'原始音视频'})[room.record_mode]} · ASR：{room.asr_enabled?'启用':'禁用'} · 弹幕 / 礼物：保存并显示</p>
     {room.record_mode!=='none'&&<p className="room-sub">录制 {room.recording_status==='recording'?'进行中':room.recording_status==='starting'?'启动中':room.recording_status==='stopped'?'已结束':room.recording_status} · {(room.recorded_seconds/60).toFixed(1)} 分钟 · {(room.recording_bytes/1e6).toFixed(1)} MB · {room.recording_files} 文件</p>}
     <div className="timeline-tools"><button className="text-button" aria-pressed={following} onClick={()=>{setFollowing(true);if(scroller.current)scroller.current.scrollTop=scroller.current.scrollHeight}}>{following?'跟随最新':'已暂停·回最新'}</button><a href={base+'api/export?room_id='+room.room_id}>导出本房快照</a></div>
     <div className={'segments'+(following?' following':'')} ref={scroller} onScroll={e=>{const n=e.currentTarget;setFollowing(n.scrollHeight-n.scrollTop-n.clientHeight<32)}}>
       {!room.items.length?<p className="waiting">等待弹幕、礼物或首个音频切片…</p>:room.items.map(item=><div className={'segment '+item.kind+' '+(item.status||'')} key={item.id}>
-        <div className="segment-meta"><time>{time(item.at_utc)}</time><span>{item.kind==='gift'?giftLabel(item)+(item.gift?.time_source==='received'?' · 接收时间':''):item.kind==='danmaku'?'弹幕':`语音转写 #${item.seq} · ${labels[item.status||'']||item.status}`}</span></div>
-        <p>{item.author&&<b className="chat-author" title={item.sender_uid?`UID ${item.sender_uid}`:'身份未确认'}>{item.author}{item.guard_level?` · ${{1:'总督',2:'提督',3:'舰长'}[item.guard_level]||'大航海'}`:''}：</b>}{item.text||item.error||(item.status==='silent'?'音量低于阈值，已跳过识别':item.status==='empty'?'本段未识别到文字':'等待识别…')}</p>
+        <div className="segment-meta"><time>{time(item.at_utc)}</time><span>{item.kind==='gift'?giftLabel(item.gift)+(item.gift?.time_source==='received'?' · 接收时间':''):item.kind==='danmaku'?'弹幕':item.transcript_version==='realtime'?transcriptLabel(item):`语音转写 #${item.seq} · ${labels[item.status||'']||item.status}`}</span></div>
+        <p>{item.author&&<b className="chat-author" title={item.sender_uid?`UID ${item.sender_uid}`:'身份未确认'}>{item.author}{item.guard_level?` · ${{1:'总督',2:'提督',3:'舰长'}[item.guard_level]||'大航海'}`:''}：</b>}{(item.kind==='gift'?giftText(item.gift,item.text):item.text)||item.error||(item.status==='silent'?'音量低于阈值，已跳过识别':item.status==='empty'?'本段未识别到文字':'等待识别…')}</p>
+        {item.error&&item.text&&<p className="room-error">{item.error}</p>}
       </div>)}
     </div>
     <footer>{room.asr_enabled?<><span>等待 {latest?`${(latest.queue_wait_ms/1000).toFixed(1)}s`:'—'}</span><span>推理 {latest?`${(latest.infer_ms/1000).toFixed(1)}s`:'—'}</span><span>{latest?`${latest.rms_dbfs} dBFS`:'等待音频'}</span><span>覆盖 {latest?.coverage_ratio!=null?`${(latest.coverage_ratio*100).toFixed(0)}%`:'—'}</span></>:<span>ASR 禁用 · 不创建识别音频队列</span>}</footer>
@@ -160,7 +161,7 @@ function App(){
   const [previewEnabled,setPreviewEnabled]=useState(false);
   const [connected,setConnected] = useState(false);
   const [url,setUrl] = useState('');
-  const [seconds,setSeconds] = useState(30);
+  const seconds = 5;
   const [busy,setBusy] = useState(false);
   const [error,setError] = useState('');
   const [candidates,setCandidates] = useState<{url:string;title:string}[]>([]);
@@ -213,7 +214,7 @@ function App(){
     <WatchStatus/>
     <form onSubmit={e=>{e.preventDefault();void add(url)}}>
       <input aria-label="直播间链接或房间号" placeholder="输入直播间链接或房间号" value={url} onChange={e=>setUrl(e.target.value)} required/>
-      <select aria-label="切片窗口" value={seconds} onChange={e=>setSeconds(Number(e.target.value))}>{[5,10,20,30,60].map(n=><option key={n} value={n}>{n} 秒 / 段</option>)}</select>
+      <span className="room-sub">千问流式 · 每5秒更新</span>
       <select aria-label="保存类型" value={recordMode} onChange={e=>setRecordMode(e.target.value)}><option value="audio">只保存音频</option><option value="video">保存视频＋音频</option><option value="none">不保存媒体</option></select>
       <label><input type="checkbox" checked={asrEnabled} onChange={e=>setAsrEnabled(e.target.checked)}/>ASR</label>
       <label><input type="checkbox" checked={previewEnabled} onChange={e=>setPreviewEnabled(e.target.checked)}/>缩略图</label>
@@ -228,7 +229,7 @@ function App(){
     <div className="section-title"><h2>直播间 <span>{state.rooms.length}</span></h2><a className="export-link" href={base+'api/export'}>导出全部快照</a></div>
     {state.rooms.length===0&&<section className="empty">当前暂无监控房间，请输入直播间链接或房间号开始监听。</section>}
     <section className="grid">{state.rooms.map(room=><RoomCard key={room.room_id} room={room} status={room.status==='capturing'&&state.inflight?.room_id===room.room_id?'transcribing':room.status} onError={setError}/>)}</section>
-    <p className="footnote">每房间显示最近80条弹幕、礼物与转写；完整时间线保存于本地SQLite，可导出JSONL。金币、银币与SC人民币金额分开；盲盒结果标价不代表真实付费或主播净收入。游戏声和背景音乐可能造成误识别。</p>
+    <p className="footnote">每房间显示最近80条弹幕、礼物与转写；完整时间线保存于本地SQLite，可导出JSONL。付费金额统一显示电池（100金瓜子＝1电池，1元＝10电池）；免费礼物仍显示银币。盲盒花费与抽中礼物单价分列，均不代表主播净收入；导出保留协议原始单位。游戏声和背景音乐可能造成误识别。</p>
   </main>;
 }
 createRoot(document.getElementById('root')!).render(<React.StrictMode><App/></React.StrictMode>);

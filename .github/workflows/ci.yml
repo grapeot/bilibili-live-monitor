@@ -20,3 +20,4 @@ jobs:
       - run: uv venv --python 3.12 && uv pip install -e '.[dev]'
       - run: .venv/bin/ruff check src tests scripts && .venv/bin/pytest
       - run: npm ci --prefix frontend && npm run build --prefix frontend
+      - run: node --experimental-strip-types --test frontend/tests/*.test.mjs

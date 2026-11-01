@@ -20,19 +20,23 @@ async def test_stop_releases_queue_and_inflight_without_dropping_other_room(tmp_
     store.room({'room_id': '123456', 'status': 'capturing'})
     monitor.generations.update({'123456': 'a', '234567': 'b'})
     started = asyncio.Event()
+    release = asyncio.Event()
 
-    async def recognize(path, req_id):
+    async def recognize(path, req_id, stream_id, sample_offset):
         if req_id.startswith('a:'):
             started.set()
-            await asyncio.Future()
-        return {'text': '合成B结果', 'infer_ms': 1}
+            await release.wait()
+        return {'epoch': 'worker', 'infer_ms': 1, 'updates': [
+            {'window_id': 'one', 'text': '合成B结果', 'stable_text': '',
+             'start_seconds': 0, 'end_seconds': 1, 'final': False}]}
 
-    monitor.asr.transcribe = recognize
+    monitor.asr.feed = recognize
     await monitor.start(warm=False)
     pcm = (np.ones(16000, dtype='<i2') * 1000).tobytes()
 
     def submit(room_id, seq, generation):
-        monitor.submit({'room_id': room_id, 'seq': seq, 'rms_dbfs': rms_dbfs(pcm),
+        monitor.submit({'room_id': room_id, 'stream_id': generation, 'sample_offset': seq-1,
+                        'origin_ms': 1000, 'rms_dbfs': rms_dbfs(pcm),
                         'text': '', 'error': None}, pcm, generation)
 
     try:
@@ -41,11 +45,12 @@ async def test_stop_releases_queue_and_inflight_without_dropping_other_room(tmp_
         submit('123456', 2, 'a')
         assert monitor.queue.full()
         await monitor.stop('123456')
+        release.set()
         assert not monitor.queue.full()
         submit('234567', 1, 'b')
         await asyncio.wait_for(monitor.queue.join(), 2)
         assert monitor.overload_count == 0
-        assert [s['status'] for s in store.segments('123456')] == ['cancelled', 'cancelled']
+        assert store.segments('123456') == []  # 未产生识别结果的输入不伪造转写行。
         assert store.segments('234567')[0]['text'] == '合成B结果'
         assert not list((tmp_path / 'audio').iterdir())
     finally:
@@ -102,8 +107,9 @@ async def test_interleaved_success_resets_retry_budget(monkeypatch, tmp_path):
     with pytest.raises(asyncio.CancelledError):
         await monitor.capture(room, page, 'session')
     assert page.reloads == 3  # 总失败3次，但从未连续失败2次。
-    assert len(store.segments('123456')) == 2
-    assert all(s['status'] == 'silent' for s in store.segments('123456'))
+    assert store.segments('123456') == []
+    assert sum(path is not None for _, path, _, _ in monitor.queue._queue) == 2
+    await monitor.close()
     assert page.closed
     store.close()
 
@@ -222,14 +228,14 @@ async def test_completed_inference_cannot_publish_after_stop(tmp_path):
         stop_tasks.append(asyncio.create_task(monitor.stop('123456')))
         return {'text':'不应发布的合成结果', 'infer_ms':1}
 
-    monitor.asr.transcribe = recognize
+    monitor.asr.feed = recognize
     await monitor.start(warm=False)
     pcm = (np.ones(16000, dtype='<i2')*1000).tobytes()
-    monitor.submit({'room_id':'123456','seq':1,'rms_dbfs':rms_dbfs(pcm),'text':''}, pcm, 'a')
+    monitor.submit({'room_id':'123456','stream_id':'a','sample_offset':0,
+                    'origin_ms':1000,'rms_dbfs':rms_dbfs(pcm),'text':''}, pcm, 'a')
     await asyncio.wait_for(monitor.queue.join(), 2)
     await asyncio.gather(*stop_tasks)
-    segment = store.segments('123456')[0]
-    assert segment['status'] == 'cancelled' and segment['text'] == ''
+    assert store.segments('123456') == []
     assert all(json.loads(e['data']).get('status') != 'done' for e in store.events(0))
     await monitor.close()
     store.close()

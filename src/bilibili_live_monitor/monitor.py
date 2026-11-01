@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 
 import numpy as np
 
-from .asr import ASR
+from .asr import StreamingASR
 from .audio_queue import AudioQueue
 from .browser import Browser, close_page, ensure_playing, room_url
 from .capture import close_pcm, read_pcm, start_pcm
@@ -76,7 +76,10 @@ class Monitor:
     def __init__(self, settings, store):
         self.settings, self.store = settings, store
         self.browser = Browser(settings.cdp_url)
-        self.asr = ASR(settings)
+        self.asr = StreamingASR(settings)
+        self.stream_rows = {}
+        self.stream_inputs = {}
+        self.pending_finishes = set()
         self.queue = AudioQueue(maxsize=settings.queue_size)
         self.tasks, self.pages, self.generations = {}, {}, {}
         self.pending = set()
@@ -132,6 +135,7 @@ class Monitor:
                 'asr_error': self.asr.last_error}
 
     async def add(self, value, seconds, *, record_mode=None, asr_enabled=None, preview_enabled=None):
+        seconds = 5  # 实时采音固定每5秒送入流式上下文；旧API参数不再控制独立切片。
         options = {'record_mode': self.settings.record_mode if record_mode is None else record_mode,
                    'asr_enabled': self.settings.asr_enabled if asr_enabled is None else asr_enabled,
                    'preview_enabled': self.settings.preview_enabled if preview_enabled is None else preview_enabled}
@@ -374,18 +378,24 @@ class Monitor:
 
     async def capture_cycles(self, room, page, generation):
         room_id = room['room_id']
-        seconds = room['chunk_seconds']
-        seq = self.store.next_seq(room_id)
+        seconds = 5
+        stream_id = uuid.uuid4().hex
+        offset = 0
+        origin_ms = None
         await start_pcm(page)
         try:
             while True:
                 pcm, payload = await read_pcm(page, seconds)
+                if origin_ms is None:
+                    origin_ms = payload['started']
                 timing = {'start_utc': iso_ms(payload['started']), 'end_utc': iso_ms(payload['ended']),
                           'duration_seconds': len(pcm)/32000,
                           'wall_seconds': (payload['ended']-payload['started'])/1000}
                 timing['coverage_ratio'] = (timing['duration_seconds']/timing['wall_seconds']
                                             if timing['wall_seconds'] else 0)
-                segment = {'room_id': room_id, 'seq': seq, **timing,
+                segment = {'room_id': room_id, **timing,
+                           'stream_id': stream_id, 'sample_offset': offset, 'origin_ms': origin_ms,
+                           'session_id': generation, 'transcript_version': 'realtime',
                            'muted': payload['muted'], 'paused': payload['paused'],
                            'track_live': payload['track_live'], 'rms_dbfs': rms_dbfs(pcm),
                            'queue_wait_ms': 0, 'infer_ms': 0, 'text': '', 'error': None,
@@ -403,13 +413,14 @@ class Monitor:
                         raise RuntimeError(f'播放器进度不足：{payload["media_advanced"]:.2f}秒')
                 except Exception as error:
                     segment.update(status='error', error=f'{type(error).__name__}: {error}')
-                    self.store.segment(segment)
+                    self.stream_error(segment, segment['error'])
                     raise
                 self.submit(segment, pcm, generation)
+                offset += len(pcm)//2
                 if room.get('record_mode', 'none') == 'none':
                     self.failures[room_id] = 0  # 纯ASR通路以通过校验的完整PCM窗口作为恢复标准。
-                seq += 1
         finally:
+            self.finish_stream(stream_id, generation)
             if not page.is_closed():
                 try:
                     await close_pcm(page)
@@ -417,14 +428,12 @@ class Monitor:
                     self.store.event('capture_cleanup_error', {'room_id': room_id, 'error': str(error)})
 
     def submit(self, segment, pcm, generation):
-        if segment['rms_dbfs'] < self.settings.silence_dbfs:
-            segment['status'] = 'silent'
-            self.store.segment(segment)
-            return
+        segment['session_id'] = generation
+        self.stream_inputs[segment['stream_id']] = segment
         if self.queue.full():
             self.overload_count += 1
             segment.update(status='error', error='queue_overload：识别队列已满，本段已丢弃')
-            self.store.segment(segment)
+            self.stream_error(segment, segment['error'])
             self.store.event('queue_overload', {'room_id': segment['room_id'], 'count': self.overload_count})
             return
         directory = self.settings.data_dir / 'audio'
@@ -435,49 +444,99 @@ class Monitor:
             wav.setsampwidth(2)
             wav.setframerate(16000)
             wav.writeframes(pcm)
-        segment['status'] = 'queued'
-        self.store.segment(segment)
         self.queue.put_nowait((segment, path, time.monotonic(), generation))
+
+    def finish_stream(self, stream_id, generation):
+        if stream_id in self.pending_finishes or stream_id not in self.stream_inputs:
+            return
+        self.pending_finishes.add(stream_id)
+        self.queue.put_control(({**self.stream_inputs[stream_id], 'op': 'finish'},
+                                None, time.monotonic(), generation))
+
+    def stream_error(self, segment, error):
+        self.store.segment({**segment, 'seq': self.store.next_seq(segment['room_id']),
+                            'status': 'error', 'error': error, 'is_final': True,
+                            'transcript_version': 'realtime'})
+
+    def publish_stream(self, segment, result):
+        sid = segment['stream_id']
+        # worker重启后，上一次还未定稿的行显式中断，不与新上下文拼接。
+        for key, row in list(self.stream_rows.items()):
+            if key[0] == sid and key[1] != result['epoch']:
+                self.store.segment({**row, 'status': 'cancelled', 'is_final': True,
+                                    'error': '流式上下文已重建'})
+                self.stream_rows.pop(key)
+        for update in result.get('updates', []):
+            key = (sid, result['epoch'], update['window_id'])
+            previous = self.stream_rows.get(key)
+            start = iso_ms(segment['origin_ms'] + update['start_seconds']*1000)
+            end = iso_ms(segment['origin_ms'] + update['end_seconds']*1000)
+            final = update['final']
+            row = {**(previous or {}), **segment, 'seq': previous['seq'] if previous else self.store.next_seq(segment['room_id']),
+                   'start_utc': start, 'end_utc': end, 'text': update['text'],
+                   'stable_text': update['stable_text'], 'is_final': final,
+                   'transcript_version': 'realtime', 'infer_ms': result.get('infer_ms', 0),
+                   'duration_seconds': update['end_seconds']-update['start_seconds'],
+                   'status': ('done' if update['text'].strip() else 'empty') if final else 'transcribing',
+                   'error': None}
+            # 捕获质量指标属于单次5秒输入，不冒充整个流式窗口的覆盖率。
+            for field in ('wall_seconds', 'coverage_ratio', 'media_advanced'):
+                row.pop(field, None)
+            self.store.segment(row)
+            if final:
+                self.stream_rows.pop(key, None)
+            else:
+                self.stream_rows[key] = row
 
     async def consume(self):
         while True:
             segment, path, queued_at, generation = await self.queue.get()
             try:
+                if path is None:
+                    result = await self.asr.finish(segment['stream_id'])
+                    if self.generations.get(segment['room_id']) == generation and result.get('updates'):
+                        self.publish_stream(segment, result)
+                    self.interrupt_streams(segment['stream_id'])
+                    continue
                 if self.generations.get(segment['room_id']) != generation:
-                    segment.update(status='cancelled', error='监控已停止，本段未识别')
+                    continue
                 else:
                     segment['queue_wait_ms'] = round((time.monotonic() - queued_at) * 1000)
                     segment['status'] = 'transcribing'
-                    self.inflight = {'room_id': segment['room_id'], 'seq': segment['seq']}
-                    self.store.segment(segment)
+                    self.inflight = {'room_id': segment['room_id'], 'seq': self.store.next_seq(segment['room_id'])}
                     self.active_generation = generation
                     self.inference_task = asyncio.create_task(
-                        self.asr.transcribe(path, f'{generation}:{segment["seq"]}'))
+                        self.asr.feed(path, f'{segment["stream_id"]}:{segment["sample_offset"]}',
+                                      segment['stream_id'], segment['sample_offset']))
                     result = await self.inference_task
                     if self.generations.get(segment['room_id']) != generation:
-                        segment.update(status='cancelled', text='', error='房间已停止，忽略迟到的识别结果')
-                        self.store.segment(segment)
                         continue
-                    segment.update(text=result.get('text', ''), infer_ms=result.get('infer_ms', 0),
-                                   error=result.get('error'))
-                    segment['status'] = ('error' if result.get('error') else
-                                         'truncated' if result.get('truncated') else
-                                         'done' if segment['text'].strip() else 'empty')
-                self.store.segment(segment)
+                    self.publish_stream(segment, result)
             except asyncio.CancelledError:
-                segment.update(status='cancelled', error='服务或房间已停止，中断识别')
-                self.store.segment(segment)
+                self.interrupt_streams(segment['stream_id'])
                 if asyncio.current_task().cancelling():
                     raise
             except Exception as error:
-                segment.update(status='error', error=f'{type(error).__name__}: {error}')
-                self.store.segment(segment)
+                if path is not None:
+                    self.stream_error(segment, f'{type(error).__name__}: {error}')
+                self.interrupt_streams(segment['stream_id'])
             finally:
-                path.unlink(missing_ok=True)
+                if path is not None:
+                    path.unlink(missing_ok=True)
+                else:
+                    self.pending_finishes.discard(segment['stream_id'])
+                    self.stream_inputs.pop(segment['stream_id'], None)
                 self.inflight = None
                 self.inference_task = None
                 self.active_generation = None
                 self.queue.task_done()
+
+    def interrupt_streams(self, stream_id=None, room_id=None):
+        for key, row in list(self.stream_rows.items()):
+            if key[0] == stream_id or (room_id is not None and row['room_id'] == room_id):
+                self.store.segment({**row, 'status': 'cancelled', 'is_final': True,
+                                    'error': '采集停止或上下文中断；保留最后一次实时稿'})
+                self.stream_rows.pop(key)
 
     async def stop(self, room_id):
         if room_id not in self.stop_tasks:
@@ -497,14 +556,18 @@ class Monitor:
     async def _stop(self, room_id):
         self.generations.pop(room_id, None)
         self.cancel_queued(room_id)
-        if self.inflight and self.inflight['room_id'] == room_id and self.inference_task:
-            self.inference_task.cancel()
+        self.interrupt_streams(room_id=room_id)
+        # 已发送的共享worker请求允许完成；generation已失效，结果不会再发布。
+        # 主动停止一个房间不应销毁其他房间的模型上下文。
         task = self.tasks.get(room_id)
         if task:
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
         if self.tasks.get(room_id) is task:
             self.tasks.pop(room_id, None)
+        for sid, segment in list(self.stream_inputs.items()):
+            if segment['room_id'] == room_id:
+                self.finish_stream(sid, segment.get('session_id'))
         room = next((r for r in self.store.rooms() if r['room_id'] == room_id), None)
         if room is None:
             raise KeyError(room_id)
@@ -513,10 +576,10 @@ class Monitor:
         return room
 
     def cancel_queued(self, room_id):
-        for segment, path, _, _ in self.queue.remove_where(lambda item: item[0]['room_id'] == room_id):
-            path.unlink(missing_ok=True)
-            segment.update(status='cancelled', error='房间已停止，立即释放队列名额')
-            self.store.segment(segment)
+        for segment, path, _, _ in self.queue.remove_where(
+                lambda item: item[0]['room_id'] == room_id and item[1] is not None):
+            if path is not None:
+                path.unlink(missing_ok=True)
 
     async def close(self):
         await self.previews.close()
@@ -529,9 +592,12 @@ class Monitor:
             await asyncio.gather(self.warm_task, return_exceptions=True)
         while not self.queue.empty():
             segment, path, _, _ = self.queue.get_nowait()
-            path.unlink(missing_ok=True)
-            segment.update(status='cancelled', error='服务已关闭')
-            self.store.segment(segment)
+            if path is not None:
+                path.unlink(missing_ok=True)
             self.queue.task_done()
+        for key in list(self.stream_rows):
+            self.interrupt_streams(key[0])
+        self.stream_inputs.clear()
+        self.pending_finishes.clear()
         await self.asr.close()
         await self.browser.close()

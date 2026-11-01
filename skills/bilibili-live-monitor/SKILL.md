@@ -52,6 +52,8 @@ python -m bilibili_live_monitor run --until 2030-01-01T22:00:00-08:00
 
 默认RECORD_MODE=audio、ASR_ENABLED=0、PREVIEW_ENABLED=0，新增房间可覆盖record_mode/asr_enabled/preview_enabled三个独立字段。ASR关闭时不加载模型、不创建识别PCM窗口或队列；看板显示禁用。ffmpeg复制原始压缩包分段写入DATA_DIR/recordings/<room_id>/，音频.mka、音视频.mkv。默认300秒分段，RECORDING_SEGMENT_SECONDS可配置。
 
+实时ASR只使用千问流式：每5秒送入新PCM，每房间保留独立的最长30秒音频上下文。当前窗口以同一条时间线记录持续修订，`transcript_version=realtime`、`stable_text`与`is_final`区分实时稿状态；窗结束不代表识别准确性已经核验。音频缺口或worker重启必须重建上下文，不拼接成无缝录音。原始录制不依赖这些实时稿；`offline-asr`继续独立从媒体转写并写入自己的输出目录，不覆盖实时记录。旧30路独立切片验收不代表流式容量。
+
 每房间独立Page并静音。仅启用ASR时，video.captureStream音轨经AudioContext(16000Hz)与AudioWorklet收PCM，Worklet输出置0不外放。ASR与缩略图都关闭时暂停网页视频，后台录制独立进行。复用网页已有WebSocket采集弹幕，不另建连接。缩略图仅显式启用、卡片可见且页面前台时请求。
 
 仅录制模式同时对顶层与子frame启用低渲染：根元素透明，并监听新增视频/自动播放以维持暂停。Chrome直播页不再显示画面，dashboard仍正常；页面布局、动画时序、脚本和WebSocket保留，ffmpeg继续独立录制。不全局冻结CSS动画，以免淡入式验证码始终透明而漏报。ASR或预览开启时不安装低渲染守卫，选项改变由平台关闭旧页再创建。`python scripts/verify_low_render.py --cdp-url <本机CDP>`可在独立合成页验证播放防护、静态/淡入验证码判据及非pause路径，不访问真实直播。
@@ -65,7 +67,7 @@ SQLite保存完整segments、timeline和SSE事件。UI最近80条item、20段识
 礼物字段包含事件类型、协议UID（可能缺失或脱敏）、事件/接收时间、订单标识、礼物名/数量及原始`price`、`total_coin`、`coin_type`。金额缺失用null，显式0保留0。协议事件时间缺失时，`event_at_utc=null`、`time_source=received`，`at_utc`仅使用接收时钟展示，不能用于精确的事件先后因果推断。统计时将金币、银币分开，大航海原始金额用`guard_price_gold`单列（单位金瓜子，不乘数量），SC人民币金额单列；界面分别标识银币礼物、金币礼物、盲盒结果、大航海与醒目留言。盲盒分别展示结果标价与未换算的原始价格字段，不推断原始字段的币种或单价，结果标价不代表真实付费或主播净收入。五房间180秒真实测试只有单结果V2金币礼物，8条均无UID、无盲盒/多结果；UID、多结果盲盒、上舰、SC与旧式礼物仅有合成测试覆盖，短样本不代表全量捕获或长期覆盖。
 
 - GET /api/state：房间、最近记录与运行指标。
-- POST /api/rooms：`{"url":"123456","chunk_seconds":30,"record_mode":"audio","asr_enabled":false,"preview_enabled":false}`。
+- POST /api/rooms：`{"url":"123456","record_mode":"audio","asr_enabled":false,"preview_enabled":false}`；旧`chunk_seconds`兼容接收，实时输入固定5秒。
 - POST /api/rooms/123456/stop：停止并清除本房间排队任务，取消inflight，迟到结果校验generation。
 - GET /api/events：SSE，支持Last-Event-ID。
 - GET /api/export：混合时间线JSONL，可加?room_id=123456。

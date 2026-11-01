@@ -6,13 +6,13 @@
 
 ## 核心机制与边界
 
-- 默认只保存原始音频与弹幕，不启动ASR、不抓缩略图。启用ASR时，通过独立页面的 `AudioWorklet` 提取16kHz PCM（默认30秒窗口），交由常驻本地 `Qwen3-ASR-1.7B`（MLX）共享串行识别。
+- 默认只保存原始音频与弹幕，不启动ASR、不抓缩略图。启用ASR时，`AudioWorklet` 每5秒提取16kHz PCM，交由常驻本地 `Qwen3-ASR-1.7B`（MLX）流式识别。每房间上下文独立，音频窗口最长30秒；同窗口持续修订同一行，不再独立转写30秒切片，也不按音量跳过输入。
 - 监听同一网页已有的 WebSocket，解码普通、zlib 与 Brotli 弹幕包，不另建弹幕连接。
 - 全宽布局，支持全屏、新消息向下跟随、上翻暂停跟随。每房间保留最近接收或更新的80条记录，再按事件时间显示；完整历史保存SQLite，可导出JSONL。
 - 不做视频图像理解；可选按需缩略图。ASR临时音频处理后删除，原始录制文件独立保留。
 - 无需付费识别API，但消耗本机算力、内存与网络带宽。当前不提供告警、语义摘要或多平台支持，不承诺全量弹幕零丢失。
 
-已验证30路各至少两个30秒有效窗口，包含停顿后恢复；短测不代表无间隙或长期稳定运行。定位与边界见 [Formulation](docs/formulation.md)。
+旧独立切片实现曾验证30路；该容量结论不适用于新的流式实现。当前流式容量与长跑稳定性须重新测量。定位与边界见 [Formulation](docs/formulation.md)。
 
 ## 环境与安装
 
@@ -68,7 +68,7 @@ Tailscale内访问可使用 `tailscale serve --bg --https=8447 http://127.0.0.1:
 SQLite完整存储 `segments`、`timeline` 和SSE事件，不因页面显示窗口截断。服务重启恢复历史，但不自动重开房间。数据库默认在 `DATA_DIR/monitor.sqlite3`。
 
 - `GET /api/state`：房间、最近20段识别数据、80条时间线及运行指标。
-- `POST /api/rooms`：如 `{"url":"123456","chunk_seconds":30}`。
+- `POST /api/rooms`：如 `{"url":"123456","asr_enabled":true}`。旧`chunk_seconds`参数兼容接收，但实时流式输入固定5秒。
 - `POST /api/rooms/123456/stop`：停止并取消本房间排队与识别任务。
 - `GET /api/events`：SSE，支持Last-Event-ID重连。
 - `GET /api/export`：完整混合时间线JSONL，可加 `?room_id=123456`。
