@@ -60,15 +60,19 @@ async def test_fixed_offline_live_offline_restart_and_live_again(tmp_path, monke
     restored.store.close()
 
 
-async def test_fixed_transient_failure_never_exhausts_but_refusal_needs_resume(tmp_path):
+async def test_fixed_transient_failure_retries_twenty_times_and_refusal_needs_resume(tmp_path):
     platform = fixture(tmp_path)
     platform.import_candidates([Candidate(url='123456')])
     platform.configure(Policy(mode='fixed', enabled=True, target_rooms=1))
     c = next(iter(platform.candidates.values()))
-    for _ in range(9):
+    for _ in range(19):
         c['attempts'] += 1
         platform.failed(c, 'network timeout')
     assert not c['blocked'] and c['next_attempt'] > 0
+    c['attempts'] += 1
+    platform.failed(c, 'network timeout')
+    assert c['blocked'] and c['watch_state'] == 'attention'
+    platform.resume_candidate('123456')
     platform.failed(c, 'recording_refused: HTTP 403')
     assert c['blocked']
     platform.import_candidates([Candidate(url='123456')])

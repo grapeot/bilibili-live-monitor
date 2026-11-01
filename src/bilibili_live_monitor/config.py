@@ -21,8 +21,9 @@ class Settings:
     queue_size: int = field(default_factory=lambda: int(os.getenv('QUEUE_SIZE', '20')))
     silence_dbfs: float = field(default_factory=lambda: float(os.getenv('SILENCE_DBFS', '-55')))
     root_path: str = field(default_factory=lambda: os.getenv('APP_ROOT_PATH', '').rstrip('/'))
-    max_reconnects: int = field(default_factory=lambda: int(os.getenv('MAX_RECONNECTS', '5')))
+    max_reconnects: int = field(default_factory=lambda: int(os.getenv('MAX_RECONNECTS', '20')))
     retry_delay: float = field(default_factory=lambda: float(os.getenv('RETRY_DELAY', '2')))
+    retry_max_delay: float = field(default_factory=lambda: float(os.getenv('RETRY_MAX_DELAY', '300')))
     asr_start_timeout: float = 30
     asr_infer_timeout: float = 30
     platform_tick_seconds: float = 2
@@ -40,7 +41,7 @@ class Settings:
         if not 5 <= self.chunk_seconds <= 60 or self.max_rooms < 1 or self.queue_size < 1:
             raise ValueError('配置越界：切片5～60秒，房间与队列上限至少为1')
         self.data_dir = self.data_dir.resolve()
-        if self.max_reconnects < 1 or self.retry_delay < 0:
+        if self.max_reconnects < 1 or self.retry_delay < 0 or self.retry_max_delay <= 0:
             raise ValueError('连续重连次数至少为1，退避时间不得为负')
         if self.watch_poll_seconds < 5 or self.guard_poll_seconds < 60:
             raise ValueError('开播巡检至少5秒，舰队快照至少60秒')

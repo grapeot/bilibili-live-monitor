@@ -54,6 +54,8 @@ python -m bilibili_live_monitor run --until 2030-01-01T22:00:00-08:00
 
 实时ASR只使用千问流式：每5秒送入新PCM，每房间保留独立的最长30秒音频上下文。当前窗口以同一条时间线记录持续修订，`transcript_version=realtime`、`stable_text`与`is_final`区分实时稿状态；窗结束不代表识别准确性已经核验。音频缺口或worker重启必须重建上下文，不拼接成无缝录音。原始录制不依赖这些实时稿；`offline-asr`继续独立从媒体转写并写入自己的输出目录，不覆盖实时记录。旧30路独立切片验收不代表流式容量。
 
+临时断流默认按2秒起指数退避，300秒封顶，连续第20次失败后停止自动重试并标为人工处理；连续有效采集60秒才重置。`MAX_RECONNECTS=20`、`RETRY_DELAY=2`、`RETRY_MAX_DELAY=300`为对应配置。房间状态包含`reconnect_attempts`与`next_retry_utc`。明确403/412/429不走持续重试，仍须人工确认后resume。专用Chrome保留`about:blank#live-monitor-anchor`空白页供查播与下一次开播复用，不要把它当作无用标签页关闭。
+
 每房间独立Page并静音。仅启用ASR时，video.captureStream音轨经AudioContext(16000Hz)与AudioWorklet收PCM，Worklet输出置0不外放。ASR与缩略图都关闭时暂停网页视频，后台录制独立进行。复用网页已有WebSocket采集弹幕，不另建连接。缩略图仅显式启用、卡片可见且页面前台时请求。
 
 仅录制模式同时对顶层与子frame启用低渲染：根元素透明，并监听新增视频/自动播放以维持暂停。Chrome直播页不再显示画面，dashboard仍正常；页面布局、动画时序、脚本和WebSocket保留，ffmpeg继续独立录制。不全局冻结CSS动画，以免淡入式验证码始终透明而漏报。ASR或预览开启时不安装低渲染守卫，选项改变由平台关闭旧页再创建。`python scripts/verify_low_render.py --cdp-url <本机CDP>`可在独立合成页验证播放防护、静态/淡入验证码判据及非pause路径，不访问真实直播。

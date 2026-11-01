@@ -122,6 +122,7 @@ class Browser:
         self.pw = None
         self.browser = None
         self.lock = asyncio.Lock()
+        self.anchor = None
 
     async def connect(self):
         async with self.lock:
@@ -133,7 +134,15 @@ class Browser:
                 await self.pw.stop()
             self.pw = await async_playwright().start()
             self.browser = await self.pw.chromium.connect_over_cdp(self.cdp_url, timeout=15000)
-        return self.browser.contexts[0]
+        context = self.browser.contexts[0]
+        # macOS关闭最后一个窗口后Chrome进程可能仍活着，但失去默认context。
+        # 留一页不含媒体的保活页，使所有直播页结束后查播与后续重连仍可用。
+        if self.anchor is None or self.anchor.is_closed():
+            self.anchor = next((p for p in context.pages if p.url == 'about:blank#live-monitor-anchor'), None)
+            if self.anchor is None:
+                self.anchor = await context.new_page()
+                await self.anchor.goto('about:blank#live-monitor-anchor')
+        return context
 
     async def page(self, url, on_danmaku=None, on_resolved=None, *, require_playback=True):
         ctx = await self.connect()

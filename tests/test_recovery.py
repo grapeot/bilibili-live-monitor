@@ -61,7 +61,7 @@ async def test_stop_releases_queue_and_inflight_without_dropping_other_room(tmp_
 async def test_interleaved_success_resets_retry_budget(monkeypatch, tmp_path):
     from bilibili_live_monitor import monitor as module
     store = Store(tmp_path / 'test.db')
-    monitor = Monitor(Settings(data_dir=tmp_path, max_reconnects=2, retry_delay=0), store)
+    monitor = Monitor(Settings(data_dir=tmp_path, max_reconnects=2, retry_delay=0, queue_size=100), store)
     room = {'room_id': '123456', 'status': 'capturing', 'chunk_seconds': 30, 'error': None}
     monitor.generations['123456'] = 'session'
     calls = 0
@@ -91,13 +91,13 @@ async def test_interleaved_success_resets_retry_budget(monkeypatch, tmp_path):
     async def read(*args):
         nonlocal calls
         calls += 1
-        if calls in (1, 3, 5):
+        if calls in (1, 14, 27):
             raise RuntimeError('合成瞬断')
-        if calls == 6:
+        if calls == 40:
             raise asyncio.CancelledError()
-        return bytes(32000*30), {'started': 1000, 'ended':31000, 'muted':True, 'paused':False,
+        return bytes(32000*5), {'started': 1000, 'ended':6000, 'muted':True, 'paused':False,
             'track_live':True, 'context_state':'running', 'missing_samples':0, 'dropped_samples':0,
-            'media_advanced':30, 'pauses':0, 'play_error':None, 'track_muted':False,
+            'media_advanced':5, 'pauses':0, 'play_error':None, 'track_muted':False,
             'track_enabled':True, 'track_muted_ms':0}
 
     monkeypatch.setattr(module, 'start_pcm', noop)
@@ -108,7 +108,7 @@ async def test_interleaved_success_resets_retry_budget(monkeypatch, tmp_path):
         await monitor.capture(room, page, 'session')
     assert page.reloads == 3  # 总失败3次，但从未连续失败2次。
     assert store.segments('123456') == []
-    assert sum(path is not None for _, path, _, _ in monitor.queue._queue) == 2
+    assert sum(path is not None for _, path, _, _ in monitor.queue._queue) == 36
     await monitor.close()
     assert page.closed
     store.close()
