@@ -259,7 +259,7 @@ async def test_failed_restart_preserves_media_accounting(tmp_path):
     reopened.close()
 
 
-async def test_no_new_media_start_is_closed_and_slot_reused(tmp_path):
+async def test_recorder_owns_progress_timeout_then_slot_is_reused(tmp_path):
     platform = fixture(tmp_path)
     platform.import_candidates([Candidate(url='1'), Candidate(url='2')])
     platform.configure(Policy(enabled=True, target_rooms=1))
@@ -267,7 +267,12 @@ async def test_no_new_media_start_is_closed_and_slot_reused(tmp_path):
     first = platform.candidates['https://live.bilibili.com/1']
     first['started_epoch'] = time.time()-61
     await settled(platform)
-    assert first['last_error']=='no_media_progress_60s'
+    assert first['last_error'] is None and list(platform.active.values()) == ['1']
+    # Recording.check按当前实例检测40秒无进度；外层只接收其最终故障。
+    platform.monitor.tasks.pop('1')
+    platform.store.room({'room_id':'1','status':'error','error':'recording_stalled: exhausted'})
+    await settled(platform)
+    assert first['last_error']=='recording_stalled: exhausted'
     assert list(platform.active.values())==['2']
     await platform.close()
     platform.store.close()

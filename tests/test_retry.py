@@ -1,4 +1,6 @@
 import asyncio
+import time
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 from bilibili_live_monitor.browser import Browser
@@ -110,3 +112,142 @@ async def test_browser_keeps_anchor_after_all_live_pages_close():
     await browser.connect()
     assert len([p for p in context.pages if not p.closed]) == 1
     assert browser.anchor.url == 'about:blank#live-monitor-anchor'
+
+
+async def test_startup_failures_and_capture_failures_share_twenty_budget(tmp_path, monkeypatch):
+    store = Store(tmp_path/'test.db')
+    monitor = Monitor(Settings(data_dir=tmp_path, retry_delay=0, record_mode='none'), store)
+    platform = Platform(monitor)
+    platform.import_candidates([Candidate(url='123456')])
+    candidate = next(iter(platform.candidates.values()))
+    starts, captures = [], []
+    class Page:
+        url = 'https://live.bilibili.com/123456'
+        closed = False
+        async def evaluate(self, *args):
+            return {'title':'synthetic','cover_url':''}
+        def is_closed(self):
+            return self.closed
+        async def close(self):
+            self.closed = True
+    async def page(url, **kwargs):
+        starts.append(1)
+        if len(starts) < 20:
+            raise RuntimeError('startup timeout')
+        result = Page()
+        await kwargs['on_resolved'](result)
+        return result
+    async def cycles(*args):
+        captures.append(1)
+        raise RuntimeError('capture stalled')
+    monitor.browser.page = page
+    monitor.session_cycles = cycles
+    for _ in range(20):
+        await platform.launch(candidate)
+    await monitor.tasks['123456']
+    assert len(captures) == 1
+    assert store.rooms()[0]['reconnect_attempts'] == 20
+    platform.failed(candidate,store.rooms()[0]['error'])
+    assert candidate['blocked']
+    await monitor.close()
+    store.close()
+
+
+async def test_offline_cannot_clear_terminal_failure(tmp_path):
+    from test_platform import fixture
+    for index, reason in enumerate(['retry_exhausted: 20', 'recording_refused: HTTP 403',
+                                    'recording_refused: HTTP 412', 'recording_refused: HTTP 429']):
+        path = tmp_path/str(index)
+        platform = fixture(path)
+        platform.import_candidates([Candidate(url='123456')])
+        platform.configure(Policy(mode='fixed',enabled=True,target_rooms=1))
+        platform.next_status_check = float('inf')
+        async def guards():
+            pass
+        platform.refresh_guards = guards
+        candidate = next(iter(platform.candidates.values()))
+        candidate.update(room_id='123456',offline_checks=2,attempts=20,live_status=0)
+        platform.active[candidate['url']] = '123456'
+        platform.store.room({'room_id':'123456','status':'error','error':reason,'reconnect_attempts':20})
+        await platform.tick()
+        assert candidate['blocked'] and candidate['attempts'] == 20
+        assert platform.store.rooms()[0]['reconnect_attempts'] == 20
+        candidate['live_status'] = 1
+        await platform.tick()
+        assert not platform.launching
+        await platform.close()
+        platform.store.close()
+
+
+async def test_recovery_after_long_backoff_is_not_killed_by_old_watchdog(tmp_path):
+    from test_platform import fixture
+    platform = fixture(tmp_path)
+    platform.import_candidates([Candidate(url='123456')])
+    platform.configure(Policy(mode='fixed',enabled=True,target_rooms=1,record_mode='video'))
+    platform.next_status_check = float('inf')
+    async def guards():
+        pass
+    platform.refresh_guards = guards
+    candidate = next(iter(platform.candidates.values()))
+    candidate.update(room_id='123456',started_epoch=time.time()-301,start_seconds=0,attempts=9)
+    platform.active[candidate['url']] = '123456'
+    platform.monitor.tasks['123456'] = True
+    platform.store.room({'room_id':'123456','status':'capturing','record_mode':'video',
+                         'asr_enabled':False,'preview_enabled':False,
+                         'recorded_seconds':0,'reconnect_attempts':8})
+    await platform.tick()
+    assert '123456' in platform.monitor.tasks and candidate['attempts'] == 9
+    await platform.close()
+    platform.store.close()
+
+
+async def test_persisted_deadline_waits_before_opening_browser(tmp_path, monkeypatch):
+    store = Store(tmp_path/'test.db')
+    monitor = Monitor(Settings(data_dir=tmp_path), store)
+    deadline = datetime.fromtimestamp(time.time()+300, timezone.utc).isoformat()
+    store.room({'room_id':'123456','url':'https://live.bilibili.com/123456','status':'stopped',
+                'next_retry_utc':deadline,'reconnect_attempts':19})
+    opened, waits = [], []
+    async def page(*args, **kwargs):
+        opened.append(1)
+        raise AssertionError('too early')
+    async def sleep(delay):
+        waits.append(delay)
+        raise asyncio.CancelledError()
+    monitor.browser.page = page
+    monkeypatch.setattr('bilibili_live_monitor.monitor.asyncio.sleep', sleep)
+    try:
+        await monitor.add('123456',5)
+    except asyncio.CancelledError:
+        pass
+    assert not opened and 299 < waits[0] <= 300 and not monitor.pending
+    store.close()
+
+
+async def test_wrong_room_reconnect_never_publishes_early_messages(tmp_path):
+    store = Store(tmp_path/'test.db')
+    monitor = Monitor(Settings(data_dir=tmp_path,retry_delay=0,max_reconnects=2),store)
+    monitor.generations['123456'] = 'generation'
+    room = {'room_id':'123456','url':'https://live.bilibili.com/123456',
+            'status':'capturing','record_mode':'none','asr_enabled':False}
+    class Page:
+        closed = True
+        url = 'https://live.bilibili.com/999999'
+        def is_closed(self):
+            return self.closed
+        async def close(self):
+            self.closed = True
+    async def cycles(*args):
+        raise RuntimeError('lost page')
+    async def page(url, **kwargs):
+        kwargs['on_danmaku']({'text':'wrong room','source_key':'wrong','at_utc':'2026-11-01T00:00:00Z'})
+        kwargs['on_danmaku']({'kind':'raw_event','packet':{'cmd':'SYNTHETIC'}})
+        return Page()
+    monitor.session_cycles = cycles
+    monitor.browser.page = page
+    monitor.pages['123456'] = Page()
+    await monitor.capture(room, monitor.pages['123456'], 'generation')
+    assert not store.items('123456')
+    assert store.db.execute('SELECT count(*) FROM raw_events').fetchone()[0] == 0
+    assert '123456' not in monitor.pages
+    store.close()

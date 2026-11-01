@@ -8,7 +8,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .browser import room_url
-from .retry import backoff_delay
+from .retry import backoff_delay, remaining_delay
 from .room_status import guard_snapshot, room_statuses
 from .store import utc_now
 
@@ -74,6 +74,10 @@ class Platform:
         previous = {r['room_id']: r for r in self.store.rooms()}
         for candidate in self.candidates.values():
             old = previous.get(candidate.get('room_id'), {})
+            if candidate.get('selected') and old:
+                candidate['attempts'] = max(old.get('reconnect_attempts', 0), candidate['attempts']-1)
+            candidate['next_attempt'] = max(candidate.get('next_attempt', 0),
+                                            time.time()+remaining_delay(old.get('next_retry_utc')))
             if refused(old.get('error') or '') or 'retry_exhausted:' in (old.get('error') or ''):
                 candidate.update(blocked=True, selected=False, last_error=old['error'])
             if self.policy.mode == 'fixed':
@@ -341,7 +345,8 @@ class Platform:
         try:
             old = next((r for r in self.store.rooms() if r['room_id'] == candidate.get('room_id')), {})
             options = self.policy.model_dump(exclude={'enabled', 'target_rooms', 'mode', 'fixed_rooms'})
-            room = await self.monitor.add(candidate['url'], self.settings.chunk_seconds, **options)
+            room = await self.monitor.add(candidate['url'], self.settings.chunk_seconds,
+                                          retry_attempts=candidate['attempts']-1, **options)
             candidate['room_id'] = room['room_id']
             candidate['started_epoch'] = time.time()
             candidate['start_seconds'] = room.get('recorded_seconds', 0)
@@ -392,6 +397,13 @@ class Platform:
         for url, rid in list(self.active.items()):
             candidate = self.candidates[url]
             current = rooms.get(rid, {})
+            terminal = current.get('error') or ''
+            if refused(terminal) or 'retry_exhausted:' in terminal:
+                if rid in self.monitor.tasks:
+                    await self.monitor.stop(rid)
+                self.active.pop(url)
+                self.failed(candidate, terminal)
+                continue
             if (candidate['attempts'] and current.get('status') == 'capturing'
                     and current.get('reconnect_attempts', 0) == 0
                     and time.time()-candidate.get('started_epoch', time.time()) >= 60
@@ -412,13 +424,7 @@ class Platform:
             elif rid not in self.monitor.tasks:
                 self.active.pop(url)
                 self.failed(candidate, rooms.get(rid, {}).get('error') or 'capture_ended')
-            elif (rooms.get(rid, {}).get('status') == 'capturing' and
-                  rooms.get(rid, {}).get('record_mode') != 'none' and
-                  rooms.get(rid, {}).get('recorded_seconds', 0) <= candidate.get('start_seconds', 0) and
-                  time.time()-candidate.get('started_epoch', time.time()) > 60):
-                await self.monitor.stop(rid)
-                self.active.pop(url)
-                self.failed(candidate, 'no_media_progress_60s')
+            # 媒体无进度由每次Recording实例自己的40秒检查处理；外层不以旧启动时刻抢停恢复。
         # 先取消多余启动，再停止多余任务；不停止非平台拥有的手工任务。
         excess = max(0, len(self.monitor.tasks)+len(self.launching)-target)
         for url, task in reversed(list(self.launching.items())):

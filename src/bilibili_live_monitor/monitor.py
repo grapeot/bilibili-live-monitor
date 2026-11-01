@@ -13,7 +13,7 @@ from .browser import Browser, close_page, ensure_playing, room_url
 from .capture import close_pcm, read_pcm, start_pcm
 from .preview import Previews
 from .recording import Recording
-from .retry import backoff_delay
+from .retry import backoff_delay, remaining_delay
 
 PAGE_INSPECTION_SCRIPT = '''pause => {
     if(pause&&!window.__liveMonitorPauseGuard){
@@ -135,7 +135,8 @@ class Monitor:
                 'asr_restarts': self.asr.restart_count, 'asr_retries': self.asr.retry_count,
                 'asr_error': self.asr.last_error}
 
-    async def add(self, value, seconds, *, record_mode=None, asr_enabled=None, preview_enabled=None):
+    async def add(self, value, seconds, *, record_mode=None, asr_enabled=None, preview_enabled=None,
+                  retry_attempts=0):
         seconds = 5  # 实时采音固定每5秒送入流式上下文；旧API参数不再控制独立切片。
         options = {'record_mode': self.settings.record_mode if record_mode is None else record_mode,
                    'asr_enabled': self.settings.asr_enabled if asr_enabled is None else asr_enabled,
@@ -188,6 +189,10 @@ class Monitor:
                                     f'startup-gap:{generation}')
 
         try:
+            saved = next((r for r in self.store.rooms() if r.get('url') == url or
+                          r['room_id'] == url.rsplit('/', 1)[-1]), {})
+            if delay := remaining_delay(saved.get('next_retry_utc')):
+                await asyncio.sleep(delay)
             page = await self.browser.page(url, on_danmaku=on_danmaku, on_resolved=on_resolved,
                                            require_playback=options['asr_enabled'] or options['preview_enabled'])
             canonical = room_url(page.url)
@@ -212,7 +217,7 @@ class Monitor:
                            'recorded_seconds': previous.get('recorded_seconds', 0),
                            'recording_files': previous.get('recording_files', 0),
                            'recording_bytes': previous.get('recording_bytes', 0),
-                           'reconnect_attempts': previous.get('reconnect_attempts', 0),
+                           'reconnect_attempts': max(previous.get('reconnect_attempts', 0), retry_attempts),
                            'next_retry_utc': previous.get('next_retry_utc')}
                 if previous.get('recording_session'):
                     room['recording_session'] = previous['recording_session']
@@ -250,6 +255,8 @@ class Monitor:
         room_id = room['room_id']
         self.failures[room_id] = room.get('reconnect_attempts', 0)
         try:
+            if delay := remaining_delay(room.get('next_retry_utc')):
+                await asyncio.sleep(delay)
             reconnect = False
             while self.generations.get(room_id) == generation:
                 try:
@@ -258,15 +265,32 @@ class Monitor:
                                               self.settings.retry_max_delay)
                         await asyncio.sleep(delay)
                         if page.is_closed():
+                            if self.pages.get(room_id) is page:
+                                self.pages.pop(room_id, None)
+                            buffered, validated = [], False
+                            dropped = 0
                             def on_message(message):
+                                nonlocal dropped
                                 if self.generations.get(room_id) == generation:
-                                    self.store.live_message(room_id, {**message, 'session_id': generation})
-                            page = await self.browser.page(room['url'], on_danmaku=on_message,
+                                    if validated:
+                                        self.store.live_message(room_id, {**message, 'session_id': generation})
+                                    elif len(buffered) < 200:
+                                        buffered.append(message)
+                                    else:
+                                        dropped += 1
+                            replacement = await self.browser.page(room['url'], on_danmaku=on_message,
                                 require_playback=room.get('asr_enabled', True) or room.get('preview_enabled'))
-                            if room_url(page.url).rsplit('/', 1)[-1] != room_id:
-                                await close_page(page)
+                            if room_url(replacement.url).rsplit('/', 1)[-1] != room_id:
+                                await close_page(replacement)
                                 raise RuntimeError('恢复页面跳转到其他房间')
+                            page = replacement
                             self.pages[room_id] = page
+                            validated = True
+                            for message in buffered:
+                                on_message(message)
+                            buffered.clear()
+                            if dropped:
+                                self.store.event('reconnect_message_gap', {'room_id': room_id, 'dropped': dropped})
                         else:
                             page.recording_url = None
                             page.chat_last_frame = time.monotonic()
