@@ -98,11 +98,19 @@ def observations(packet, received):
     return []
 
 
+INPUT_LIMIT_SCRIPT = r'''els => els.map(e=>{
+    if(e.maxLength>0) return e.maxLength;
+    let node=e;
+    while(node && !node.__vue__) node=node.parentElement;
+    const limit=node && node.__vue__.inputLengthLimit;
+    if(Number.isInteger(limit) && limit>0) return limit;
+    const t=e.parentElement.parentElement.innerText; const m=t.match(/\d+\s*\/\s*(\d+)/);
+    return m?Number(m[1]):0;
+})'''
+
+
 async def message_limit(page):
-    limits = await page.locator('.chat-input:visible').evaluate_all(r'''els => els.map(e=>{
-        const t=e.parentElement.parentElement.innerText; const m=t.match(/\d+\s*\/\s*(\d+)/);
-        return e.maxLength>0?e.maxLength:m?Number(m[1]):0;
-    })''')
+    limits = await page.locator('.chat-input:visible').evaluate_all(INPUT_LIMIT_SCRIPT)
     if len(limits) != 1 or limits[0] <= 0:
         raise RuntimeError('未能读取唯一可见输入框的字数限制')
     return limits[0]

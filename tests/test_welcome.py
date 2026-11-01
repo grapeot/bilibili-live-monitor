@@ -1,5 +1,6 @@
 import json
 import sqlite3
+import subprocess
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -8,6 +9,7 @@ from urllib.parse import urlencode
 import pytest
 
 from bilibili_live_monitor.welcome import (
+    INPUT_LIMIT_SCRIPT,
     INTRO,
     WelcomeDecision,
     authorized_send,
@@ -49,6 +51,21 @@ def test_message_length_and_split():
     assert text_length('😀') == 2
     with pytest.raises(ValueError):
         welcome_messages(['访客'], 10)
+
+
+def test_input_limit_from_visible_editor_component_or_dom():
+    # 执行浏览器使用的同一JS，复现真实页面无maxlength且计数器在隐藏的全屏编辑器中的情况。
+    js = f'''const readLimit=({INPUT_LIMIT_SCRIPT});
+      function field(native,component,counter){{
+        const parent={{innerText:counter,parentElement:null}};
+        if(component!==null) parent.__vue__={{inputLengthLimit:component}};
+        return {{maxLength:native,parentElement:{{parentElement:parent}}}};
+      }}
+      console.log(JSON.stringify(readLimit([
+        field(-1,80,"发送"),field(20,80,"发送"),field(-1,null,"0/60"),field(-1,null,"发送")
+      ])));'''
+    result = subprocess.run(['node', '-e', js], capture_output=True, text=True, check=True)
+    assert json.loads(result.stdout) == [80, 20, 60, 0]
 
 
 @pytest.mark.asyncio
