@@ -20,6 +20,12 @@ class Policy(BaseModel):
     asr_enabled: bool = False
     preview_enabled: bool = False
     mode: Literal['rotation', 'fixed'] = 'rotation'
+    fixed_rooms: list[str] = Field(default_factory=list, max_length=200)
+
+    @field_validator('fixed_rooms')
+    @classmethod
+    def urls(cls, values):
+        return list(dict.fromkeys(room_url(value) for value in values))
 
 
 class Candidate(BaseModel):
@@ -62,6 +68,8 @@ class Platform:
             self.policy.target_rooms = self.settings.max_rooms
         self.revision = saved.get('revision', 0)
         self.candidates = saved.get('candidates', {})
+        if self.policy.mode == 'fixed' and not self.policy.fixed_rooms:
+            self.policy.fixed_rooms = list(self.candidates)[:self.policy.target_rooms]
         previous = {r['room_id']: r for r in self.store.rooms()}
         for candidate in self.candidates.values():
             old = previous.get(candidate.get('room_id'), {})
@@ -93,6 +101,13 @@ class Platform:
     def configure(self, policy):
         if policy.target_rooms > self.settings.max_rooms:
             raise ValueError('目标超过MAX_ROOMS容量上限')
+        if policy.mode == 'fixed':
+            if not policy.fixed_rooms:
+                policy.fixed_rooms = (list(self.policy.fixed_rooms) if self.policy.mode == 'fixed'
+                                      else [c['url'] for c in sorted(self.candidates.values(),
+                                            key=lambda c: -c['priority'])[:policy.target_rooms]])
+            if any(url not in self.candidates for url in policy.fixed_rooms):
+                raise ValueError('固定房间必须先导入候选')
         self.policy = policy
         self.next_status_check = 0
         self.revision += 1
@@ -114,28 +129,54 @@ class Platform:
 
     def stop_candidate(self, url):
         url = room_url(url)
-        if url not in self.candidates:
-            raise KeyError(url)
-        self.candidates[url].update(blocked=True, selected=False, last_error='operator_stopped')
+        for candidate in self.matching_candidates(url):
+            candidate.update(blocked=True, selected=False, last_error='operator_stopped')
         self.revision += 1
         self.save()
         self.event('stop_requested', url=url)
         return {'accepted': True, 'revision': self.revision, 'url': url}
 
     def stop_room_intent(self, room_id):
-        for candidate in self.candidates.values():
-            if candidate.get('room_id') == room_id or candidate['url'] == room_url(room_id):
-                self.stop_candidate(candidate['url'])
+        try:
+            self.stop_candidate(room_id)
+        except KeyError:
+            pass
+
+    def matching_candidates(self, value):
+        url = room_url(value)
+        ids = {url.rsplit('/', 1)[-1]}
+        direct = self.candidates.get(url)
+        if direct and direct.get('room_id'):
+            ids.add(direct['room_id'])
+        matches = [c for c in self.candidates.values()
+                   if c['url'] == url or c.get('room_id') in ids]
+        if not matches:
+            raise KeyError(url)
+        return matches
+
+    def resolve_room_id(self, value):
+        try:
+            candidate = self.matching_candidates(value)[0]
+            return candidate.get('room_id') or room_url(value).rsplit('/', 1)[-1]
+        except KeyError:
+            return room_url(value).rsplit('/', 1)[-1]
+
+    def fixed_urls(self):
+        # 名额钉在配置时选定的房间；离线/封禁不让池内其他候选接替。
+        return set(self.policy.fixed_rooms[:self.policy.target_rooms])
 
     def resume_candidate(self, url):
         """仅显式操作者请求解除停用/接口拒绝；重新导入不能解锁。"""
         url = room_url(url)
-        candidate = self.candidates[url]
-        candidate.update(blocked=False, selected=False, attempts=0, next_attempt=0,
-                         last_error=None, watch_state='unknown', live_status=None,
-                         offline_checks=0, guard_refused=None)
+        matches = self.matching_candidates(url)
+        ids = {c.get('room_id') for c in matches}
+        for candidate in matches:
+            candidate.update(blocked=False, selected=False, attempts=0, next_attempt=0,
+                             last_error=None, watch_state='unknown', live_status=None,
+                             offline_checks=0, guard_refused=None, blocked_alias=False,
+                             next_guard_check=0)
         for room in self.store.rooms():
-            if room['room_id'] == candidate.get('room_id') and room['room_id'] not in self.monitor.tasks:
+            if room['room_id'] in ids and room['room_id'] not in self.monitor.tasks:
                 room['error'] = None
                 self.store.room(room)
         self.status_refused = None
@@ -147,7 +188,8 @@ class Platform:
 
     async def refresh_statuses(self):
         revision = self.revision
-        candidates = [dict(c) for c in self.candidates.values() if not c['blocked']]
+        candidates = [dict(c) for c in self.candidates.values()
+                      if not c['blocked'] and c['url'] in self.fixed_urls()]
         if not candidates:
             return
         try:
@@ -162,15 +204,18 @@ class Platform:
                 self.status_refused = str(error)
             for c in candidates:
                 self.candidates[c['url']].update(status_error=str(error), offline_checks=0,
-                                                  live_status=None)
+                                                  live_status=None, watch_state='unknown')
             self.save()
             return
         if self.revision != revision or self.policy.mode != 'fixed' or not self.policy.enabled:
             return
         seen = set()
-        for c in candidates:
+        blocked_ids = {identity for c in self.candidates.values() if c['blocked']
+                       for identity in (c['url'].rsplit('/', 1)[-1], c.get('room_id')) if identity}
+        unresolved_block = any(c['blocked'] and not c.get('room_id') for c in self.candidates.values())
+        for c in sorted(candidates, key=lambda c: c['url'] not in self.active):
             candidate = self.candidates[c['url']]
-            row = statuses.get(c['url'].rsplit('/', 1)[-1])
+            row = statuses.get(c['url'].rsplit('/', 1)[-1]) or statuses.get(c.get('room_id'))
             state = row.get('live_status') if row else None
             candidate.update(live_status=state, status_checked_utc=utc_now(), status_error=None)
             if state not in (0, 1, 2):
@@ -180,17 +225,23 @@ class Platform:
             candidate.update(room_id=canonical, anchor_uid=str(row.get('uid') or ''),
                              title=row.get('title') or candidate['title'])
             candidate['alias_duplicate'] = canonical in seen
+            candidate['blocked_alias'] = canonical in blocked_ids or (unresolved_block and c['url'] not in self.active)
             seen.add(canonical)
             previous_state = candidate.get('watch_state')
             candidate['offline_checks'] = candidate.get('offline_checks', 0) + 1 if state != 1 else 0
-            candidate['watch_state'] = 'live' if state == 1 else 'waiting'
+            candidate['watch_state'] = ('attention' if candidate['blocked_alias'] else 'live' if state == 1
+                                        else 'confirming_offline' if candidate['offline_checks'] == 1
+                                        else 'waiting')
+            if not candidate['anchor_uid']:
+                candidate['guard_error'] = '状态接口缺少主播UID，无法查询舰队榜单'
             if previous_state != candidate['watch_state']:
                 self.event('broadcast_state', url=c['url'], room_id=canonical, live_status=state)
         self.save()
 
     async def refresh_guards(self):
         for candidate in list(self.candidates.values()):
-            if (candidate['blocked'] or candidate.get('alias_duplicate') or candidate.get('guard_refused')
+            if (not self.policy.enabled or self.policy.mode != 'fixed' or candidate['url'] not in self.fixed_urls()
+                    or candidate['blocked'] or candidate.get('blocked_alias') or candidate.get('alias_duplicate') or candidate.get('guard_refused')
                     or not candidate.get('anchor_uid') or time.time() < candidate.get('next_guard_check', 0)):
                 continue
             candidate['next_guard_check'] = time.time() + self.settings.guard_poll_seconds
@@ -201,6 +252,7 @@ class Platform:
                 candidate['guard_error'] = None
             except Exception as error:
                 candidate['guard_error'] = str(error)
+                candidate['next_guard_check'] = time.time() + 60
                 from .rotation import RoomStatusRefused
                 if isinstance(error, RoomStatusRefused):
                     candidate['guard_refused'] = str(error)
@@ -278,7 +330,7 @@ class Platform:
         self.save()
         try:
             old = next((r for r in self.store.rooms() if r['room_id'] == candidate.get('room_id')), {})
-            options = self.policy.model_dump(exclude={'enabled', 'target_rooms', 'mode'})
+            options = self.policy.model_dump(exclude={'enabled', 'target_rooms', 'mode', 'fixed_rooms'})
             room = await self.monitor.add(candidate['url'], self.settings.chunk_seconds, **options)
             candidate['room_id'] = room['room_id']
             candidate['started_epoch'] = time.time()
@@ -347,15 +399,18 @@ class Platform:
         # 先取消多余启动，再停止多余任务；不停止非平台拥有的手工任务。
         excess = max(0, len(self.monitor.tasks)+len(self.launching)-target)
         for url, task in reversed(list(self.launching.items())):
-            if excess or self.candidates[url]['blocked'] or (fixed and self.candidates[url].get('offline_checks', 0) >= 2):
+            if excess or self.candidates[url]['blocked'] or (fixed and (
+                    url not in self.fixed_urls() or self.candidates[url].get('blocked_alias')
+                    or self.candidates[url].get('offline_checks', 0) >= 2)):
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
                 self.launching.pop(url)
                 excess = max(0, excess-1)
         for url, rid in reversed(list(self.active.items())):
             options_changed = any(rooms.get(rid, {}).get(k) != v for k, v in
-                                  self.policy.model_dump(exclude={'enabled', 'target_rooms', 'mode'}).items())
-            if len(self.monitor.tasks)>target or self.candidates[url]['blocked'] or options_changed:
+                                  self.policy.model_dump(exclude={'enabled', 'target_rooms', 'mode', 'fixed_rooms'}).items())
+            if (len(self.monitor.tasks)>target or self.candidates[url]['blocked'] or options_changed
+                    or (fixed and (url not in self.fixed_urls() or self.candidates[url].get('blocked_alias')))):
                 await self.monitor.stop(rid)
                 self.active.pop(url)
                 self.candidates[url]['selected'] = False
@@ -365,7 +420,8 @@ class Platform:
                     self.settings.platform_start_concurrency-len(self.launching))
         eligible = sorted((c for url, c in self.candidates.items() if not c['blocked'] and
                             url not in self.active and url not in self.launching and
-                            (not fixed or (c.get('live_status') == 1 and not c.get('alias_duplicate')
+                            (not fixed or (url in self.fixed_urls() and c.get('live_status') == 1
+                                           and not c.get('alias_duplicate') and not c.get('blocked_alias')
                                            and not self.status_refused)) and
                            c['next_attempt'] <= time.time()),
                           key=lambda c: (not c['selected'], -c['priority']))

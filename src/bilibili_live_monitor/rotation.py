@@ -89,7 +89,8 @@ async def inspect(context, candidates):
             'https://api.live.bilibili.com/xlive/web-room/v1/index/getRoomBaseInfo?' + query,
             timeout=20000)
         if response.status != 200:
-            raise RoomStatusRefused(f'房间状态接口HTTP {response.status}；不改动现有来源')
+            error = RoomStatusRefused if response.status in (401, 403, 412, 429) else RuntimeError
+            raise error(f'房间状态接口HTTP {response.status}；不改动现有来源')
         statuses.update(index_rooms(await response.json()))
     return statuses
 

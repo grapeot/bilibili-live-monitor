@@ -143,7 +143,8 @@ def create_app(settings=None):
     @app.get('/api/rooms/{room_id}/guards', summary='最新舰队榜单快照；非购买流水，complete表示本次覆盖')
     async def guards(room_id: str):
         try:
-            return app.state.monitor.store.latest_guards(room_url(room_id).rsplit('/', 1)[-1])
+            snapshot = app.state.monitor.store.latest_guards(app.state.platform.resolve_room_id(room_id))
+            return {k: v for k, v in snapshot.items() if k != 'raw_pages'} if snapshot else None
         except ValueError as error:
             raise HTTPException(422, str(error)) from error
 

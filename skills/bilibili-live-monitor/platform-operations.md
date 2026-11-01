@@ -10,7 +10,9 @@ description: bilibili-live-monitor 常驻平台模式的 AI 操作者内部子 s
 `Policy.mode` 默认仍为 `rotation`，设为 `fixed` 后持久保留候选与目标房间，不自动发现或换房。先注册候选（示例为虚构房号），再下发策略；可以关闭实时 ASR，保存 `video` 供以后离线处理：
 
 - 注册候选：`POST /api/platform/candidates`，JSON `{"candidates":[{"url":"123456"},{"url":"654321"}]}`。
-- 下发策略：`PUT /api/platform/policy`，JSON `{"mode":"fixed","enabled":true,"target_rooms":2,"record_mode":"video","asr_enabled":false,"preview_enabled":false}`。
+- 下发策略：`PUT /api/platform/policy`，JSON `{"mode":"fixed","fixed_rooms":["123456","654321"],"enabled":true,"target_rooms":2,"record_mode":"video","asr_enabled":false,"preview_enabled":false}`。
+
+`fixed_rooms` 明确指定长期守候名单。首次未指定时按优先级和容量冻结现有候选；以后导入候选不自动进入名单。`target_rooms` 控制名单前若干个房间，名单内房间下播不把空位交给其他候选。
 
 暂停调度设 `enabled=false`；永久不再监控某房间使用现有 `stop`。不要在 `fixed` 模式使用 `rotate-live`。服务重启后持久恢复目标，重新查状态再开录。
 
@@ -18,7 +20,7 @@ description: bilibili-live-monitor 常驻平台模式的 AI 操作者内部子 s
 
 Chrome 进程常驻，但未开播房间无需保持各自 tab，不建录制任务、不消耗失败预算。后台按 `WATCH_POLL_SECONDS`（默认 30，最小 5）查询网页状态接口：`live_status=1` 启动录制，`0` 或 `2` 连续两次结束本场回到等待；未知状态或网络失败不作下播。
 
-普通录制网络失败按退避恢复；遇到 `403`、`412`、`429` 等明确拒绝时停止自动重试，要求操作者检查后通过 `POST /api/platform/candidates/123456/resume` 显式解除。调用 `GET /api/platform` 查看状态检查时刻、失败、候选与 `message_health`。连接帧/心跳健康与媒体健康须分别观察，FFmpeg 媒体时间推进与文件增长才是录制成功的证据。看板单独显示守候列表，未开播不等于监控已关闭。
+普通录制网络失败按退避恢复；状态及名单查询的5xx和传输故障会再试。遇到 `403`、`412`、`429` 等明确拒绝时停止自动重试，要求操作者检查后通过 `POST /api/platform/candidates/123456/resume` 显式解除；短号和规范号对应同一来源，不通过另一个别名绕过拒绝。调用 `GET /api/platform` 查看状态检查时刻、失败、候选与 `message_health`。连接帧/心跳健康与媒体健康须分别观察，FFmpeg 媒体时间推进与文件增长才是录制成功的证据。看板单独显示守候列表，未开播不等于监控已关闭。
 
 ### 弹幕事件、舰队快照与数据边界
 

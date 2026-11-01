@@ -73,11 +73,11 @@ function ResourceMetrics(){
   </section>;
 }
 
-type WatchCandidate = {url:string;room_id?:string;title:string;blocked:boolean;watch_state?:string;
+type WatchCandidate = {url:string;room_id?:string;title:string;blocked:boolean;blocked_alias?:boolean;watch_state?:string;
   status_checked_utc?:string;status_error?:string;last_error?:string;guard_error?:string;
   guard_snapshot?:{reported_total:number;complete:boolean;observed_utc:string}};
-type WatchSummary = {policy:{mode:string;enabled:boolean};status_refused?:string;
-  candidates:WatchCandidate[];sources:{room_id:string;recording_status:string}[];
+type WatchSummary = {policy:{mode:string;enabled:boolean;fixed_rooms?:string[]};status_refused?:string;
+  candidates:WatchCandidate[];sources:{room_id:string;status:string;recording_status:string}[];
   message_health:Record<string,{state?:string;last_message_utc?:string}>};
 
 function WatchStatus(){
@@ -87,18 +87,20 @@ function WatchStatus(){
     async function refresh(){try{const data=await api('platform');if(alive){setSummary(data);setFailed(false)}}
       catch{if(alive)setFailed(true)}finally{if(alive)timer=setTimeout(()=>void refresh(),5000)}}
     void refresh();return()=>{alive=false;clearTimeout(timer)}},[]);
-  if(summary?.policy.mode!=='fixed')return null;
+  if(!summary)return failed?<p role="alert">守候状态读取失败，尚未取得有效结果。</p>:null;
+  if(summary.policy.mode!=='fixed')return null;
   const names:Record<string,string>={waiting:'等待开播',live:'已开播，等待录制',unknown:'状态未知',
-    retrying:'录制恢复中',attention:'需要人工处理',recording_pending:'采集已启动'};
+    retrying:'录制恢复中',attention:'需要人工处理',recording_pending:'采集已启动',confirming_offline:'正在确认下播'};
   return <section aria-label="固定房间守候"><h2>固定房间守候{!summary.policy.enabled?' · 已暂停':''}</h2>
     {failed&&<p role="alert">守候状态刷新失败，以下为上次结果。</p>}
     {summary.status_refused&&<p role="alert">状态接口暂停：{summary.status_refused}</p>}
-    {summary.candidates.map(c=>{const rid=c.room_id||c.url.split('/').at(-1)||'';
+    {summary.candidates.filter(c=>!summary.policy.fixed_rooms?.length||summary.policy.fixed_rooms.includes(c.url)).map(c=>{const rid=c.room_id||c.url.split('/').at(-1)||'';
       const source=summary.sources.find(r=>r.room_id===rid);const chat=summary.message_health[rid];
       return <article key={c.url}><p><a href={c.url} target="_blank" rel="noreferrer">{c.title||rid}</a> · {
-        c.blocked?'需要人工处理':!summary.policy.enabled?'已暂停':c.watch_state==='waiting'?'等待开播':
-        source?.recording_status==='recording'?'正在录制':names[c.watch_state||'unknown']||'状态未知'} · 最近查播 {c.status_checked_utc?time(c.status_checked_utc):'尚未查询'}</p>
-        <p>弹幕连接：{chat?.state==='connected'?'已连接':chat?.state==='disconnected'?'已断开':'未确认'} · 最近消息 {chat?.last_message_utc?time(chat.last_message_utc):'尚无'} · 舰队快照：{c.guard_snapshot?`${c.guard_snapshot.reported_total} 人（${c.guard_snapshot.complete?'本次完整':'部分数据'}）`:'尚无'}</p>
+        c.blocked||c.blocked_alias?'需要人工处理':!summary.policy.enabled?'已暂停':
+        source?.status==='capturing'&&source.recording_status==='recording'?'正在录制':
+        names[c.watch_state||'unknown']||'状态未知'} · 最近查播 {c.status_checked_utc?time(c.status_checked_utc):'尚未查询'}</p>
+        <p>弹幕连接：{chat?.state==='connected'?'已连接':chat?.state==='disconnected'?'已断开':chat?.state==='error'?'连接异常':'未确认'} · 最近消息 {chat?.last_message_utc?time(chat.last_message_utc):'尚无'} · 舰队快照：{c.guard_snapshot?`${c.guard_snapshot.reported_total} 人（${c.guard_snapshot.complete?'本次完整':'部分数据'}）`:'尚无'}</p>
         {(c.status_error||c.last_error||c.guard_error)&&<p className="room-error">{c.status_error||c.last_error||c.guard_error}</p>}
       </article>})}</section>;
 }

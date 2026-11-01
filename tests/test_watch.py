@@ -10,7 +10,7 @@ from bilibili_live_monitor.config import Settings
 from bilibili_live_monitor.danmaku import messages
 from bilibili_live_monitor.platform import Candidate, Platform, Policy
 from bilibili_live_monitor.room_status import guard_snapshot
-from bilibili_live_monitor.rotation import RoomStatusRefused
+from bilibili_live_monitor.rotation import RoomStatusRefused, inspect
 from bilibili_live_monitor.store import Store
 
 
@@ -158,3 +158,104 @@ def test_resume_api_requires_existing_candidate(tmp_path):
         client.post('/api/platform/candidates/123456/stop')
         assert client.post('/api/platform/candidates/123456/resume').status_code == 202
         assert not client.get('/api/platform').json()['candidates'][0]['blocked']
+
+
+async def test_short_alias_fallback_block_and_canonical_resume(tmp_path, monkeypatch):
+    platform = fixture(tmp_path)
+    platform.monitor.browser = object()
+    platform.import_candidates([Candidate(url='42'), Candidate(url='123456')])
+    platform.configure(Policy(mode='fixed', enabled=True, target_rooms=2))
+    short = platform.candidates['https://live.bilibili.com/42']
+    long = platform.candidates['https://live.bilibili.com/123456']
+    short['room_id'] = '123456'
+    await status(platform, monkeypatch, 0)
+    assert short['live_status'] == 0 and short['offline_checks'] == 1
+    short.update(blocked=True, last_error='recording_refused: HTTP 403')
+    await status(platform, monkeypatch, 1)
+    assert long['blocked_alias'] and long['watch_state'] == 'attention'
+    platform.resume_candidate('123456')
+    assert not short['blocked'] and not long['blocked']
+    assert platform.resolve_room_id('42') == '123456'
+    platform.stop_candidate('123456')
+    assert short['blocked'] and long['blocked']
+    platform.store.close()
+
+
+async def test_502_retries_and_does_not_persist_refusal(tmp_path, monkeypatch):
+    platform = fixture(tmp_path)
+    platform.monitor.browser = object()
+    platform.import_candidates([Candidate(url='123456')])
+    platform.configure(Policy(mode='fixed', enabled=True, target_rooms=1))
+    class Response:
+        status = 502
+    class Request:
+        calls = 0
+        async def get(self, *args, **kwargs):
+            self.calls += 1
+            return Response()
+    request = Request()
+    async def read(*args):
+        return await inspect(SimpleNamespace(request=request), [{'url': '123456'}])
+    monkeypatch.setattr('bilibili_live_monitor.platform.room_statuses', read)
+    await platform.refresh_statuses()
+    await platform.refresh_statuses()
+    assert request.calls == 2 and platform.status_refused is None
+    assert next(iter(platform.candidates.values()))['watch_state'] == 'unknown'
+    platform.store.close()
+
+
+async def test_fixed_does_not_replace_with_unpinned_candidate(tmp_path, monkeypatch):
+    platform = fixture(tmp_path)
+    platform.import_candidates([Candidate(url='111'), Candidate(url='222')])
+    platform.configure(Policy(mode='fixed', enabled=True, target_rooms=1))
+    assert platform.policy.fixed_rooms == ['https://live.bilibili.com/111']
+    platform.next_status_check = float('inf')
+    async def no_guards():
+        pass
+    platform.refresh_guards = no_guards
+    a, b = platform.candidates.values()
+    a['live_status'] = b['live_status'] = 1
+    await settled(platform)
+    assert list(platform.active.values()) == ['111']
+    a['offline_checks'] = 2
+    a['live_status'] = 0
+    await settled(platform)
+    assert not platform.active and not b['selected']
+    await platform.close()
+    platform.store.close()
+
+
+async def test_guard_snapshot_retains_unresolved_and_retries_502():
+    class Response:
+        status = 200
+        async def json(self):
+            return {'code': 0, 'data': {'info': {'num': 1, 'page': 1}, 'top3': [],
+                                      'list': [{'uid': 0}, {'uid': 10}]}}
+    response = Response()
+    async def get(*args, **kwargs):
+        return response
+    async def connect():
+        return SimpleNamespace(request=SimpleNamespace(get=get))
+    snapshot = await guard_snapshot(SimpleNamespace(connect=connect), '123456', '654321')
+    assert not snapshot['complete'] and snapshot['unresolved_count'] == 1
+    assert snapshot['members'][-1]['identity_status'] == 'unresolved'
+    response.status = 502
+    try:
+        await guard_snapshot(SimpleNamespace(connect=connect), '123456', '654321')
+    except Exception as error:
+        assert isinstance(error, RuntimeError) and not isinstance(error, RoomStatusRefused)
+    else:
+        raise AssertionError('502应报告暂时失败')
+
+
+def test_guard_api_resolves_alias_and_omits_raw_pages(tmp_path):
+    with TestClient(create_app(Settings(data_dir=tmp_path))) as client:
+        def seed():
+            platform = client.app.state.platform
+            platform.import_candidates([Candidate(url='42')])
+            platform.candidates['https://live.bilibili.com/42']['room_id'] = '123456'
+            platform.store.guard_snapshot({'room_id': '123456', 'observed_utc': 'synthetic',
+                                          'members': [], 'raw_pages': [{'private': 'raw'}]})
+        client.portal.call(seed)
+        result = client.get('/api/rooms/42/guards').json()
+        assert result['room_id'] == '123456' and 'raw_pages' not in result

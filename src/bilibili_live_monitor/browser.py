@@ -149,9 +149,12 @@ class Browser:
         if on_danmaku:
             def websocket(socket):
                 if '.chat.bilibili.com/' in socket.url:
+                    page.chat_connection = socket
                     last_report = 0
                     def received(frame):
                         nonlocal last_report
+                        if page.chat_connection is not socket:
+                            return
                         page.chat_last_frame = time.monotonic()
                         if page.chat_last_frame - last_report >= 15:
                             on_danmaku({'kind': 'transport', 'state': 'connected', 'frame_received': True})
@@ -159,8 +162,11 @@ class Browser:
                         dispatch_messages(frame, on_danmaku, include_raw=True)
                     on_danmaku({'kind': 'transport', 'state': 'connected'})
                     socket.on('framereceived', received)
-                    socket.on('close', lambda: on_danmaku({'kind': 'transport', 'state': 'disconnected'}))
-                    socket.on('socketerror', lambda _: on_danmaku({'kind': 'transport', 'state': 'error'}))
+                    def transport(state):
+                        if page.chat_connection is socket:
+                            on_danmaku({'kind': 'transport', 'state': state})
+                    socket.on('close', lambda: transport('disconnected'))
+                    socket.on('socketerror', lambda _: transport('error'))
             page.on('websocket', websocket)
         try:
             await page.add_init_script(MUTE_SCRIPT)
