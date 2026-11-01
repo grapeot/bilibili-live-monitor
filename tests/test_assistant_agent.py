@@ -62,6 +62,7 @@ def result(messages, tool):
 def prepared(scene, **config):
     _, source, state = scene
     worker = AssistantWorker(state, source.path, 'http://synthetic', WorkerConfig(interval=0, **config))
+    state.set_enabled(True)
     worker.ingest()
     context, target, offered = worker.context()
     run = worker.agent.start(context, target, offered)
@@ -128,6 +129,7 @@ async def test_real_store_multiturn_alias_voice_gift_survives_restart_and_compac
     async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as model, live_client(now) as upstream:
         cfg = WorkerConfig(interval=0)
         worker = AssistantWorker(state, source.path, 'http://synthetic', cfg, OllamaRuntime(cfg, model), upstream)
+        state.set_enabled(True)
         await worker.tick()
         assert state.get('calls') == 4 and state.get('agent_status') == 'sleeping'
         assert state.db.execute('SELECT count(*) FROM aliases').fetchone()[0] == 1
@@ -143,6 +145,7 @@ async def test_real_store_multiturn_alias_voice_gift_survives_restart_and_compac
             phase, step = 1, 0
             speech(source, now-5, 2, '这首合成曲甲送给清风老师。')
             resumed = AssistantWorker(reopened, source.path, 'http://synthetic', cfg, OllamaRuntime(cfg, model), upstream)
+            reopened.set_enabled(True)
             await resumed.tick()
             assert reopened.card('song:voice-a')['status'] == 'queued'
             assert reopened.card('song:voice-a')['uid'] == '111'
@@ -256,6 +259,7 @@ async def test_budget_each_round_timeout_restart_and_turn_limit(scene):
                                  call('finish_analysis', {**SCOPE, 'reason': '完成'})]
     async with live_client(now) as upstream:
         worker = AssistantWorker(state, source.path, 'http://synthetic', cfg, runtime, upstream)
+        state.set_enabled(True)
         await worker.tick()
         assert state.get('calls') == 2 and state.get('ai_cursor') is None
         assert state.get('last_error') == 'TimeoutError'
@@ -263,6 +267,7 @@ async def test_budget_each_round_timeout_restart_and_turn_limit(scene):
         assert state.get('status') == 'budget_paused' and runtime.infer.await_count == 2
         cfg.max_calls = 3
         resumed = AssistantWorker(state, source.path, 'http://synthetic', cfg, runtime, upstream)
+        state.set_enabled(True)
         await resumed.tick()
         assert state.get('calls') == 3 and state.get('ai_cursor') is not None
         assert state.get('agent_status') == 'sleeping'
@@ -289,6 +294,7 @@ async def test_old_model_result_cannot_overwrite_manual_change(scene):
     async with live_client(now) as upstream:
         worker = AssistantWorker(state, source.path, 'http://synthetic',
             WorkerConfig(interval=0, max_tool_turns=1), AsyncMock(infer=infer), upstream)
+        state.set_enabled(True)
         await worker.tick()
         assert state.card('chat:1')['status'] == 'dismissed'
         assert state.get('ai_cursor') is None
@@ -300,16 +306,19 @@ def test_200k_compaction_window_pairs_and_durable_state(scene, dense):
     _, _, state = scene
     worker, run = prepared(scene, context_tokens=200000, max_bytes=900000)
     original = state.db.execute('SELECT count(*) FROM observations').fetchone()[0]
-    # 三个完整工具轮次，每轮约90KB；旧窗口优先，否则密集窗口从最早整轮裁剪。
+    # ASCII的字节数可以大于token数；三轮共750KB才触发200K估算token预算。
     with state.db:
         for i in range(3):
             unit = [{'role': 'assistant', 'tool_calls': [{'function': {'name': 'read_state', 'arguments': SCOPE}}]},
-                    {'role': 'tool', 'tool_name': 'read_state', 'content': encode({'text': 'x'*90000})}]
+                    {'role': 'tool', 'tool_name': 'read_state', 'content': encode({'text': 'x'*250000})}]
             state.db.execute('INSERT INTO agent_exchanges(run_id,at,data) VALUES(?,?,?)',
                              ('old', time.time()-(10+i if dense else 180+i), encode(unit)))
     messages = worker.agent.messages(run, PROMPT)
     metrics = state.get('agent_metrics')
-    assert metrics['context_token_limit'] == 200000 and metrics['input_bytes'] <= 200000
+    assert metrics['context_token_limit'] == 200000 and metrics['estimated_input_tokens'] <= 200000
+    assert metrics['byte_limit'] == 900000 and metrics['input_bytes'] <= 900000
+    if dense:
+        assert metrics['input_bytes'] > 200000
     assert metrics['compaction_count'] == 1
     assert bool(metrics.get('dense_window_drops')) is dense
     assert 'medal:gift:111' in messages[1]['content']
@@ -330,7 +339,7 @@ def test_actual_usage_triggers_old_window_compaction_and_durable_overflow(scene)
     worker.agent.messages(run, PROMPT)
     assert state.get('agent_metrics')['dropped_exchanges'] == 1
     worker.config.max_bytes = 1
-    with pytest.raises(ValueError, match='持久工作状态'):
+    with pytest.raises(ValueError, match='工作索引'):
         worker.agent.messages(run, PROMPT)
     assert state.get('agent_metrics')['durable_overflow_count'] == 1
     assert state.cards()
@@ -365,6 +374,7 @@ async def test_real_timeout_keeps_active_run_without_unpaired_tool_messages(scen
     runtime = AsyncMock(infer=AsyncMock(side_effect=hang))
     async with live_client(now) as upstream:
         worker = AssistantWorker(state, source.path, 'http://synthetic', cfg, runtime, upstream)
+        state.set_enabled(True)
         await worker.tick()
         rid = state.get('active_agent_run')
         assert state.get('calls') == 1 and state.get('ai_cursor') is None

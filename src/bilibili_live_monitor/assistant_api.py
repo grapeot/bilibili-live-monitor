@@ -7,6 +7,7 @@ from anyio import CancelScope
 from fastapi import APIRouter, FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import StrictBool
 from starlette.background import BackgroundTask
 
 from .assistant import AssistantStore, Conflict, Strict
@@ -22,6 +23,11 @@ class PronunciationEdit(Strict):
     session: str
     name: str
     reading: str
+
+
+class ControlEdit(Strict):
+    session: str
+    enabled: StrictBool
 
 
 def assistant_router(db_path):
@@ -62,6 +68,14 @@ def assistant_router(db_path):
     def edit(cid: str, data: ManualEdit):
         return operate(lambda s: s.manual(data.session, cid, data.expected_version, data.status), data.session)
 
+    @router.get('/control')
+    def control(session: str):
+        return operate(lambda s: s.control(), session)
+
+    @router.put('/control')
+    def set_control(data: ControlEdit):
+        return operate(lambda s: s.set_enabled(data.enabled, reason='explicit_api'), data.session)
+
     @router.post('/cards/{cid}/undo')
     def undo(cid: str, data: ManualEdit):
         return operate(lambda s: s.manual(data.session, cid, data.expected_version, undo=True), data.session)
@@ -99,6 +113,13 @@ def end_to_end(headers):
 def create_sidecar(db_path, upstream='http://127.0.0.1:8765', static_dir='frontend/dist', client=None):
     @asynccontextmanager
     async def lifespan(app):
+        paths = list(db_path) if isinstance(db_path, (list, tuple)) else [db_path]
+        for path in paths:
+            store = AssistantStore(path)
+            try:
+                store.set_enabled(False, reason='sidecar_started')
+            finally:
+                store.close()
         if client is None:
             app.state.proxy = httpx.AsyncClient(timeout=httpx.Timeout(10, read=None))
         else:

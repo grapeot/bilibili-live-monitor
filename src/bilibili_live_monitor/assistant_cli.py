@@ -17,6 +17,12 @@ def main():
     commands = parser.add_subparsers(dest='command', required=True)
     serve = commands.add_parser('serve')
     worker = commands.add_parser('worker')
+    control = commands.add_parser('control', help='明确启用/关闭当前场次AI；不启动worker')
+    control.add_argument('--db', required=True)
+    control.add_argument('--session', required=True)
+    switch = control.add_mutually_exclusive_group(required=True)
+    switch.add_argument('--enable', action='store_true')
+    switch.add_argument('--disable', action='store_true')
     for p in (serve, worker):
         p.add_argument('--db', required=True, **({'action': 'append'} if p is serve else {}))
         p.add_argument('--upstream', default='http://127.0.0.1:8765')
@@ -32,6 +38,17 @@ def main():
             float if default is None or isinstance(default, float) or field.name in ('timeout', 'interval', 'debounce') else type(default))
         worker.add_argument('--'+field.name.replace('_', '-'), default=default, type=kind)
     args = parser.parse_args()
+    if args.command == 'control':
+        if not Path(args.db).is_file():
+            parser.error('db必须是已存在的助手数据库')
+        store = AssistantStore(args.db)
+        try:
+            if (store.get('config') or {}).get('session_id') != args.session:
+                parser.error('场次不匹配')
+            store.set_enabled(args.enable, reason='explicit_cli')
+        finally:
+            store.close()
+        return
     if args.command == 'serve':
         uvicorn.run(create_sidecar(args.db, args.upstream, args.static), host=args.host, port=args.port)
         return

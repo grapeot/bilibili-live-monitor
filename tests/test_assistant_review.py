@@ -187,6 +187,7 @@ async def test_ai_medal_status_uses_voice_evidence_and_preserves_qualification(s
     runtime = AsyncMock()
     async with client(now) as transport:
         worker = AssistantWorker(state, source.path, 'http://synthetic', WorkerConfig(interval=0), runtime, transport)
+        state.set_enabled(True)
         worker.ingest()
         card = state.card('medal:gift:111')
         qualification = {k: card.get(k) for k in ('eligible', 'uid', 'author', 'title', 'guard_observation')}
@@ -229,6 +230,7 @@ def test_pending_observation_count_not_source_event_cursor(scene):
     assert report['pending_observations'] == 1
     assert report['last_observation'] is not None
     _, target, offered = worker.context()
+    state.set_enabled(True)
     state.apply({'actions': []}, target, offered)
     report = state.state()['worker']
     assert report['pending_observations'] == 0
@@ -379,6 +381,7 @@ def test_song_followup_completion_is_not_merely_observing_request(scene, status,
     worker.ingest()
     chat_card = next(c for c in state.cards() if c['kind'] == 'chat')
     _, target, offered = worker.context()
+    state.set_enabled(True)
     state.apply({'actions': [{'room_id': '123456', 'session_id': 'session', 'card_id': 'song:request',
                              'kind': 'song', 'expected_version': 0, 'status': status, 'title': '歌曲A',
                              'evidence': chat_card['evidence']}]}, target, offered)
@@ -419,6 +422,7 @@ async def test_many_gifts_use_bounded_witness_without_losing_audit_or_manual_loc
     runtime.infer.side_effect = infer
     async with client(now) as transport:
         worker = AssistantWorker(state, source.path, 'http://synthetic', WorkerConfig(interval=0), runtime, transport)
+        state.set_enabled(True)
         if gift_count == 16:
             worker.ingest()
             legacy = state.card('medal:gift:111')

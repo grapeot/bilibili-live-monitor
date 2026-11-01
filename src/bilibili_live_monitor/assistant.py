@@ -11,6 +11,8 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 from pypinyin import Style, pinyin
 
+from .assistant_aliases import aliases, trusted_names
+
 
 def encode(value):
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
@@ -108,6 +110,10 @@ class Conflict(ValueError):
     pass
 
 
+class AssistantDisabled(Conflict):
+    pass
+
+
 class AssistantStore:
     def __init__(self, path):
         self.path = Path(path)
@@ -139,6 +145,11 @@ class AssistantStore:
                 id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL, at REAL NOT NULL, data TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS agent_audit(
                 id INTEGER PRIMARY KEY AUTOINCREMENT, at REAL NOT NULL, data TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS alias_candidates(id TEXT PRIMARY KEY, uid TEXT NOT NULL, data TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS alias_history(
+                id INTEGER PRIMARY KEY AUTOINCREMENT, alias_key TEXT NOT NULL, data TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS ai_control_audit(
+                id INTEGER PRIMARY KEY AUTOINCREMENT, data TEXT NOT NULL);
         ''')
 
     def close(self):
@@ -150,6 +161,33 @@ class AssistantStore:
 
     def put(self, key, value):
         self.db.execute('INSERT OR REPLACE INTO meta VALUES(?,?)', (key, encode(value)))
+
+    def control(self):
+        return self.get('ai_control', {'enabled': False, 'revision': 0, 'reason': 'default_disabled'})
+
+    def set_enabled(self, enabled, *, reason='explicit_control'):
+        if type(enabled) is not bool:
+            raise ValueError('enabled必须是布尔值')
+        with self.db:
+            self.db.execute('BEGIN IMMEDIATE')
+            if enabled and (not self.get('config') or self.get('ended')):
+                raise Conflict('场次尚未配置或已经结束，不能启用')
+            old = self.control()
+            if enabled and old['enabled'] is True:
+                return old
+            value = {'enabled': enabled, 'revision': old['revision']+1,
+                     'changed_at': time.time(), 'reason': reason}
+            self.put('ai_control', value)
+            self.put('agent_status', 'ready' if enabled else 'disabled')
+            self.db.execute('INSERT INTO ai_control_audit(data) VALUES(?)', (encode(value),))
+        return value
+
+    def require_enabled(self, revision=None):
+        control = self.control()
+        if (control['enabled'] is not True or self.get('ended')
+                or (revision is not None and control['revision'] != revision)):
+            raise AssistantDisabled('AI未启用或本次请求的授权已撤销')
+        return control['revision']
 
     def configure(self, room, session, since, source_session):
         stamp = datetime.fromisoformat(since)
@@ -344,6 +382,7 @@ class AssistantStore:
         with self.db if commit else nullcontext():
             if commit:
                 self.db.execute('BEGIN IMMEDIATE')
+            self.require_enabled()
             for action in actions:
                 if action.room_id != config['room_id'] or action.session_id != config['session_id']:
                     raise ValueError('AI 场次/房间不匹配')
@@ -385,7 +424,7 @@ class AssistantStore:
                     uid = action.recipient_uid
                     identities = [i for i in items if i.get('sender_uid') == uid and uid]
                     names = {i.get('author') for i in identities if i.get('author')}
-                    names.update(r[0] for r in self.db.execute('SELECT alias_key FROM aliases WHERE uid=?', (uid,)))
+                    names.update(trusted_names(self, uid))
                     voices = [i for i in items if i['kind'] == 'transcript' and action.title in i.get('text', '')
                               and any(len(name) >= 2 and name.casefold() in i.get('text', '').casefold()
                                       for name in names)]
@@ -402,8 +441,14 @@ class AssistantStore:
                     raise ValueError('回应必须保留原弹幕证据')
                 if old and action.kind == 'song' and origin_id not in {r['id'] for r in refs}:
                     raise ValueError('点歌状态必须保留来源证据')
-                if not old and any(c['kind'] == 'song' and c.get('origin_id') == origin_id for c in self.cards()):
-                    raise Conflict('同一弹幕点歌已存在')
+                if not old:
+                    for c in self.cards():
+                        if c['kind'] != 'song' or c.get('origin_id') != origin_id:
+                            continue
+                        if action.song_origin != 'gift' or (
+                                c.get('uid') == action.recipient_uid
+                                and c['title'].strip().casefold() == action.title.strip().casefold()):
+                            raise Conflict('同一来源的点歌/赠歌动作已存在')
                 origin = origin or {}
                 self.save_card({**(old or {}), 'id': action.card_id, 'kind': action.kind,
                                 'title': action.title, 'status': action.status,
@@ -434,8 +479,10 @@ class AssistantStore:
                                   (self.get('ai_cursor', 0),)).fetchone()[0]
         latest = self.db.execute('SELECT max(changed) FROM evidence').fetchone()[0]
         return {'config': self.get('config'), 'cards': cards,
-                'agent': {**self.get('agent_metrics', {}), 'status': self.get('agent_status', 'sleeping'),
-                          'aliases': [json.loads(r[0]) for r in self.db.execute('SELECT data FROM aliases')],
+                'control': self.control(),
+                'agent': {**self.get('agent_metrics', {}),
+                          'status': self.get('agent_status', 'ready') if self.control()['enabled'] else 'disabled',
+                          'aliases': aliases(self, include_candidates=True),
                           'trace': [json.loads(r[0]) for r in self.db.execute(
                               'SELECT data FROM agent_audit ORDER BY id DESC LIMIT 20')]},
                 'evidence': evidence,

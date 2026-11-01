@@ -1,11 +1,31 @@
 # 工作记录
 
+## F1：称呼等价关系完整匹配（2026-11-01）
+- 按 `.local/agentic_review_followup.md` 的F1复现新增39项回归：33个负例变体覆盖自称、正向/反向称呼关联、粉丝/朋友关系、长昵称前后缀，以及完整引用、截短引用和省略引用；6个正例覆盖完整自称与双向等价关系。修复前31个新增反例失败，确认前缀误认路径。
+- assistant_aliases.py将自称和双向关联改为fullmatch，完整原句与quoted_relation必须分别证明同一关系。不能在目标称呼之后接受任意尾文，也不能用截短摘录绕过原句；保留已有“修订后：”标签及完整称呼正例。拒绝的关系仍为unconfirmed，端到端验证不能据此把赠歌分配给粉丝。
+- 定向86项通过；完整 `pytest -q --basetemp=.local/pytest-f1-final` **393 passed（11.70秒）**，包含所有default-off与在途撤销回归；ruff通过；前端 **6 Node + 11 DOM** 与TypeScript/Vite构建通过。本阶段只改别名实现、对应测试和本记录；未修改审阅报告、未执行git写操作或访问生产/真实模型。
+
+## AI默认禁用与显式生命周期授权（2026-11-01）
+- 在同一R1–R4实现上增加服务端持久开关，不以“开始实现/继续部署”作为模型运行授权。fresh DB和没有新授权标记的旧DB默认false；每次worker/sidecar启动都关闭，只有用户明确启用后才运行AI。普通只读DB连接/页面轮询不重置已授权的同一生命周期。
+- meta.ai_control保存enabled/revision/时间/原因，ai_control_audit保留记录。模型请求前、多轮之间及工具应用事务内校验授权；关闭递增revision，即使随后立即启用，旧在途响应也不能写卡片、别名、工具回执或finish，不能推进AI cursor。重新启用续接原pending run，已提交动作依旧按持久回执幂等。
+- 关闭仍允许导入源事件、显示已存待办和人工修改。AI开关与直播状态分开；确认下播/owner结束保持ended且关闭，不能自动恢复或重新启用旧场次。已发出的网络请求无需等待其取消才完成关闭，返回结果会被拒绝应用。
+- 新接口：GET /api/assistant/control?session=...；PUT /api/assistant/control，正文为session和严格布尔enabled。state响应增加control；CLI新增control --db ... --session ... --enable/--disable，参数必须明确且互斥。界面默认“AI已关闭”，只在用户点击明确启用/关闭按钮时提交控制请求。操作说明见设计文档。
+- 新增13项控制回归，包含跨DB连接在途撤销、关闭后重新启用仍拒绝旧响应、重启后授权不继承/续跑不重复已提交动作、API/CLI与manual可用性。原模型mock测试逐个显式启用；底层apply入口也拒绝禁用时自动写入或空动作推进cursor。全套 `pytest -q --basetemp=.local/pytest-control-final` **354 passed（9.38秒）**，ruff与control CLI帮助通过；前端 **6 Node + 11 DOM**、TypeScript/Vite构建通过。未执行生产控制、真实模型、git写或部署；当前工作交付保持默认关闭。
+
+## Agent 独立审阅 R1–R4 / N1–N2 修复（2026-11-01）
+- 以 `.local/agentic_review.md` 为复现依据，先新增8个反例确认旧实现全部失败，再完成修复。最终新增21项Python回归，修正旧测试把200K tokens当200KB的错误断言。
+- R1：DB保留全部待办，模型每轮只拿至多20张相关卡片、10个称呼及计数/查询入口；分页从offset=0获取全量。字节硬限800000与token估算阈值200000独立，使用显式启发估算并用Ollama实际usage校准；不声称精确tokenizer。500/2000条普通聊天积压连续两批均调用模型并推进AI cursor至40，卡片不删除。真正最小输入超限显示context_capacity_paused，与网络重试分开。
+- R2/R3：新增assistant_aliases.py、alias_candidates和alias_history。身份/关系证据分开，短摘录必须证明本人自称或已知称呼的明确关联；无关、否定、问句、推测、歧义关系不变成可信身份。别名及其依赖每次展示/使用前检查当前版本，ASR修订后显示待复核并拒绝据此赠歌；新证据可重新确认，旧原文/版本仍留审计。旧记录缺少新关系字段时待复核。复杂句式可保守不确认。
+- R4：read_state不再附全量别名；read_aliases提供独立UID/关键词/状态过滤及分页。超长结果保留计数、原offset、next_offset和缩页建议，测试覆盖缩页后取回数据以及150条别名多轮分页后finish。
+- N1/N2：赠歌按来源、接收UID、歌曲名去重，同段语音可给不同观众建单；原弹幕点歌去重保持。每次工具交换先在事务中重载持久run，已finished任务不会被旧快照重放覆盖为active。
+- UI显示称呼的已查证/待复核/未确认状态，字节、估算tokens、实际usage分开展示。设计合同已同步。最终 `pytest -q --basetemp=.local/pytest-r1-r4-final` **341 passed（8.67秒）**；ruff、前端 **6 Node + 10 DOM**、TypeScript/Vite构建通过。测试均为合成数据/mock；无真实模型、生产Chrome/API/DB访问，无git写或部署。独立复核、PR及助手重启交主线程。
+
 ## 每房间持久 Agent 与自动上下文裁剪（2026-11-01）
 - 按已确认设计实现真正多轮工具循环。新增 `assistant_agent.py`，通过read_state、viewer_events、search_transcripts、read_evidence、record_alias、update_assistant、finish_analysis完成查证与写入；无新观察且无进行中分析时不调用模型。runtime仍为Ollama Cloud deepseek-v4.1-flash。
 - 助手库增量新增aliases、agent_runs、agent_calls、agent_exchanges、agent_audit。UID归属+别名唯一约束、证据当前版本、卡片manual/CAS约束保留；写动作、幂等回执、完整工具配对轮次同事务提交。重启恢复进行中分析，成功写动作重放不再执行；只读工具每轮刷新。原cards/cursor/observations/history及真实送礼规则不改语义。
 - 主播主动赠歌使用song_origin=gift、recipient_uid及明确UID身份和歌曲/已查证称呼转写证据，不再要求用户先发点歌弹幕。英文昵称机器翻译不算别名事实；无原文别名/明确对象证据的请求拒绝。已有误判仍由人工可撤销操作修正。
-- conversation按完整配对单元裁剪：默认200000阈值、120秒窗口，先移除旧轮次，再处理密集窗口。UTF8序列化字节数只是保守预算代理，Ollama实际prompt_eval_count单独观测；工具定义、当前输入、全部未完成工作状态与别名保留，必要状态超预算时显式暂停。原始观察、业务history、别名、审计轨迹不删。UI新增折叠的状态/工具原因/幂等回执/compaction/coverage指标。
-- 旧CLI参数继续有效；新增max-tool-turns=8、max-tools-per-turn=8、context-tokens=200000、recent-seconds=120、tool-result-bytes=16000。max-bytes默认由64000提高为800000，显式旧值仍遵守；实际发送以min(max-bytes,context-tokens)作保守字节预算。总调用预算每个模型轮次都扣费，工具轮次触顶暂停，不无限重开。
+- 初版conversation按完整配对单元裁剪：200000阈值、120秒窗口，先移除旧轮次，再处理密集窗口。最初把全部未完成状态和别名常驻prompt；此策略与字节/token混用已由上节R1/R4修正为有界索引及独立预算。原始观察、业务history、别名、审计轨迹不删。UI新增折叠的状态/工具原因/幂等回执/compaction/coverage指标。
+- 旧CLI参数继续有效；新增max-tool-turns=8、max-tools-per-turn=8、context-tokens=200000、recent-seconds=120、tool-result-bytes=16000。max-bytes默认由64000提高为800000，显式旧值仍遵守。初版min(max-bytes,context-tokens)字节预算有单位错误，已在上节修复。总调用预算每个模型轮次都扣费，工具轮次触顶暂停，不无限重开。
 - 新增13项离线Agent回归：真实Store+mock Ollama HTTP的14次响应跨轮查证、别名持久、重启/裁剪后主动赠歌及唱完；覆盖旧结果与manual竞争、事务中断无半对话、幂等重放、逐轮预算/超时恢复、跨scope拒绝、别名冲突、旧ASR证据只读、输入时序、200K/120秒和密集窗口裁剪。最近全套320项pytest、ruff、16项前端测试（6 Node+10 DOM）及TypeScript/Vite构建通过；无真实模型或生产访问，未做git写/PR/merge/deploy。
 - 主线程部署时沿用同一助手DB、固定room/session/source/since与owner，只重启助手sidecar/worker即可；不要重启8765、录制、Chrome或ASR。尚未验证真实模型的语义质量/延迟与生产切换，独立review和发布仍归主线程。
 

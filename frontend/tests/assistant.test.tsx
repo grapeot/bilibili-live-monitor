@@ -6,7 +6,9 @@ import {Assistant} from '../src/Assistant';
 const scope={room_id:'123456',session_id:'session',since:'2030-01-01T00:00:00Z',source_session:'generation'};
 let card:Record<string,unknown>;
 let requests:{url:string;body?:Record<string,unknown>}[];
+let enabled:boolean;
 beforeEach(()=>{
+  enabled=false;
   card={id:'chat:1',kind:'chat',title:'想听歌曲A',status:'pending',version:1,author:'用户A',manual:false,
     evidence:[{id:'1',version:1}],pronunciation:{text:'yòng hù A',uncertain:true,override:false}};
   requests=[];
@@ -15,11 +17,25 @@ beforeEach(()=>{
     if(url.endsWith('/sessions'))return {ok:true,json:async()=>[scope]};
     if(url.includes('/cards/')){card={...card,status:body.status||'pending',version:Number(card.version)+1,manual:true};return {ok:true,json:async()=>card}}
     if(url.endsWith('/pronunciation'))return {ok:true,json:async()=>({ok:true})};
-    return {ok:true,json:async()=>({config:scope,cards:[card],evidence:[{id:'1',version:1,data:{text:'想听歌曲A',author:'用户A'}}],worker:{status:'live',cursor:1001,ai_cursor:2,pending_observations:3,last_observation:1893456000}})};
+    if(url.endsWith('/control')){enabled=body.enabled;return {ok:true,json:async()=>({enabled})}}
+    return {ok:true,json:async()=>({config:scope,control:{enabled,revision:1},cards:[card],evidence:[{id:'1',version:1,data:{text:'想听歌曲A',author:'用户A'}}],worker:{status:'live',cursor:1001,ai_cursor:2,pending_observations:3,last_observation:1893456000}})};
   }));
 });
 afterEach(()=>{cleanup();vi.unstubAllGlobals()});
 describe('助手操作',()=>{
+  it('默认关闭且不自动启用，显式点击才发送控制请求，关闭后保留卡片',async()=>{
+    render(<Assistant/>);
+    await screen.findByText('想听歌曲A');
+    expect(screen.getByText(/AI 助手：已关闭/)).toBeTruthy();
+    expect(requests.filter(r=>r.url.endsWith('/control'))).toHaveLength(0);
+    fireEvent.click(screen.getByRole('button',{name:'启用 AI 助手'}));
+    await screen.findByRole('button',{name:'关闭 AI 助手'});
+    expect(requests.find(r=>r.url.endsWith('/control'))?.body).toEqual({session:'session',enabled:true});
+    fireEvent.click(screen.getByRole('button',{name:'关闭 AI 助手'}));
+    await screen.findByRole('button',{name:'启用 AI 助手'});
+    expect(requests.filter(r=>r.url.endsWith('/control')).at(-1)?.body).toEqual({session:'session',enabled:false});
+    expect(screen.getByText('想听歌曲A')).toBeTruthy();
+  });
   it('显示三栏、原名与读音，并用版本操作和恢复',async()=>{
     render(<Assistant/>);
     await screen.findByText('想听歌曲A');
@@ -114,8 +130,10 @@ describe('助手操作',()=>{
       if(!url.includes('/state?'))return response;
       const data=await response.json();
       return {ok:true,json:async()=>({...data,agent:{status:'sleeping',compaction_count:2,
-        input_bytes:12000,byte_limit:200000,last_prompt_eval_count:3000,
-        aliases:[{uid:'111',alias:'清风老师',version:1}],
+        input_bytes:12000,byte_limit:800000,last_prompt_eval_count:3000,
+        estimated_input_tokens:4000,context_token_limit:200000,
+        aliases:[{uid:'111',alias:'清风老师',version:1,status:'pending_review'},
+          {uid:'222',alias:'明月老师',version:1,status:'confirmed'}],
         trace:[{at:1,tool:'record_alias',reason:'有原文称呼证据',cached:true}]}})};
     }));
     render(<Assistant/>);await screen.findByText('想听歌曲A');
@@ -124,6 +142,8 @@ describe('助手操作',()=>{
     fireEvent.click(summary);
     expect(screen.getByText(/上下文裁剪 2 次/)).toBeTruthy();
     expect(screen.getByText(/预算代理，不是精确token数/)).toBeTruthy();
+    expect(screen.getByText(/12000 \/ 800000 UTF-8字节；估算输入 4000 \/ 200000 tokens/)).toBeTruthy();
+    expect(screen.getByText(/清风老师 → UID 111（待复核）.*明月老师 → UID 222（已查证）/)).toBeTruthy();
     expect(screen.getByText(/record_alias：有原文称呼证据.*未重复执行/)).toBeTruthy();
   });
 });

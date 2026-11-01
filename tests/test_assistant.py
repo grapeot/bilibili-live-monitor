@@ -27,6 +27,7 @@ def event(n=1, **kwargs):
 def store(tmp_path):
     s = AssistantStore(tmp_path/'assistant.sqlite')
     s.configure('123456', 'session', SINCE, 'generation')
+    s.set_enabled(True)  # 本组测试显式授权离线模型动作；默认禁用另有专门回归。
     yield s
     s.close()
 
@@ -185,10 +186,12 @@ async def test_worker_retry_restart_budget_and_ended(store, tmp_path):
     state = platform()
     async with httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(200, json=state))) as client:
         worker = AssistantWorker(store, path, 'http://upstream', WorkerConfig(interval=0), runtime, client)
+        store.set_enabled(True)
         await worker.tick()
         assert store.get('ai_cursor') is None and store.get('cursor') == 1
         assert store.get('last_error') == 'TimeoutError'
         restarted = AssistantWorker(store, path, 'http://upstream', WorkerConfig(interval=0), runtime, client)
+        store.set_enabled(True)
         await restarted.tick()
         assert store.get('ai_cursor') == 1 and store.get('calls') == 2
         state.update(platform(0))
@@ -214,6 +217,7 @@ async def test_worker_rechecks_revisions_during_inference(store, tmp_path):
     async with httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(200, json=platform()))) as client:
         worker = AssistantWorker(store, path, 'http://upstream', WorkerConfig(interval=0),
                                  AsyncMock(infer=infer), client)
+        store.set_enabled(True)
         await worker.tick()
         assert store.evidence('1')['version'] == 2
         assert store.card('song:1') is None and store.get('ai_cursor') is None
@@ -238,6 +242,7 @@ async def test_budget_and_offline_skip_model(store, tmp_path):
     runtime = AsyncMock()
     async with httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(503))) as client:
         worker = AssistantWorker(store, path, 'http://upstream', runtime=runtime, client=client)
+        store.set_enabled(True)
         await worker.tick()
         assert store.get('status') == 'paused'
         runtime.infer.assert_not_called()
@@ -245,6 +250,7 @@ async def test_budget_and_offline_skip_model(store, tmp_path):
         store.put('calls', 1)
     async with httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(200, json=platform()))) as client:
         worker = AssistantWorker(store, path, 'http://upstream', WorkerConfig(max_calls=1), runtime, client)
+        store.set_enabled(True)
         await worker.tick()
         assert store.get('status') == 'budget_paused'
         runtime.infer.assert_not_called()
@@ -291,6 +297,7 @@ async def test_timeout_and_owner_identity(store, tmp_path, monkeypatch):
     async with httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(200, json=platform()))) as client:
         worker = AssistantWorker(store, path, 'http://upstream', WorkerConfig(timeout=.01),
                                  AsyncMock(infer=hang), client)
+        store.set_enabled(True)
         await worker.tick()
         assert store.get('last_error') == 'TimeoutError'
         assert store.get('ai_cursor') is None
