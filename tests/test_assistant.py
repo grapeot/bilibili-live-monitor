@@ -133,12 +133,13 @@ def test_medals_unknown_guard_wrong_room_song_and_full_roster(store):
     assert store.card('medal:1') is None
     store.derive_medals({'complete': False, 'members': []})
     assert store.card('medal:1') is None
-    store.derive_medals({'complete': True, 'members': []})
+    stamp = '2030-01-01T00:00:01+00:00'
+    store.derive_medals({'complete': True, 'members': [], 'observed_utc': stamp})
     assert store.card('medal:1')['eligible'] is True
-    store.derive_medals({'complete': True, 'members': [{'sender_uid': '1'}]})
+    store.derive_medals({'complete': True, 'members': [{'sender_uid': '1'}], 'observed_utc': stamp})
     assert not store.card('medal:1')['eligible']
     store.apply({'actions': [action(store)]}, 1, offered(store))
-    store.derive_medals({'complete': True, 'members': []})
+    store.derive_medals({'complete': True, 'members': [], 'observed_utc': stamp})
     assert not store.card('medal:1')['eligible']
     store.ingest([event(2, sender_uid='2', medal={'room_id': '654321', 'level': 1}, guard_level=0)])
     store.derive_medals()
@@ -147,10 +148,14 @@ def test_medals_unknown_guard_wrong_room_song_and_full_roster(store):
 
 def test_pronunciation_conservative_and_originals_unchanged(store):
     assert pronunciation('Alice')['text'] == ''
-    assert pronunciation('重')['text'] == '重'
+    assert 'chóng' in pronunciation('重')['text']
+    assert 'zhòng' in pronunciation('重')['text']
     assert pronunciation('重')['uncertain']
     assert pronunciation('龘')['text']  # 词典支持则拼音，不支持仍保留原字
     assert pronunciation('重', 'chóng')['text'] == 'chóng'
+    assert pronunciation('𠮷')['text'] == '𠮷'
+    assert pronunciation('𠮷')['unknown'] == ['𠮷']
+    assert pronunciation('𠮷')['uncertain']
     store.ingest([event()])
     original = store.evidence('1')
     store.state()

@@ -2,6 +2,7 @@
 import json
 import sqlite3
 import time
+import unicodedata
 from datetime import datetime
 from pathlib import Path
 from typing import Literal
@@ -17,19 +18,35 @@ def encode(value):
 def pronunciation(name, override=None):
     if override is not None:
         return {'text': override, 'uncertain': False, 'override': True}
-    parts, uncertain = [], False
+    parts, uncertain, has_han = [], False, False
+    candidates, unknown = [], []
     for char in name:
-        if not '\u3400' <= char <= '\u9fff':
+        if not unicodedata.name(char, '').startswith(('CJK UNIFIED IDEOGRAPH', 'CJK COMPATIBILITY IDEOGRAPH')):
             parts.append(char)
             continue
+        has_han = True
         readings = pinyin(char, style=Style.TONE, heteronym=True)[0]
-        if len(readings) != 1 or readings[0] == char:
+        if readings == [char]:
             parts.append(char)
+            uncertain = True
+            unknown.append(char)
+        elif len(readings) > 1:
+            parts.append(f'{char}({" / ".join(readings)})')
+            candidates.append({'character': char, 'readings': readings})
             uncertain = True
         else:
             parts.append(readings[0])
-    return {'text': ' '.join(parts) if any('\u3400' <= c <= '\u9fff' for c in name) else '',
-            'uncertain': uncertain, 'override': False}
+    return {'text': ' '.join(parts) if has_han else '', 'uncertain': uncertain, 'override': False,
+            'candidates': candidates, 'unknown': unknown}
+
+
+def observed_time(data):
+    """资格比较使用接收/观测时间，不使用本地导入或 ASR 修订时间。"""
+    try:
+        stamp = datetime.fromisoformat(data.get('received_utc') or data.get('observed_utc') or data['at_utc'])
+        return stamp.timestamp() if stamp.tzinfo else float('-inf')
+    except (KeyError, TypeError, ValueError):
+        return float('-inf')
 
 
 class Strict(BaseModel):
@@ -45,9 +62,9 @@ class Action(Strict):
     room_id: str
     session_id: str
     card_id: str = Field(min_length=1, max_length=150, pattern=r'^[\w:.-]+$')
-    kind: Literal['chat', 'song']
+    kind: Literal['chat', 'song', 'medal']
     expected_version: int = Field(ge=0)
-    status: Literal['pending', 'responded', 'dismissed', 'queued', 'sung', 'rejected']
+    status: Literal['pending', 'responded', 'dismissed', 'queued', 'sung', 'rejected', 'done']
     title: str = Field(min_length=1, max_length=300)
     evidence: list[EvidenceRef] = Field(min_length=1, max_length=12)
 
@@ -134,6 +151,7 @@ class AssistantStore:
             raise ValueError('尚未固定场次')
         since = datetime.fromisoformat(config['since']).timestamp()
         with self.db:
+            generations = self.get('source_generations', {})
             for row in rows:
                 if row['id'] <= self.get('cursor', 0):
                     continue
@@ -147,13 +165,14 @@ class AssistantStore:
                     at = datetime.fromisoformat(item.get('received_utc') or item['at_utc']).timestamp()
                 except (KeyError, TypeError, ValueError):
                     continue
-                if at < since:
-                    continue
-                if item.get('session_id') != config['source_session']:
-                    # 新 generation 不能悄悄归入此场；忽略旧积压、暂停新来源。
-                    self.put('source_mismatch', True)
-                    continue
                 if item.get('kind') not in ('danmaku', 'transcript', 'entry', 'gift', 'like'):
+                    continue
+                generation = item.get('session_id')
+                if not isinstance(generation, str) or not generation:
+                    continue  # startup-gap 等无来源管理事件不能证明 generation 切换。
+                first = generations.setdefault(generation, {'id': row['id'], 'at': at})
+                first['at'] = min(first['at'], at)
+                if at < since or generation != config['source_session']:
                     continue
                 eid = str(item['id'])
                 old = self.evidence(eid)
@@ -169,6 +188,12 @@ class AssistantStore:
                                     'version': 1, 'manual': False, 'title': item.get('text', '')[:300],
                                     'author': item.get('author') or '', 'uid': item.get('sender_uid'),
                                     'evidence': [{'id': eid, 'version': version}]})
+            self.put('source_generations', generations)
+            anchor = generations.get(config['source_session'])
+            # 已知旧 generation 的迟到事件仍是旧来源；新来源须同时晚于固定来源的首条序号和观测时间。
+            self.put('source_mismatch', bool(anchor and any(
+                g != config['source_session'] and first['id'] > anchor['id']
+                and first['at'] >= max(since, anchor['at']) for g, first in generations.items())))
 
     def derive_medals(self, snapshot=None):
         config = self.get('config')
@@ -181,22 +206,31 @@ class AssistantStore:
             uid = item.get('sender_uid')
             if not uid:
                 continue
-            u = users.setdefault(uid, {'author': '', 'medal': None, 'guard': None, 'refs': {}})
-            u['author'] = item.get('author') or u['author']
-            if item.get('medal') is not None:
+            u = users.setdefault(uid, {'author': '', 'medal': None, 'guard': None, 'refs': {},
+                                      'medal_at': float('-inf'), 'guard_at': float('-inf'),
+                                      'identity_at': float('-inf')})
+            at = observed_time(item)
+            if item.get('medal') is not None and at >= u['medal_at']:
                 u['medal'] = item['medal']
+                u['medal_at'] = at
                 u['refs']['medal'] = {'id': row['id'], 'version': row['version']}
-            if type(item.get('guard_level')) is int:
+            if type(item.get('guard_level')) is int and at >= u['guard_at']:
                 u['guard'] = item['guard_level']
+                u['guard_at'] = at
                 u['refs']['guard'] = {'id': row['id'], 'version': row['version']}
-            u['refs']['identity'] = {'id': row['id'], 'version': row['version']}
+            if at >= u['identity_at']:
+                u['author'] = item.get('author') or u['author']
+                u['identity_at'] = at
+                u['refs']['identity'] = {'id': row['id'], 'version': row['version']}
         requested = {c.get('uid') for c in self.cards() if c['kind'] == 'song'}
         members = {str(m.get('sender_uid')) for m in (snapshot or {}).get('members', [])}
         with self.db:
             for uid, u in users.items():
                 medal = u['medal'] or {}
                 guard = u['guard']
-                if snapshot:
+                snapshot_applies = (snapshot and observed_time(snapshot) > u['guard_at']
+                                    and (uid in members or snapshot.get('complete')))
+                if snapshot_applies:
                     if uid in members:
                         guard = 3
                     elif snapshot.get('complete'):
@@ -211,9 +245,10 @@ class AssistantStore:
                 card = old or {'id': cid, 'kind': 'medal', 'status': 'pending', 'manual': False,
                                'version': 0, 'title': '尚未观察到点歌', 'uid': uid}
                 refs = list({r['id']: r for r in u['refs'].values()}.values())
+                refs += [r for r in card.get('status_evidence', []) if r not in refs]
                 next_card = {**card, 'author': u['author'], 'eligible': eligible, 'evidence': refs}
                 next_card.pop('guard_observation', None)
-                if snapshot:
+                if snapshot_applies:
                     next_card['guard_observation'] = {
                         **{k: snapshot.get(k) for k in ('id', 'source', 'observed_utc', 'complete', 'reported_total')},
                         'uid': uid, 'listed': uid in members}
@@ -267,6 +302,14 @@ class AssistantStore:
                     if not ev or ev['version'] != ref['version'] or ref not in offered['evidence']:
                         raise Conflict('AI 证据不存在、过期或不在上下文')
                     items.append(ev['data'])
+                if action.kind == 'medal':
+                    required = {r['id'] for r in old['evidence']
+                                if self.evidence(r['id'])['data']['kind'] != 'transcript'}
+                    if not required.issubset({r['id'] for r in refs}):
+                        raise ValueError('灯牌状态必须保留观众来源证据')
+                    self.save_card({**old, 'status': action.status, 'version': action.expected_version+1,
+                                    'evidence': refs, 'status_evidence': refs})
+                    continue  # 只改待办状态，不接收 AI 的昵称、标题、资格或榜单改写。
                 origin = next((i for i in items if i['kind'] == 'danmaku'), None)
                 if not old and not origin:
                     raise ValueError('点歌项必须有弹幕来源')
@@ -286,6 +329,7 @@ class AssistantStore:
                                 'uid': (old or {}).get('uid') or origin.get('sender_uid'),
                                 'author': (old or {}).get('author') or origin.get('author') or ''})
             self.put('ai_cursor', target)
+            self.put('last_analysis', time.time())
             self.put('last_error', None)
 
     def state(self):
@@ -301,7 +345,12 @@ class AssistantStore:
                 latest = self.evidence(eid)
                 evidence.append({'id': eid, 'version': version, 'data': json.loads(row[0]),
                                  'latest_version': latest['version']})
+        pending = self.db.execute('SELECT count(*) FROM observations WHERE seq>?',
+                                  (self.get('ai_cursor', 0),)).fetchone()[0]
+        latest = self.db.execute('SELECT max(changed) FROM evidence').fetchone()[0]
         return {'config': self.get('config'), 'cards': cards,
                 'evidence': evidence,
-                'worker': {key: self.get(key) for key in
-                           ('status', 'last_error', 'cursor', 'ai_cursor', 'calls', 'ended', 'last_attempt')}}
+                'worker': {'pending_observations': pending, 'last_observation': latest,
+                           **{key: self.get(key) for key in
+                              ('status', 'last_error', 'cursor', 'ai_cursor', 'calls', 'ended',
+                               'last_attempt', 'last_analysis')}}}

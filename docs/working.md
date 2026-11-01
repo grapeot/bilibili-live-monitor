@@ -1,5 +1,13 @@
 # 工作记录
 
+## PR19 独立审阅修复（2026-11-01）
+- 完整读取 `.local/assistant_review.md`，针对 B1/B2/B3 和 N1 修复；本轮没有 git 写操作、生产访问、真实外部模型调用或部署，复核与推送交主线程。
+- B1：持久保存 generation 首条事件序号与最早观测时间。旧来源积压、旧来源迟到消息、无 session 的 startup-gap 不触发暂停；指定来源之后真正新 generation 仍暂停并跨重启保留。旧版仅有 `source_mismatch` 的状态库从源事件只读重建分类，不重置读取/AI游标，不重复生成卡片。
+- B2：工具 schema、prompt 和上下文允许 AI 更新既有 medal 待办的 pending/done/dismissed；不允许新建 medal，不接收真实资格、昵称、标题改写。保留来源证据、卡片/证据版本与 manual 锁；响应语音保存至 `status_evidence`，资格刷新后仍可查看。
+- B3：guard/medal/身份字段按实际接收观测时间更新，榜单按 observed_utc 而非插入id选取。榜单必须更新于明确guard事件才能覆盖；同时间保留事件证据。旧完整空榜不能覆盖之后的GUARD_BUY，部分榜单缺席仍不能证明非舰长。
+- N1与UI：多音字显示带声调候选并标不确定；扩展区未收录汉字（含𠮷）保留字并显示未知，override继续优先。顶部改为实际待分析观察行数及最近数据更新时间；不同基数的源事件游标/AI观察序号仅放诊断详情。
+- 新增 `tests/test_assistant_review.py` 的11项真实Store/协议回归（chat_message、gift_message/GUARD_BUY、Store.item/segment/guard_snapshot）；前端新增2项回归。最终 `pytest -q --basetemp=.local/pytest-review-final` **275 passed**（7.64秒）；`ruff check src tests`、`git diff --check` 通过；前端 **6项Node + 5项DOM测试通过**，TypeScript/Vite构建通过。仅保留既有依赖弃用提示，没有失败或跳过。原欢迎tick测试保留在全套验证中。
+
 ## 直播助手与独立 sidecar（2026-11-01）
 - 设计与实现由 GPT-6.1 SOL 完成，产品 runtime 默认 Ollama Cloud `deepseek-v4.1-flash`、`think:false`。设计、schema、工具契约、盲区和部署回滚见 `docs/live_assistant_design.md`。
 - 新增独立助手状态库、只读事件 worker 和 FastAPI sidecar。固定 room/session/since/source generation，保存原始观察副本与证据修订、读取/AI双 cursor；工具操作使用原子校验和版本锁，人工操作永久优先。超时、非法响应、状态变化不推进 AI 完成进度；可配置调用频率、预算、上下文大小、owner PID/create_time。

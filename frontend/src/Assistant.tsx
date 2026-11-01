@@ -4,9 +4,10 @@ type Scope = {room_id:string;session_id:string;since:string;source_session:strin
 type Ref = {id:string;version:number};
 type Card = {id:string;kind:'chat'|'medal'|'song';title:string;status:string;version:number;
   author:string;uid?:string;manual:boolean;eligible?:boolean;evidence:Ref[];
-  pronunciation:{text:string;uncertain:boolean;override:boolean};guard_observation?:unknown};
+  pronunciation:{text:string;uncertain:boolean;override:boolean;unknown?:string[]};guard_observation?:unknown};
 type Snapshot = {config:Scope;cards:Card[];evidence:{id:string;version:number;latest_version?:number;data:Record<string,unknown>}[];
-  worker:{status?:string;last_error?:string;calls?:number;cursor?:number;ai_cursor?:number}};
+  worker:{status?:string;last_error?:string;calls?:number;cursor?:number;ai_cursor?:number;
+    pending_observations?:number;last_observation?:number;last_analysis?:number}};
 const base = import.meta.env.BASE_URL;
 async function api(path:string, init?:RequestInit){
   const response=await fetch(base+'api/assistant/'+path,init);
@@ -45,7 +46,7 @@ export function Assistant(){
     finally{setBusy(false)}
   }
   function cardView(card:Card){return <article className="assistant-card" key={card.id}>
-    <p><strong>{card.author||'身份未确认'}</strong>{card.pronunciation.text&&<small className="reading"> {card.pronunciation.text}{card.pronunciation.uncertain?' · 读音待确认':''}</small>}</p>
+    <p><strong>{card.author||'身份未确认'}</strong>{card.pronunciation.text&&<small className="reading"> {card.pronunciation.text}{card.pronunciation.uncertain?' · 读音待确认':''}{!!card.pronunciation.unknown?.length&&` · 未知读音：${card.pronunciation.unknown.join('、')}`}</small>}</p>
     <p>{card.title}</p><p className="room-sub">{card.kind==='song'&&card.status==='pending'?'待确认':names[card.status]}{card.manual?' · 人工确认':''}</p>
     <div className="assistant-actions"><label>状态 <select aria-label={card.title+'状态'} disabled={busy} value={card.status}
       onChange={e=>void mutate('cards/'+encodeURIComponent(card.id),'PATCH',{session,expected_version:card.version,status:e.target.value})}>
@@ -53,7 +54,7 @@ export function Assistant(){
       <button disabled={busy} onClick={()=>void mutate('cards/'+encodeURIComponent(card.id)+'/undo','POST',{session,expected_version:card.version})}>撤销上次状态</button>
     </div>
     <details><summary>证据与读音</summary>
-      {card.evidence.map(ref=>{const e=data?.evidence.find(e=>e.id===ref.id&&e.version===ref.version);return <div key={ref.id}>
+      {card.evidence.map(ref=>{const e=data?.evidence.find(e=>e.id===ref.id&&e.version===ref.version);return <div key={`${ref.id}:${ref.version}`}>
         <p>证据 {ref.id} · 引用版本 {ref.version}{e?.latest_version&&e.latest_version!==ref.version?' · 已有修订，请复核':''}</p><pre>{JSON.stringify(e?.data,null,2)}</pre></div>})}
       {card.guard_observation!=null&&<pre>{JSON.stringify(card.guard_observation,null,2)}</pre>}
       <form onSubmit={e=>{e.preventDefault();const form=new FormData(e.currentTarget);
@@ -69,7 +70,8 @@ export function Assistant(){
       {!sessions.length&&<option value="">尚未配置场次</option>}
       {sessions.map(s=><option value={s.session_id} key={s.session_id}>{s.room_id} · {s.session_id}</option>)}</select></label>
     {error&&<p role="alert">{error}</p>}
-    {data&&<><p className="room-sub">{workerNames[data.worker.status||'']||'等待 worker'} · 模型调用 {data.worker.calls||0} 次 · 读取进度 {data.worker.cursor||0} / AI 完成 {data.worker.ai_cursor||0}{data.worker.last_error?' · '+data.worker.last_error:''}</p>
+    {data&&<><p className="room-sub">{workerNames[data.worker.status||'']||'等待 worker'} · 模型调用 {data.worker.calls||0} 次 · 待分析观察 {data.worker.pending_observations??0} 条 · 最近观察更新 {data.worker.last_observation?new Date(data.worker.last_observation*1000).toLocaleTimeString('zh-CN',{hour12:false}):'尚无'}{data.worker.last_error?' · '+data.worker.last_error:''}</p>
+      <details><summary>运行诊断</summary><p>源事件游标：{data.worker.cursor||0}；AI 已完成观察序号：{data.worker.ai_cursor||0}（两个序号不是同一计数）。最近分析完成：{data.worker.last_analysis?new Date(data.worker.last_analysis*1000).toLocaleTimeString('zh-CN',{hour12:false}):'尚无'}</p></details>
       <label><input type="checkbox" checked={history} onChange={e=>setHistory(e.target.checked)}/>显示已完成 / 已忽略，供恢复或撤销</label>
       <div className="assistant-columns">{(['chat','medal','song'] as const).map(kind=>{
         const cards=data.cards.filter(c=>c.kind===kind&&(kind!=='medal'||c.eligible)

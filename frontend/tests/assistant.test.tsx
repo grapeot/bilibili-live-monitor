@@ -15,7 +15,7 @@ beforeEach(()=>{
     if(url.endsWith('/sessions'))return {ok:true,json:async()=>[scope]};
     if(url.includes('/cards/')){card={...card,status:body.status||'pending',version:Number(card.version)+1,manual:true};return {ok:true,json:async()=>card}}
     if(url.endsWith('/pronunciation'))return {ok:true,json:async()=>({ok:true})};
-    return {ok:true,json:async()=>({config:scope,cards:[card],evidence:[{id:'1',version:1,data:{text:'想听歌曲A',author:'用户A'}}],worker:{status:'live'}})};
+    return {ok:true,json:async()=>({config:scope,cards:[card],evidence:[{id:'1',version:1,data:{text:'想听歌曲A',author:'用户A'}}],worker:{status:'live',cursor:1001,ai_cursor:2,pending_observations:3,last_observation:1893456000}})};
   }));
 });
 afterEach(()=>{cleanup();vi.unstubAllGlobals()});
@@ -50,5 +50,18 @@ describe('助手操作',()=>{
     render(<Assistant/>);await screen.findByText('想听歌曲A');
     fireEvent.change(screen.getByLabelText('想听歌曲A状态'),{target:{value:'responded'}});
     expect(await screen.findByRole('alert')).toHaveProperty('textContent','卡片已经更新，请刷新后重试');
+  });
+  it('顶部显示真实待分析条数，异基数游标仅供诊断',async()=>{
+    render(<Assistant/>);await screen.findByText('想听歌曲A');
+    expect(screen.getByText(/待分析观察 3 条 · 最近观察更新/)).toBeTruthy();
+    expect(screen.queryByText(/读取进度/)).toBeNull();
+    fireEvent.click(screen.getByText('运行诊断'));
+    expect(screen.getByText(/源事件游标：1001；AI 已完成观察序号：2/)).toBeTruthy();
+  });
+  it('显示多音字候选与扩展汉字未知提示，原名保留',async()=>{
+    card={...card,author:'重𠮷',pronunciation:{text:'重(zhòng / chóng) 𠮷',uncertain:true,override:false,unknown:['𠮷']}};
+    render(<Assistant/>);await screen.findByText('想听歌曲A');
+    expect(screen.getByText('重𠮷')).toBeTruthy();
+    expect(screen.getByText(/重\(zhòng \/ chóng\).*读音待确认.*未知读音：𠮷/)).toBeTruthy();
   });
 });
