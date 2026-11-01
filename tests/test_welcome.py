@@ -44,11 +44,13 @@ def test_window_expiry_and_cooldown():
 
 
 def test_message_length_and_split():
-    assert len(welcome_messages(['合成访客'], 80)) == 1
+    assert len(welcome_messages(['合成访客'], 120)) == 1
+    assert len(welcome_messages(['合成访客'], 80)) == 2
     split = welcome_messages(['合成访客'], text_length(INTRO))
     assert len(split) == 2 and split[1] == INTRO
     assert all(text_length(s) <= text_length(INTRO) for s in split)
-    assert text_length('😀') == 2
+    assert text_length('😀') == 4
+    assert text_length('A中é') == 5
     with pytest.raises(ValueError):
         welcome_messages(['访客'], 10)
 
@@ -241,7 +243,7 @@ async def test_complete_one_shot_history_scope_and_incremental_activity(tmp_path
     add_raw(db, entry(10), (now-timedelta(days=1)).isoformat())
     add_raw(db, entry(20), (now-timedelta(minutes=10)).isoformat())
     page = SimpleNamespace(url='https://live.bilibili.com/123456',
-                           locator=lambda _: SimpleNamespace(evaluate_all=AsyncMock(return_value=[text_length(INTRO) if fail_second else 80])))
+                           locator=lambda _: SimpleNamespace(evaluate_all=AsyncMock(return_value=[text_length(INTRO) if fail_second else 120])))
     async def connect(_):
         # 这些报文在基线建立之后才出现，且没有对应timeline行。
         at = now.isoformat()

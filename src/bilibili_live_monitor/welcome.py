@@ -19,7 +19,8 @@ INTRO = '这里是古风唱歌直播间，点亮粉丝灯牌就可以免费点�
 
 
 def text_length(text):
-    return len(text.encode('utf-16-le'))//2
+    """网页弹幕宽度：ASCII计1，非ASCII的每个UTF-16单元计2。"""
+    return sum(1 if ord(char) < 128 else 2 if ord(char) <= 0xffff else 4 for char in text)
 
 
 def welcome_messages(names, limit):
