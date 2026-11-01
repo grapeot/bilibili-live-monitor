@@ -122,6 +122,7 @@ class Monitor:
         for room in rooms:
             room['segments'] = self.store.segments(room['room_id'])
             room['items'] = self.store.items(room['room_id'])
+            room['like_summary'] = self.store.like_summary(room['room_id'])
         return {'rooms': rooms, **self.metrics(), 'cursor': self.store.cursor()}
 
     def metrics(self):

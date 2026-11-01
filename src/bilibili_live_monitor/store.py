@@ -95,17 +95,28 @@ class Store:
         self.item({**message, 'room_id': room_id, 'kind': 'danmaku'}, message['source_key'])
 
     def live_message(self, room_id, message):
-        now = utc_now()
+        now = message.get('received_utc') or utc_now()
         kind = message.get('kind')
+        if kind == 'like_total':
+            totals = self.control('like_totals', {})
+            previous = totals.get(room_id)
+            if previous is None or datetime.fromisoformat(now) >= datetime.fromisoformat(previous['observed_utc']):
+                totals[room_id] = {'reported_total': message['reported_total'], 'observed_utc': now}
+                self.save_control('like_totals', totals)
+                self.event('likes', {'room_id': room_id, 'summary': self.like_summary(room_id)})
+            return
         if kind in ('raw_event', 'transport'):
             health = self.control('message_health', {})
             current = health.setdefault(room_id, {})
             if kind == 'raw_event':
                 packet = message['packet']
-                self.db.execute('INSERT INTO raw_events(room_id,session_id,received_utc,command,data) VALUES(?,?,?,?,?)',
-                                (room_id, message.get('session_id'), now, packet.get('cmd'),
-                                 json.dumps(packet, ensure_ascii=False)))
+                cursor = self.db.execute('INSERT INTO raw_events(room_id,session_id,received_utc,command,data) VALUES(?,?,?,?,?)',
+                                 (room_id, message.get('session_id'), now, packet.get('cmd'),
+                                  json.dumps(packet, ensure_ascii=False)))
                 self.db.commit()
+                if not hasattr(self, '_raw_like'):
+                    self._raw_like = {}
+                self._raw_like[room_id] = (message.get('_raw_token'), cursor.lastrowid, now)
                 current['last_message_utc'] = now
                 current['raw_events'] = current.get('raw_events', 0) + 1
             else:
@@ -117,10 +128,24 @@ class Store:
                     self.event('message_transport', {'room_id': room_id, 'at_utc': now, **message})
             self.save_control('message_health', health)
             return
-        if message.get('kind') in ('gift', 'entry'):
+        if message.get('kind') in ('gift', 'entry', 'like'):
+            message = dict(message)
+            token = message.pop('_raw_token', None)
+            raw = getattr(self, '_raw_like', {}).get(room_id)
+            if kind == 'like' and token and raw and token == raw[0]:
+                message.update(source_key=f'like:raw:{raw[1]}', raw_event_id=raw[1],
+                               at_utc=raw[2], received_utc=raw[2])
             self.item({**message, 'room_id': room_id}, message['source_key'])
+            if kind == 'like':
+                self.event('likes', {'room_id': room_id, 'summary': self.like_summary(room_id)})
         else:
             self.danmaku(room_id, message)
+
+    def like_summary(self, room_id):
+        count, users = self.db.execute("SELECT count(*),count(DISTINCT json_extract(data,'$.sender_uid')) "
+                                      "FROM timeline WHERE room_id=? AND kind='like'", (room_id,)).fetchone()
+        return {**self.control('like_totals', {}).get(room_id, {}),
+                'notifications': count, 'identified_users': users}
 
     def guard_snapshot(self, snapshot):
         with self.db:

@@ -34,7 +34,15 @@ class SegmentResponse(BaseModel):
     error: str | None = Field(description='错误原因，正常时为null')
 
 
+class LikeSummary(BaseModel):
+    reported_total: int | None = Field(default=None, ge=0, description='平台最近报告的累计值，不是本次采集新增量')
+    observed_utc: str | None = None
+    notifications: int = Field(default=0, ge=0, description='已保存的个人点赞通知条数，不等于点击次数')
+    identified_users: int = Field(default=0, ge=0, description='个人点赞通知中可识别的不同UID数')
+
+
 class RoomResponse(BaseModel):
+    like_summary: LikeSummary | None = None
     reconnect_attempts: int = 0
     next_retry_utc: str | None = None
     record_mode: Literal['none', 'audio', 'video'] = 'audio'
@@ -83,7 +91,7 @@ class TimelineItem(BaseModel):
     is_final: bool | None = None
     id: int
     room_id: str
-    kind: Literal['transcript', 'danmaku', 'gift', 'entry']
+    kind: Literal['transcript', 'danmaku', 'gift', 'entry', 'like']
     at_utc: str
     received_utc: str
     text: str = ''
@@ -91,6 +99,7 @@ class TimelineItem(BaseModel):
     source_key: str | None = None
     gift: GiftDetails | None = None
     entry: dict | None = Field(default=None, description='平台入场通知来源及时间依据；不代表完整在线名单')
+    like: dict | None = Field(default=None, description='个人点赞通知；无可靠单条点击次数，时间为接收时钟')
     sender_uid: str | None = None
     identity_status: Literal['uid', 'unresolved'] | None = None
     guard_level: int | None = None

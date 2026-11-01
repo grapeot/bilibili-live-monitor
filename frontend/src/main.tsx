@@ -6,18 +6,22 @@ import {transcriptLabel} from './transcripts';
 
 type Segment = {seq:number; start_utc:string; end_utc:string; text:string; status:string;
   queue_wait_ms:number; infer_ms:number; rms_dbfs:number; error:string|null; coverage_ratio?:number|null};
+type LikeSummary = {reported_total?:number|null;observed_utc?:string|null;notifications:number;identified_users:number};
 type Room = {room_id:string; title:string; url:string; cover_url:string; status:string;
+  like_summary?:LikeSummary|null;
   reconnect_attempts?:number;next_retry_utc?:string|null;
   record_mode:'none'|'audio'|'video';asr_enabled:boolean;preview_enabled:boolean;
   recording_status:string;recorded_seconds:number;recording_files:number;recording_bytes:number;
   error:string|null; chunk_seconds:number; segments:Segment[];items:Item[]};
-type Item = {id:number;room_id:string;kind:'transcript'|'danmaku'|'gift'|'entry';at_utc:string;received_utc:string;text:string;
+type Item = {id:number;room_id:string;kind:'transcript'|'danmaku'|'gift'|'entry'|'like';at_utc:string;received_utc:string;text:string;
   entry?:{event_type:string;time_source:'event'|'received'}|null;
   transcript_version?:'realtime'|'offline'|null;stable_text?:string|null;is_final?:boolean|null;
+  stream_id?:string|null;
   sender_uid?:string|null;guard_level?:number|null;
   author?:string|null;seq?:number|null;status?:string|null;error?:string|null;
   gift?:Gift|null};
-type Change = {kind:'room';data:Room}|{kind:'segment';data:Segment&{room_id:string}}|{kind:'item';data:Item};
+type Change = {kind:'room';data:Room}|{kind:'segment';data:Segment&{room_id:string}}|{kind:'item';data:Item}
+  |{kind:'likes';data:{room_id:string;summary:LikeSummary}};
 type State = {rooms:Room[]; queue_depth:number; queue_capacity:number; asr_ready:boolean;
   asr_enabled:boolean;
   overload_count:number; inflight:{room_id:string;seq:number}|null;active_count:number;pending_count:number;
@@ -143,13 +147,15 @@ const RoomCard = React.memo(function RoomCard({room,status,onError}:{room:Room;s
     <div className="room-sub"><span>房间 {room.room_id} · 流式输入 5 秒 · 上下文 ≤30 秒</span><button className="text-button" disabled={room.status==='stopped'} onClick={()=>api(`rooms/${room.room_id}/stop`,{method:'POST'}).catch(e=>onError(e.message))}>停止监控</button></div>
     {room.error&&<p className="room-error">{room.error}</p>}
     {!!room.reconnect_attempts&&<p className="room-sub">连续失败 {room.reconnect_attempts} 次{room.next_retry_utc?` · 下次重试 ${time(room.next_retry_utc)}`:''}</p>}
-    <p className="room-sub">保存：{({none:'关闭',audio:'原始音频',video:'原始音视频'})[room.record_mode]} · ASR：{room.asr_enabled?'启用':'禁用'} · 弹幕 / 礼物 / 入场：保存并显示</p>
+    <p className="room-sub">保存：{({none:'关闭',audio:'原始音频',video:'原始音视频'})[room.record_mode]} · ASR：{room.asr_enabled?'启用':'禁用'} · 弹幕 / 礼物 / 入场 / 点赞：保存并显示</p>
+    {room.like_summary&&<p className="room-sub like-summary">平台累计点赞：{room.like_summary.reported_total??'尚未收到'} · 个人点赞通知：{room.like_summary.notifications} 条 / 可识别 {room.like_summary.identified_users} 人{room.like_summary.observed_utc?` · 更新 ${time(room.like_summary.observed_utc)}`:''}</p>}
+    <p className="room-sub">平台累计点赞不等于本次新增量；个人通知条数不等于点击次数。</p>
     <p className="room-sub">入场仅展示平台通知，不代表完整在线名单；未提供可靠离场状态。</p>
     {room.record_mode!=='none'&&<p className="room-sub">录制 {room.recording_status==='recording'?'进行中':room.recording_status==='starting'?'启动中':room.recording_status==='stopped'?'已结束':room.recording_status} · {(room.recorded_seconds/60).toFixed(1)} 分钟 · {(room.recording_bytes/1e6).toFixed(1)} MB · {room.recording_files} 文件</p>}
     <div className="timeline-tools"><button className="text-button" aria-pressed={following} onClick={()=>{setFollowing(true);if(scroller.current)scroller.current.scrollTop=scroller.current.scrollHeight}}>{following?'跟随最新':'已暂停·回最新'}</button><a href={base+'api/export?room_id='+room.room_id}>导出本房快照</a></div>
     <div className={'segments'+(following?' following':'')} ref={scroller} onScroll={e=>{const n=e.currentTarget;setFollowing(n.scrollHeight-n.scrollTop-n.clientHeight<32)}}>
       {!room.items.length?<p className="waiting">等待弹幕、礼物或首个音频切片…</p>:room.items.map(item=><div className={'segment '+item.kind+' '+(item.status||'')} key={item.id}>
-        <div className="segment-meta"><time>{time(item.at_utc)}</time><span>{item.kind==='entry'?'入场通知'+(item.entry?.time_source==='received'?' · 接收时间':''):item.kind==='gift'?giftLabel(item.gift)+(item.gift?.time_source==='received'?' · 接收时间':''):item.kind==='danmaku'?'弹幕':item.transcript_version==='realtime'?transcriptLabel(item):`语音转写 #${item.seq} · ${labels[item.status||'']||item.status}`}</span>{item.kind==='entry'&&<span>{item.sender_uid?`UID ${item.sender_uid}`:'身份未确认'}</span>}</div>
+        <div className="segment-meta"><time>{time(item.at_utc)}</time><span>{item.kind==='like'?'点赞通知 · 接收时间':item.kind==='entry'?'入场通知'+(item.entry?.time_source==='received'?' · 接收时间':''):item.kind==='gift'?giftLabel(item.gift)+(item.gift?.time_source==='received'?' · 接收时间':''):item.kind==='danmaku'?'弹幕':item.transcript_version==='realtime'?transcriptLabel(item):`语音转写 #${item.seq} · ${labels[item.status||'']||item.status}`}</span>{(item.kind==='entry'||item.kind==='like')&&<span>{item.sender_uid?`UID ${item.sender_uid}`:'身份未确认'}</span>}</div>
         <p>{item.author&&<b className="chat-author" title={item.sender_uid?`UID ${item.sender_uid}`:'身份未确认'}>{item.author}{item.guard_level?` · ${{1:'总督',2:'提督',3:'舰长'}[item.guard_level]||'大航海'}`:''}：</b>}{(item.kind==='gift'?giftText(item.gift,item.text):item.text)||item.error||(item.status==='silent'?'音量低于阈值，已跳过识别':item.status==='empty'?'本段未识别到文字':'等待识别…')}</p>
         {item.error&&item.text&&<p className="room-error">{item.error}</p>}
       </div>)}
@@ -182,10 +188,11 @@ function App(){
         setState(s=>{let rooms=s.rooms;
           for(const change of batch){const id=change.data.room_id;const index=rooms.findIndex(r=>r.room_id===id);
             if(change.kind==='room'){
-              const old=rooms[index];const next={...change.data,segments:old?.segments||[],items:old?.items||[]};
+              const old=rooms[index];const next={...change.data,like_summary:change.data.like_summary??old?.like_summary,segments:old?.segments||[],items:old?.items||[]};
               rooms=index<0?[...rooms,next]:rooms.map((r,i)=>i===index?next:r);
             }else if(index>=0){const old=rooms[index];let next:Room;
-              if(change.kind==='segment'){const seg=change.data;next={...old,segments:[...old.segments.filter(x=>x.seq!==seg.seq),seg].sort((a,b)=>a.seq-b.seq).slice(-20)}}
+              if(change.kind==='likes'){next={...old,like_summary:change.data.summary}}
+              else if(change.kind==='segment'){const seg=change.data;next={...old,segments:[...old.segments.filter(x=>x.seq!==seg.seq),seg].sort((a,b)=>a.seq-b.seq).slice(-20)}}
               else{const item=change.data;next={...old,items:[...old.items.filter(x=>x.id!==item.id),item].sort((a,b)=>Date.parse(b.received_utc)-Date.parse(a.received_utc)||b.id-a.id).slice(0,80).sort((a,b)=>Date.parse(a.at_utc)-Date.parse(b.at_utc)||a.id-b.id)}}
               rooms=rooms.map((r,i)=>i===index?next:r);
             }
@@ -195,7 +202,7 @@ function App(){
     events.onopen=()=>setConnected(true);
     events.onerror=()=>setConnected(false);
     events.addEventListener('snapshot',e=>{changes.current=[];setState(JSON.parse((e as MessageEvent).data))});
-    for(const kind of ['room','segment','item'] as const)events.addEventListener(kind,e=>enqueue({kind,data:JSON.parse((e as MessageEvent).data)}));
+    for(const kind of ['room','segment','item','likes'] as const)events.addEventListener(kind,e=>enqueue({kind,data:JSON.parse((e as MessageEvent).data)}));
     events.addEventListener('metrics',e=>setState(s=>({...s,...JSON.parse((e as MessageEvent).data)})));
     return ()=>{alive=false;events.close();if(timer.current)clearTimeout(timer.current);timer.current=null;changes.current=[]};
   },[]);

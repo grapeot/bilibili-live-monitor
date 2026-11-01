@@ -9,6 +9,8 @@ main{max-width:none;width:100%;min-height:100dvh;padding:24px}
 .segments.following{overflow-anchor:none}
 .segment.danmaku{border-left:2px solid #9fb5c3;padding-left:10px}
 .segment.entry{border-left:2px solid #778dc9;padding-left:10px;background:#f5f6fc}
+.segment.like{border-left:2px solid #c97899;padding-left:10px;background:#fff6fa}
+.segment.like .segment-meta{flex-wrap:wrap;overflow-wrap:anywhere}
 .segment.entry .segment-meta{flex-wrap:wrap;overflow-wrap:anywhere}
 .segment.transcript{border-left:2px solid #258b7e;padding-left:10px;background:#f3faf8}
 .chat-author{font-weight:550;color:#597487}
