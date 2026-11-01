@@ -58,6 +58,8 @@ python -m bilibili_live_monitor run --until 2030-01-01T22:00:00-08:00
 
 `scripts/welcome_once.py`是独立的一次性欢迎助手，默认仅dry-run。只有用户明确批准文案、目标房间和一次发送后才加`--execute`；必须用`--since`固定带时区的本场观察起点，不把采集重启当作新场次。`--minimum 1`用于下一位新观察UID的单次测试，默认minimum=4、window=30、cooldown=300。它按原始接收顺序读取本场入场、弹幕、礼物、点赞，排除已观察UID，复用已登录Chrome正常输入框，成功后即退出，不启用常驻循环。实际发送请求核对目标和精确文案，成功回执绑定该请求。账本固定为数据库目录下的`welcome_once_<room_id>.json`；sending/sent/ambiguous状态禁止自动重跑，不根据超时猜测未发送，不换路径绕过账本。原始UID与文案回执只保存在私有路径。
 
+发送链路支持浏览器实际使用的UTF-8 multipart表单及URLencoded表单；重复目标/文案字段拒绝发送。仅发送期间对目标页临时绕过Service Worker，确保请求经过校验，结束恢复原生SW处理并分离CDP会话。页面上限按ASCII宽1、非ASCII每UTF-16单元宽2计数；组合超限才拆两条，间隔5秒。完成后同时检查平台HTTP/code回执与采集到的完整弹幕回显，区分已确认、未确认和仅点击按钮。
+
 临时断流默认按2秒起指数退避，300秒封顶，连续第20次失败后停止自动重试并标为人工处理；连续有效采集60秒才重置。`MAX_RECONNECTS=20`、`RETRY_DELAY=2`、`RETRY_MAX_DELAY=300`为对应配置。房间状态包含`reconnect_attempts`与`next_retry_utc`。明确403/412/429不走持续重试，仍须人工确认后resume。专用Chrome保留`about:blank#live-monitor-anchor`空白页供查播与下一次开播复用，不要把它当作无用标签页关闭。
 
 每房间独立Page并静音。仅启用ASR时，video.captureStream音轨经AudioContext(16000Hz)与AudioWorklet收PCM，Worklet输出置0不外放。ASR与缩略图都关闭时暂停网页视频，后台录制独立进行。复用网页已有WebSocket采集弹幕，不另建连接。缩略图仅显式启用、卡片可见且页面前台时请求。
