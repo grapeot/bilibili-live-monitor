@@ -7,6 +7,10 @@ SegmentStatus = Literal['queued', 'transcribing', 'done', 'empty', 'silent', 'tr
 
 
 class SegmentResponse(BaseModel):
+    transcript_version: Literal['realtime', 'offline'] | None = None
+    stream_id: str | None = None
+    stable_text: str | None = None
+    is_final: bool | None = None
     room_id: str = Field(description='实际房间号', examples=['123456'])
     seq: int = Field(ge=1, description='该房间跨会话递增的音频段序号')
     start_utc: str = Field(description='本段采集开始时间，带时区ISO8601')
@@ -71,6 +75,10 @@ class GiftDetails(BaseModel):
 
 
 class TimelineItem(BaseModel):
+    transcript_version: Literal['realtime', 'offline'] | None = None
+    stream_id: str | None = None
+    stable_text: str | None = None
+    is_final: bool | None = None
     id: int
     room_id: str
     kind: Literal['transcript', 'danmaku', 'gift']

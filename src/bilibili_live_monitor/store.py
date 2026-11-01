@@ -54,7 +54,7 @@ class Store:
         for row in pending:
             segment = json.loads(row['data'])
             if segment.get('status') in ('queued', 'transcribing'):
-                segment.update(status='cancelled', error='服务重启，中断的音频不自动重试')
+                segment.update(status='cancelled', is_final=True, error='服务重启，中断的音频不自动重试')
                 self.segment(segment)
 
     def room(self, data):
@@ -79,7 +79,7 @@ class Store:
         data = {**data, 'received_utc': data.get('received_utc') or utc_now()}
         parameters = (data['room_id'], data['kind'], source_key, data['at_utc'],
                       json.dumps(data, ensure_ascii=False))
-        action = ('ON CONFLICT(room_id,kind,source_key) DO UPDATE SET data=excluded.data'
+        action = ('ON CONFLICT(room_id,kind,source_key) DO UPDATE SET data=excluded.data,at_utc=excluded.at_utc'
                   if data['kind'] == 'transcript' else 'ON CONFLICT(room_id,kind,source_key) DO NOTHING')
         cursor = self.db.execute(
             'INSERT INTO timeline(room_id,kind,source_key,at_utc,data) VALUES(?,?,?,?,?) ' + action,

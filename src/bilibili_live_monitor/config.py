@@ -16,7 +16,7 @@ class Settings:
     cdp_url: str = field(default_factory=lambda: os.getenv('CDP_URL', 'http://127.0.0.1:9222'))
     asr_python: str = field(default_factory=lambda: os.getenv('ASR_PYTHON', '.venvs/asr/bin/python'))
     asr_model: str = field(default_factory=lambda: os.getenv('ASR_MODEL', 'Qwen/Qwen3-ASR-1.7B'))
-    chunk_seconds: int = field(default_factory=lambda: int(os.getenv('CHUNK_SECONDS', '30')))
+    chunk_seconds: int = 5  # 实时流式固定5秒输入，30秒仅为模型上下文上限。
     max_rooms: int = field(default_factory=lambda: int(os.getenv('MAX_ROOMS', '10')))
     queue_size: int = field(default_factory=lambda: int(os.getenv('QUEUE_SIZE', '20')))
     silence_dbfs: float = field(default_factory=lambda: float(os.getenv('SILENCE_DBFS', '-55')))

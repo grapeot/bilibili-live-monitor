@@ -25,7 +25,7 @@ class AddRoom(BaseModel):
     url: str = Field(min_length=1, max_length=300, description='直播间 HTTPS 链接或正整数房间号',
                      examples=['https://live.bilibili.com/123456'])
     chunk_seconds: int | None = Field(default=None, ge=5, le=60,
-                                     description='固定切片秒数；null使用服务默认配置', examples=[30])
+                                     description='旧参数兼容接收；实时流式输入固定5秒', examples=[5])
 
     @field_validator('url')
     @classmethod

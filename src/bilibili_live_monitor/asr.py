@@ -35,7 +35,8 @@ class ASR:
             self.log.close()
         self.log = (self.settings.data_dir / 'asr.stderr.log').open('ab')
         self.process = await asyncio.create_subprocess_exec(
-            self.settings.asr_python, '-u', str(self.worker_script),
+            self.settings.asr_python, '-u', '-c',
+            'import runpy,sys; runpy.run_path(sys.argv[1], run_name="__main__")', str(self.worker_script),
             env={**os.environ, 'ASR_MODEL': self.settings.asr_model},
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=self.log)
         response = await asyncio.wait_for(self.process.stdout.readline(), self.settings.asr_start_timeout)
@@ -91,3 +92,48 @@ class ASR:
         if self.log:
             self.log.close()
             self.log = None
+
+
+class StreamingASR(ASR):
+    """实时专用worker；离线ASR继续使用独立的ASR与输出目录。"""
+
+    def __init__(self, settings, worker_script=None):
+        super().__init__(settings, worker_script or Path(__file__).with_name('streaming_worker.py'))
+
+    async def exchange(self, request, *, start=True):
+        async with self.lock:
+            for attempt in range(2):
+                try:
+                    if not self.ready:
+                        if not start:
+                            return {}
+                        await self._start()
+                    self.process.stdin.write((json.dumps(request) + '\n').encode())
+                    await self.process.stdin.drain()
+                    line = await asyncio.wait_for(self.process.stdout.readline(), self.settings.asr_infer_timeout)
+                    if not line:
+                        raise RuntimeError('流式ASR子进程退出')
+                    result = json.loads(line)
+                    if result.get('req_id') != request['req_id'] or result.get('error'):
+                        raise RuntimeError(result.get('error') or '流式ASR响应标识不匹配')
+                    self.last_error = None
+                    return result
+                except asyncio.CancelledError:
+                    await self.close()
+                    raise
+                except Exception as error:
+                    self.last_error = f'{type(error).__name__}: {error}'
+                    # 状态可能已消费本次PCM。先销毁整个worker，再重试，禁止重复追加。
+                    await self.close()
+                    if attempt or not start:
+                        raise
+                    self.restart_count += 1
+                    self.retry_count += 1
+
+    async def feed(self, path, req_id, stream_id, sample_offset):
+        return await self.exchange({'op': 'feed', 'wav_path': str(path), 'req_id': req_id,
+                                    'stream_id': stream_id, 'sample_offset': sample_offset})
+
+    async def finish(self, stream_id):
+        return await self.exchange({'op': 'finish', 'req_id': f'finish:{stream_id}',
+                                    'stream_id': stream_id}, start=False)

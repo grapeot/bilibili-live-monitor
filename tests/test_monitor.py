@@ -129,29 +129,31 @@ async def test_silence_overload_and_shared_worker(tmp_path):
     store = Store(tmp_path / 'monitor.db')
     monitor = Monitor(settings, store)
     monitor.generations['123456'] = 'generation'
-    base = {'room_id': '123456', 'text': '', 'infer_ms': 0}
+    base = {'room_id': '123456', 'text': '', 'infer_ms': 0, 'stream_id': 'generation',
+            'sample_offset': 0, 'origin_ms': 1000}
     silent = bytes(32000)
     monitor.submit({**base, 'seq': 1, 'rms_dbfs': rms_dbfs(silent)}, silent, 'generation')
-    assert monitor.queue.empty()
-    assert store.segments('123456')[0]['status'] == 'silent'
+    assert monitor.queue.qsize() == 1  # 静音也送入流式模型，不以音量丢弃。
     loud = (np.ones(16000, dtype='<i2') * 1000).tobytes()
-    for seq in (2, 3):
+    for seq in (2,):
         monitor.submit({**base, 'seq': seq, 'rms_dbfs': rms_dbfs(loud)}, loud, 'generation')
     assert monitor.queue.qsize() == 1
     assert monitor.overload_count == 1
     assert store.segments('123456')[-1]['status'] == 'error'
     calls = []
 
-    async def recognize(path, req_id):
+    async def recognize(path, req_id, stream_id, sample_offset):
         assert Path(path).exists()
         calls.append(req_id)
-        return {'text': '合成结果', 'infer_ms': 5}
+        return {'epoch': 'worker', 'infer_ms': 5, 'updates': [
+            {'window_id': 'one', 'text': '合成结果', 'stable_text': '合成',
+             'start_seconds': 0, 'end_seconds': 1, 'final': False}]}
 
-    monitor.asr.transcribe = recognize
+    monitor.asr.feed = recognize
     await monitor.start(warm=False)
     await asyncio.wait_for(monitor.queue.join(), 3)
     assert len(calls) == 1
-    assert store.segments('123456')[1]['status'] == 'done'
+    assert store.segments('123456')[1]['status'] == 'transcribing'
     assert not list((tmp_path / 'audio').iterdir())
     await monitor.close()
     store.close()
