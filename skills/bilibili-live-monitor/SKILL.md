@@ -27,6 +27,8 @@ description: 在Apple Silicon Mac运行B站常驻录制平台，通过AI控制�
 
 用户要求盯一场直播、每几分钟巡检、下播后全量分析并分享时，见[单场跟进闭环](session-followup.md)。定时回到原会话、录制优先的ASR降级、bot文案核对、封口等待和发布验收都按该契约执行，具体运行身份留在私有overlay。
 
+需要从整场直播制作2–3分钟引流预告时，见[直播引流预告片](trailer.md)：事件选择、源时间映射、隐私裁剪、`trailer render/verify`、剪点与独立审阅。真实精剪表和媒体留在私有输出目录。
+
 ## 环境与安装
 
 需要Apple Silicon Mac、Python3.12、uv、Node.js、Chrome与ffmpeg。在仓库根目录执行：

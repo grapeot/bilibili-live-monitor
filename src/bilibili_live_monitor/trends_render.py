@@ -212,6 +212,7 @@ def render(data, activities=None, songs=None):
             f'<h1>{esc(data["title"])} · 直播趋势</h1><p>{clock(lo,True)}—{clock(hi,True)} '
             f'（{esc(data["timezone"])}）<br>范围内已观测入场账号 {summary["unique_entry_uids"]:,} · '
             f'送礼事件 {summary["gift_events"]} · <a href="data.json" download>下载冻结数据</a></p>' +
+            ('<p class="song-help">鼠标指向绿色区域可以看见唱的是什么歌（仅显示已识别歌名）；也可在下方歌单点选。</p>' if songs else '') +
             ''.join(cards) + song_list + (SONG_SCRIPT if songs else '') + '<footer>点或柱悬停可查看数值。关注与粉丝团显示平台总量原值；'
             '点间沿用上一观测值，首点前不补值，末点后虚线延续。<br>'
             '入场在桶内按UID去重，跨桶可重复；匿名入场不计入人数，明细计数在JSON。'

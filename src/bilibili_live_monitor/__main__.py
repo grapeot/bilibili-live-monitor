@@ -12,6 +12,8 @@ from .offline_asr import configure_parser
 from .offline_asr import main as offline_asr_main
 from .rotation import configure_parser as configure_rotation
 from .rotation import main as rotation_main
+from .trailer import configure_parser as configure_trailer
+from .trailer import main as trailer_main
 from .trends import configure_parser as configure_trends
 from .trends import main as trends_main
 
@@ -29,6 +31,7 @@ def main():
     configure_rotation(commands)
     configure_trends(commands)
     configure_activity(commands)
+    configure_trailer(commands)
     args = parser.parse_args()
     if args.command == 'offline-asr':
         return offline_asr_main(args)
@@ -38,6 +41,8 @@ def main():
         return trends_main(args)
     if args.command == 'activity':
         return activity_main(args)
+    if args.command == 'trailer':
+        return trailer_main(args)
     settings = load_settings()
     if args.command == 'serve':
         import uvicorn
