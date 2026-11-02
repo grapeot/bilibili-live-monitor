@@ -4,6 +4,8 @@ import json
 import os
 import sys
 
+from .activity import configure_parser as configure_activity
+from .activity import main as activity_main
 from .browser import Browser
 from .config import load_settings
 from .offline_asr import configure_parser
@@ -26,6 +28,7 @@ def main():
     configure_parser(commands)
     configure_rotation(commands)
     configure_trends(commands)
+    configure_activity(commands)
     args = parser.parse_args()
     if args.command == 'offline-asr':
         return offline_asr_main(args)
@@ -33,6 +36,8 @@ def main():
         return rotation_main(args)
     if args.command == 'trends':
         return trends_main(args)
+    if args.command == 'activity':
+        return activity_main(args)
     settings = load_settings()
     if args.command == 'serve':
         import uvicorn

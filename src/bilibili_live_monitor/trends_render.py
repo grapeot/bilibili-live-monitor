@@ -16,7 +16,7 @@ footer{margin:20px 0;font-size:13px;color:#617089;line-height:1.8}
 small{display:block;margin:7px 0 0}svg{min-width:680px}}'''
 
 
-def render(data):
+def render(data, activities=None):
     zone = ZoneInfo(data['timezone'])
     lo = datetime.fromisoformat(data['since']).timestamp()
     hi = datetime.fromisoformat(data['until']).timestamp()
@@ -42,6 +42,24 @@ def render(data):
         def y(v):
             return bottom - (v-low)/(high-low)*(bottom-top)
         parts = [f'<svg viewBox="0 0 1080 252" role="img" aria-label="{esc(name)}">']
+        if activities is not None:
+            parts.append('<g data-activity-layer="true">')
+            for band in activities:
+                missing = band.get('reason') == '无ASR覆盖'
+                if band['label'] != 'singing' and not missing:
+                    continue
+                start, end = max(lo, band['start']), min(hi, band['end'])
+                if start < end:
+                    if missing:
+                        parts.append(f'<rect x="{x(start)}" y="{top}" width="{x(end)-x(start)}" '
+                                     f'height="{bottom-top}" fill="#94a3b8" opacity=".25" '
+                                     'data-missing-audio="true"><title>无音频数据覆盖</title></rect>')
+                        continue
+                    parts.append(f'<rect x="{x(start)}" y="{top}" width="{x(end)-x(start)}" '
+                                 f'height="{bottom-top}" fill="#22c55e" opacity=".30"/>')
+                    parts.append(f'<rect x="{x(start)}" y="210" width="{x(end)-x(start)}" '
+                                 'height="6" fill="#22c55e" opacity=".95"/>')
+            parts.append('</g>')
         for value in range(low, high+1, spacing):
             yy = y(value)
             parts.append(f'<path class="grid" d="M {left} {yy} H {right}"/>'
@@ -51,9 +69,9 @@ def render(data):
             parts.append(f'<text x="{x(t)}" y="233" text-anchor="middle">{clock(t)[:5]}</text>')
         for gap in summary['gaps']:
             parts.append(f'<rect x="{x(gap["start"])}" y="{top}" '
-                         f'width="{x(gap["end"])-x(gap["start"])}" height="{bottom-top}" '
-                         f'fill="#94a3b8" opacity=".22"><title>可疑采集缺口 '
-                         f'{clock(gap["start"],True)}—{clock(gap["end"],True)}</title></rect>')
+                          f'width="{x(gap["end"])-x(gap["start"])}" height="{bottom-top}" '
+                          f'fill="#94a3b8" opacity=".22"><title>可疑采集缺口 '
+                          f'{clock(gap["start"],True)}—{clock(gap["end"],True)}</title></rect>')
         if not values:
             parts.append('<text x="550" y="110" text-anchor="middle">无观测数据</text>')
         path = ''
