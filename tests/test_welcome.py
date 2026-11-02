@@ -1,3 +1,4 @@
+import asyncio
 import json
 import sqlite3
 import subprocess
@@ -202,6 +203,46 @@ def test_other_room_or_text_rejected(body):
     req = request()
     req.post_data = body
     assert not authorized_send(req, '123456', '合成测试')
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('timeout', [True, False])
+@pytest.mark.parametrize('cancel_step', [None, 'unroute', 'restore', 'detach'])
+async def test_cleanup_failure_never_overwrites_delivery_evidence(timeout, cancel_step):
+    field = SimpleNamespace(count=AsyncMock(return_value=1), input_value=AsyncMock(side_effect=['', '合成测试']),
+                            evaluate=AsyncMock(), evaluate_all=AsyncMock(return_value=[80]))
+    button = SimpleNamespace(count=AsyncMock(return_value=1), click=AsyncMock())
+    page = SimpleNamespace(locator=lambda s: field if 'chat-input' in s else button,
+                           url='https://live.bilibili.com/123456', request=request())
+    cdp = attach_cdp(page)
+    def error(step):
+        if cancel_step == step:
+            return asyncio.CancelledError()
+        return RuntimeError('cleanup') if cancel_step is None else None
+    cdp.send.side_effect = [None, None, error('restore')]
+    cdp.detach.side_effect = error('detach')
+    route = SimpleNamespace(request=page.request, abort=AsyncMock(), continue_=AsyncMock())
+    async def install(_, guard):
+        await guard(route)
+    class Pending(ResponseContext):
+        async def __aexit__(self, *_):
+            if timeout:
+                raise TimeoutError('response unknown')
+    page.route = AsyncMock(side_effect=install)
+    page.unroute = AsyncMock(side_effect=error('unroute'))
+    page.expect_response = lambda predicate, **kw: Pending(page, predicate, 0)
+    if cancel_step:
+        with pytest.raises(asyncio.CancelledError) as cancelled:
+            await send_chat(page, '合成测试', room_id='123456')
+        assert cancelled.value.send_attempted is True
+    elif timeout:
+        with pytest.raises(TimeoutError) as error:
+            await send_chat(page, '合成测试', room_id='123456')
+        assert error.value.send_attempted is True
+    else:
+        result = await send_chat(page, '合成测试', room_id='123456')
+        assert result['code'] == 0
+        assert len([item for item in result['diagnostics'] if 'cleanup_error' in item]) == 3
 
 
 @pytest.mark.asyncio

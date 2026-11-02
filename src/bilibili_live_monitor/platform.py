@@ -87,6 +87,8 @@ class Platform:
         self.active, self.launching = {}, {}
         self.loop_task = self.discovery_task = self.ai_task = None
         self.closed = False
+        self.suspended = False
+        self.reconcile_lock = asyncio.Lock()
         self.last_discovery = 0
         self.discovery_requested = False
         self.discovery_blocked = saved.get('discovery_blocked', False)
@@ -238,7 +240,8 @@ class Platform:
                 continue
             canonical = str(row['room_id'])
             candidate.update(room_id=canonical, anchor_uid=str(row.get('uid') or ''),
-                             title=row.get('title') or candidate['title'])
+                             title=row.get('title') or candidate['title'],
+                             live_start=str(row.get('live_time') or row.get('live_start_time') or ''))
             candidate['alias_duplicate'] = canonical in seen
             candidate['blocked_alias'] = canonical in blocked_ids
             seen.add(canonical)
@@ -399,6 +402,12 @@ class Platform:
             self.event('discovery_failed', error=f'{type(error).__name__}: {error}')
 
     async def tick(self):
+        async with self.reconcile_lock:
+            await self._tick()
+
+    async def _tick(self):
+        if self.suspended:
+            return
         for url, task in list(self.launching.items()):
             if task.done():
                 task.result()

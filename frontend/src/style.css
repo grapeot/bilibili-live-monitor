@@ -29,3 +29,7 @@ form{flex-wrap:wrap}form label{display:flex;align-items:center;gap:6px;white-spa
 .assistant-card form{display:flex;flex-wrap:wrap;padding:8px 0;gap:8px}
 .reading{display:block;color:#475569;font-size:14px;line-height:1.5}
 @media(max-width:960px){.assistant-columns{grid-template-columns:1fr}}
+.automation-panel {margin: 1rem auto; padding: 1rem; max-width: 1500px; border: 1px solid #64748b; border-radius: 12px;}
+.automation-actions {display:flex; flex-wrap:wrap; align-items:center; gap:.75rem;}
+.automation-actions input {width:6rem;}
+.automation-panel article {padding:.75rem 0; border-top:1px solid #64748b;}

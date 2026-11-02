@@ -4,6 +4,7 @@ import './style.css';
 import {giftLabel, giftText, type Gift} from './gifts';
 import {transcriptLabel} from './transcripts';
 import {Assistant} from './Assistant';
+import {AutomationControls} from './Automation';
 
 type Segment = {seq:number; start_utc:string; end_utc:string; text:string; status:string;
   queue_wait_ms:number; infer_ms:number; rms_dbfs:number; error:string|null; coverage_ratio?:number|null};
@@ -249,6 +250,6 @@ export function App(){
   return <><nav className="top-nav" aria-label="页面">
     <button aria-pressed={page==='snapshot'} onClick={()=>setPage('snapshot')}>快照</button>
     <button aria-pressed={page==='assistant'} onClick={()=>setPage('assistant')}>直播助手</button>
-  </nav><div hidden={page!=='snapshot'}><SnapshotApp/></div>{page==='assistant'&&<main><Assistant/></main>}</>;
+   </nav><AutomationControls/><div hidden={page!=='snapshot'}><SnapshotApp/></div>{page==='assistant'&&<main><Assistant/></main>}</>;
 }
 createRoot(document.getElementById('root')!).render(<React.StrictMode><App/></React.StrictMode>);
