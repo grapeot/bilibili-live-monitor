@@ -103,7 +103,7 @@ def render(data):
                                     f'{v if v is not None else "无观测"}' +
                                     ('（不完整桶）' if bucket['partial'] else '')})
         unit = f'每{data["bin_seconds"]}秒' + ('可识别入场人数（桶内去重）' if mode == 'line'
-                                            else '送礼事件数（含SC，同单合并）')
+                                            else '送礼事件数（含SC，有订单ID时合并）')
         cards.append(f'<section><h2>{name}<small>{unit}</small></h2>{chart(name,points,color,mode)}</section>')
     for field, name, color in [('followers', '关注总数', '#8b5cf6'), ('fans_club', '粉丝团人数', '#e2578b')]:
         points = [{'t': row['t'], 'v': row[field], 'label': f'{clock(row["t"],True)}：{row[field]}'}
@@ -120,7 +120,8 @@ def render(data):
             ''.join(cards) + '<footer>点或柱悬停可查看数值。关注与粉丝团显示平台总量原值；'
             '点间沿用上一观测值，首点前不补值，末点后虚线延续。<br>'
             '入场在桶内按UID去重，跨桶可重复；匿名入场不计入人数，明细计数在JSON。'
-            '送礼按订单/事件计次，含免费礼物、SC与上舰，不按件数或金额计数。<br>'
+            '送礼按订单/事件计次，含免费礼物、SC与上舰，不按件数或金额计数；'
+            '缺订单ID时按源事件键计数，不能保证合并同单盲盒结果。<br>'
             '空心点、浅色柱为不足完整桶宽的首尾桶；无业务报文的空桶显示缺测，不填零。'
             '灰带为长时间无业务报文的可疑缺口，不能据此断言停播或真实低流量。'
             '所有横轴按接收时刻对齐。这是冻结快照，不自动刷新。</footer></main></html>')
