@@ -32,7 +32,7 @@ function table(){
 }
 function paint(){
  const edges=[...new Set([lo,hi,...win.flatMap(w=>[Math.max(lo,w.start),Math.min(hi,w.end)])])].sort((a,b)=>a-b);
- let rectangles='';
+ let rectangles='';const live=[];
  for(let i=0;i<edges.length-1;i++){
   const a=edges[i],b=edges[i+1]; if(b<=lo||a>=hi)continue;
    const active=win.filter(w=>w.start<b&&w.end>a), labels=new Set(active.map(w=>
@@ -44,6 +44,7 @@ function paint(){
     rectangles+=`<rect x="${x}" y="16" width="${width}" height="191" fill="#94a3b8" opacity=".25" data-missing-audio="true"><title>${clock(a)}–${clock(b)} 无音频数据覆盖</title></rect>`;
     continue;
    }
+   live.push({start:a,end:b});
    rectangles+=`<rect x="${x}" y="16" width="${width}" height="191" fill="#22c55e" opacity=".30"><title>${clock(a)}–${clock(b)} ${names[label]}</title></rect>`;
    rectangles+=`<rect x="${x}" y="210" width="${width}" height="6" fill="#22c55e" opacity=".95"><title>${clock(a)}–${clock(b)} ${names[label]}</title></rect>`;
  }
@@ -56,6 +57,21 @@ function paint(){
    `声源不明的歌曲 ${songs.filter(w=>w.music_source!=='probable_live'&&w.music_source!=='recording').length}块`,
    ...['speaking','mixed','unknown'].map(k=>`${names[k]} ${counts[k]||0}块`)
   ].join(' · ');
+  if(state.songs?.length){
+   const visible=state.songs.map(song=>({...song,segments:song.segments.flatMap(segment=>live.map(b=>({
+    start:Math.max(segment.start,b.start),end:Math.min(segment.end,b.end)
+   })).filter(b=>b.start<b.end))}));
+   const overlays=visible.flatMap(song=>song.segments.map(b=>
+    `<rect class="song-hit" data-song-id="${esc(song.id)}" data-song-title="${esc(song.title)}" data-song-time="${clock(b.start)}–${clock(b.end)}" data-start="${b.start}" data-end="${b.end}" x="${65+(b.start-lo)/(hi-lo)*980}" y="16" width="${(b.end-b.start)/(hi-lo)*980}" height="191" aria-label="${esc(song.title)} · ${clock(b.start)}–${clock(b.end)}"></rect>`)).join('');
+   document.querySelectorAll('[data-song-layer]').forEach(g=>g.innerHTML=overlays);
+   document.querySelectorAll('.song-chip').forEach(button=>{
+    const song=visible.find(s=>s.id===button.dataset.songId);
+    button.disabled=!song?.segments.length;
+    button.querySelector('span').textContent=button.disabled?'当前无有效唱段':`${clock(song.segments[0].start)}–${clock(song.segments.at(-1).end)}`;
+    button.dataset.songTime=button.querySelector('span').textContent;
+   });
+   document.dispatchEvent(new Event('song-bands-updated'));
+  }
 }
 document.getElementById('review-rows').addEventListener('change',e=>{
  const sourceEdit=e.target.dataset.sourceI!==undefined;
@@ -104,7 +120,7 @@ table();paint();
 
 def page_html(bundle):
     trend = bundle['trends']
-    page = render(trend, activities=bundle['bands'])
+    page = render(trend, activities=bundle['bands'], songs=bundle.get('songs'))
     page = page.replace('href="data.json"', 'href="activity.json"').replace('下载冻结数据', '下载活动数据')
     note = '''<section id="activity-help"><h2>活动候选 · 可试听修订</h2>
 <p><span style="background:#22c55e4d;color:#126b36;padding:4px 8px;border-radius:4px">■ 绿色背景：主播现场演唱候选</span>　
@@ -130,7 +146,7 @@ audio{width:100%;margin-top:16px}#playing{max-height:90px;overflow:auto}#edit-st
         'source_key', 'start', 'end', 'relative_start', 'relative_end', 'text', 'label', 'music_source', 'reason', 'provenance', 'audio',
         'text_features')}
         for w in bundle['windows']]
-    data = json.dumps({'windows': public_windows, 'dataset_id': bundle['dataset_id'],
+    data = json.dumps({'windows': public_windows, 'songs': bundle.get('songs', []), 'dataset_id': bundle['dataset_id'],
                        'since': trend['since'], 'until': trend['until'],
                        'timezone': trend['timezone']}, ensure_ascii=False)
     data = data.replace('&', '\\u0026').replace('<', '\\u003c').replace('>', '\\u003e')

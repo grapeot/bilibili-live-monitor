@@ -10,6 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from .activity_page import page_html
+from .song_annotations import load_songs, verify_songs
 from .trends import aggregate, digest, instant
 
 LABELS = ('singing', 'speaking', 'mixed', 'unknown')
@@ -60,6 +61,7 @@ def configure_parser(commands):
     build.add_argument('--trends', type=Path, required=True, help='trends build生成的data.json')
     build.add_argument('--asr', type=Path, required=True, help='含绝对时间和源片偏移的离线ASR JSONL')
     build.add_argument('--labels', type=Path, help='页面导出的标注修订JSON')
+    build.add_argument('--songs', type=Path, help='已交叉核验、绑定当前数据集的高置信度歌名JSON')
     build.add_argument('--audio', action='store_true', help='只读源片，按源文件生成本地试听MP3')
     build.add_argument('--output', type=Path, required=True, help='新的私有输出目录')
     verify = actions.add_parser('verify')
@@ -208,6 +210,7 @@ def verify(output):
     current = bands(bundle['windows'], instant(trend['since']), instant(trend['until']))
     if current != bundle['bands']:
         raise ValueError('活动色带与窗口不一致')
+    verify_songs(bundle.get('songs', []), current)
     required = {'activity.json', 'index.html', 'labels.json'} | {w['audio'] for w in bundle['windows'] if w.get('audio')}
     if set(manifest['files']) != required:
         raise ValueError('清单缺少必需产物或引用音频')
@@ -246,6 +249,9 @@ def main(args):
                 encode_audio(windows, args.output)
             bundle = {'schema_version': 1, 'dataset_id': dataset_id(windows), 'trends': trend, 'windows': windows,
                       'bands': bands(windows, instant(trend['since']), instant(trend['until']))}
+            if getattr(args, 'songs', None):
+                bundle['songs'] = load_songs(json.loads(args.songs.read_text()), windows,
+                                             bundle['bands'], bundle['dataset_id'])
             (args.output/'activity.json').write_text(json.dumps(bundle, ensure_ascii=False, indent=2))
             (args.output/'index.html').write_text(page_html(bundle))
             labels = {'schema_version': 1, 'dataset_id': dataset_id(windows),
