@@ -57,6 +57,23 @@ def test_message_length_and_split():
         welcome_messages(['访客'], 10)
 
 
+def test_multi_sentence_intro_that_fits_remains_one_message():
+    intro = '主播是唱歌主播，古风流行戏腔都可以。首次灯牌免费点歌，舰长包月点歌，很划算哦。'
+    assert text_length(intro) == 78
+    result = welcome_messages(['合成访客甲', '合成访客乙'], 80, intro=intro)
+    assert len(result) == 2
+    assert result[1] == intro
+    assert all(text_length(message) <= 80 for message in result)
+
+
+def test_intro_over_limit_still_splits_without_text_loss():
+    intro = '甲'*21+'。'+'乙'*21+'。'
+    result = welcome_messages(['合成访客'], 80, intro=intro)
+    assert len(result) == 3
+    assert ''.join(result[1:]) == intro
+    assert all(text_length(message) <= 80 for message in result)
+
+
 def test_input_limit_from_visible_editor_component_or_dom():
     # 执行浏览器使用的同一JS，复现真实页面无maxlength且计数器在隐藏的全屏编辑器中的情况。
     js = f'''const readLimit=({INPUT_LIMIT_SCRIPT});

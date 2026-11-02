@@ -42,6 +42,8 @@ def welcome_messages(names, limit, *, intro=INTRO, greeting_template='欢迎 {na
     combined = greeting+intro
     if text_length(combined) <= limit:
         return [combined]
+    if text_length(intro) <= limit:
+        return [greeting, intro]
     # 逐句分段，保留用户配置的原文；单句过长则按字符继续切分。
     chunks, current = [], ''
     for sentence in re.findall(r'[^。！？；]+[。！？；]?|[。！？；]', intro):
