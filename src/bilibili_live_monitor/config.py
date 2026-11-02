@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 
 @dataclass
 class Settings:
+    automation_config: str = field(default_factory=lambda: os.getenv('AUTOMATION_CONFIG', ''))
     record_mode: str = field(default_factory=lambda: os.getenv('RECORD_MODE', 'audio'))
     asr_enabled: bool = field(default_factory=lambda: os.getenv('ASR_ENABLED', '0').lower() in ('1', 'true', 'yes'))
     preview_enabled: bool = field(default_factory=lambda: os.getenv('PREVIEW_ENABLED', '0').lower() in ('1', 'true', 'yes'))
