@@ -25,22 +25,37 @@ def text_length(text):
     return sum(1 if ord(char) < 128 else 2 if ord(char) <= 0xffff else 4 for char in text)
 
 
-def welcome_messages(names, limit):
+def welcome_messages(names, limit, *, intro=INTRO, greeting_template='欢迎 {names} {suffix}'):
     """优先一条；平台字数不足才拆两条，昵称仅用于展示。"""
-    if limit < 1 or text_length(INTRO) > limit:
+    if limit < 1 or not intro:
         raise ValueError('介绍文案超出页面字数限制，需要人工调整')
     selected = [re.sub(r'[\r\n\t]', ' ', name).strip() for name in names[:3]]
     while selected:
         joined = '、'.join(selected)
         suffix = '等新来的小伙伴～' if len(names) > len(selected) else '来到直播间～'
-        greeting = f'欢迎 {joined} {suffix}'
+        greeting = greeting_template.format(names=joined, suffix=suffix)
         if text_length(greeting) <= limit:
             break
         selected.pop()
     if not selected:
         raise ValueError('昵称超出页面字数限制')
-    combined = greeting+INTRO
-    return [combined] if text_length(combined) <= limit else [greeting, INTRO]
+    combined = greeting+intro
+    if text_length(combined) <= limit:
+        return [combined]
+    # 逐句分段，保留用户配置的原文；单句过长则按字符继续切分。
+    chunks, current = [], ''
+    for sentence in re.findall(r'[^。！？；]+[。！？；]?|[。！？；]', intro):
+        for char in sentence:
+            if text_length(current+char) > limit:
+                if not current:
+                    raise ValueError('介绍文案字符超出页面限制')
+                chunks.append(current)
+                current = ''
+            current += char
+        if current:
+            chunks.append(current)
+            current = ''
+    return [greeting, *chunks]
 
 
 class WelcomeDecision:
@@ -58,8 +73,13 @@ class WelcomeDecision:
             return None
         self.seen.add(uid)
         self.pending.append((received, uid, name))
-        while self.pending and self.pending[0][0] < now-self.window:
-            self.pending.popleft()
+        return self.tick(now)
+
+    def tick(self, now):
+        """冷却到期也检查候选；领取后须由sent显式开启下一批。"""
+        if self.fired:
+            return None
+        self.pending = deque(entry for entry in self.pending if entry[0] >= now-self.window)
         if len(self.pending) < self.minimum or (self.last_sent is not None and now-self.last_sent < self.cooldown):
             return None
         self.fired = True
@@ -150,7 +170,9 @@ async def message_limit(page):
     return limits[0]
 
 
-async def send_chat(page, text, *, room_id):
+async def send_chat(page, text, *, room_id, allowed=None):
+    if allowed is not None and not allowed():
+        raise RuntimeError('发送已暂停')
     if not correct_page(page.url, room_id):
         raise RuntimeError('目标页面已经切换，停止发送')
     field = page.locator('.chat-input:visible')
@@ -164,11 +186,13 @@ async def send_chat(page, text, *, room_id):
     diagnostics = []
     async def guard(route):
         nonlocal accepted
-        allowed = accepted is None and correct_page(page.url, room_id) and authorized_send(route.request, room_id, text)
+        permitted = (accepted is None and correct_page(page.url, room_id)
+                     and authorized_send(route.request, room_id, text)
+                     and (allowed is None or allowed()))
         diagnostics.append({'path': urlsplit(route.request.url).path,
                             'content_type': route.request.headers.get('content-type', '').split(';')[0],
-                            'allowed': allowed})
-        if not allowed:
+                             'allowed': permitted})
+        if not permitted:
             await route.abort()
         else:
             accepted = route.request
@@ -189,6 +213,8 @@ async def send_chat(page, text, *, room_id):
         }''', text)
         if not correct_page(page.url, room_id) or await field.input_value() != text:
             raise RuntimeError('页面或草稿已变化，停止发送')
+        if allowed is not None and not allowed():
+            raise RuntimeError('发送已暂停')
         async with page.expect_response(lambda r: r.request is accepted and authorized_send(r.request, room_id, text), timeout=15000) as pending:
             await page.locator('button.send-btn:visible').click()
         response = await pending.value
@@ -200,16 +226,38 @@ async def send_chat(page, text, *, room_id):
                 'message': text, 'diagnostics': diagnostics}
     except BaseException as error:
         error.send_diagnostics = diagnostics
+        error.send_attempted = accepted is not None
         raise
     finally:
         try:
+            if accepted is None:
+                try:
+                    if correct_page(page.url, room_id) and await field.input_value() == text:
+                        await field.evaluate('''e => {
+                            const proto=e.tagName==='TEXTAREA'?HTMLTextAreaElement.prototype:HTMLInputElement.prototype;
+                            Object.getOwnPropertyDescriptor(proto,'value').set.call(e,'');
+                            e.dispatchEvent(new Event('input',{bubbles:true}));
+                        }''')
+                except Exception:
+                    pass
             if routed:
-                await page.unroute(send_endpoint, guard)
-        finally:
+                try:
+                    await page.unroute(send_endpoint, guard)
+                except Exception as error:
+                    diagnostics.append({'cleanup_error': type(error).__name__, 'step': 'unroute'})
             try:
                 await cdp.send('Network.setBypassServiceWorker', {'bypass': False})
-            finally:
+            except Exception as error:
+                diagnostics.append({'cleanup_error': type(error).__name__, 'step': 'restore_service_worker'})
+            try:
                 await cdp.detach()
+            except Exception as error:
+                diagnostics.append({'cleanup_error': type(error).__name__, 'step': 'detach'})
+        except asyncio.CancelledError as error:
+            # 关闭开关/换号会取消发送Task；清理阶段同样必须保留是否已外发。
+            error.send_attempted = accepted is not None
+            error.send_diagnostics = diagnostics
+            raise
 
 
 def save(path, data):
@@ -286,6 +334,7 @@ async def run_welcome(database: Path, room_id: str, cdp_url: str, state_path: Pa
                         if activity != 'live':
                             await asyncio.sleep(1)
                             continue
+                    entrants = None
                     for rid, received, raw in db.execute("SELECT id,received_utc,data FROM raw_events WHERE room_id=? AND id>? AND julianday(received_utc)>=julianday(?) ORDER BY id", (room_id,cursor,since)).fetchall():
                         cursor = rid
                         try:
@@ -301,11 +350,14 @@ async def run_welcome(database: Path, room_id: str, cdp_url: str, state_path: Pa
                             continue
                         entrants = decision.observe(item['sender_uid'], item['author'],
                                                     datetime.fromisoformat(received).timestamp(), time.time())
-                        if not entrants:
-                            continue
+                        if entrants:
+                            break
+                    # 无新事件或只有已见UID时也判定；与observe共用一次性领取状态。
+                    entrants = entrants or decision.tick(time.time())
+                    if entrants:
                         texts = welcome_messages([e[2] for e in entrants], limit)
                         status.update(status='sending', target_uids=[e[1] for e in entrants],
-                                      trigger_raw_id=rid, messages=texts, acknowledgments=[], limit=limit)
+                                      trigger_raw_id=cursor, messages=texts, acknowledgments=[], limit=limit)
                         save(state_path, status)  # 先留发送意图，异常退出后不可自动重发。
                         try:
                             for text in texts:

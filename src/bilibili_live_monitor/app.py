@@ -8,14 +8,29 @@ from typing import Literal
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, StrictBool, StrictInt, field_validator
 
+from .accounts import Accounts
+from .automation import Automation
 from .browser import room_url
 from .config import load_settings
 from .models import CandidateResponse, HealthResponse, RoomResponse, StateResponse
 from .monitor import Monitor
 from .platform import Candidate, Decision, Platform, Policy
 from .store import Store
+
+
+class RobotControl(BaseModel):
+    enabled: StrictBool
+
+
+class LikeRequest(BaseModel):
+    count: StrictInt = Field(ge=1, le=1000)
+    request_id: str = Field(min_length=1, max_length=100, pattern=r'^[a-zA-Z0-9_-]+$')
+
+
+class AccountRequest(BaseModel):
+    profile: str
 
 
 class AddRoom(BaseModel):
@@ -48,13 +63,33 @@ def sse(kind, data, event_id=None):
 
 def create_app(settings=None):
     settings = settings or load_settings()
+    config = json.loads(Path(settings.automation_config).read_text()) if settings.automation_config else {}
+    for rid, room in config.get('rooms', {}).items():
+        if room_url(rid).rsplit('/', 1)[-1] != rid or not room.get('label') or not room.get('intro'):
+            raise ValueError('自动化房间配置不合法')
+        greeting = room.get('greeting', '欢迎 {names} {suffix}')
+        if '{names}' not in greeting:
+            raise ValueError('欢迎模板必须包含{names}')
+        greeting.format(names='测试', suffix='来到直播间～')
+    paths = [Path(p['path']).expanduser().resolve() for p in config.get('profiles', {}).values()]
+    if len(paths) != len(set(paths)):
+        raise ValueError('不同账号必须使用不同profile目录')
 
     @asynccontextmanager
     async def lifespan(app):
         settings.data_dir.mkdir(parents=True, exist_ok=True)
         lock = (settings.data_dir / '.service.lock').open('a')
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        accounts = Accounts(settings, config)
         try:
+            from .assistant import AssistantStore
+            for path in config.get('assistant_databases', []):
+                assistant_store = AssistantStore(Path(path))
+                try:
+                    assistant_store.set_enabled(False, reason='persistent_service_started')
+                finally:
+                    assistant_store.close()
+            await accounts.start()
             store = Store(settings.data_dir / 'monitor.sqlite3')
             monitor = Monitor(settings, store)
             app.state.monitor = monitor
@@ -62,16 +97,61 @@ def create_app(settings=None):
             platform = Platform(monitor)
             app.state.platform = platform
             await platform.start()
+            automation = Automation(platform, accounts, config)
+            app.state.automation = automation
+            await automation.start()
             try:
                 yield
             finally:
+                await automation.close()
                 await platform.close()
                 await monitor.close()
                 store.close()
         finally:
+            await accounts.close()
             lock.close()
 
     app = FastAPI(title='B站直播静音转写', root_path=settings.root_path, lifespan=lifespan)
+    from .assistant_api import assistant_router
+    app.include_router(assistant_router([Path(p) for p in config.get('assistant_databases', [])]))
+
+    @app.get('/api/automation', summary='自动欢迎、账号和点赞任务状态')
+    async def automation_state():
+        return app.state.automation.summary()
+
+    @app.put('/api/automation/rooms/{room_id}', summary='动态开关本房间自动欢迎')
+    async def automation_control(room_id: str, body: RobotControl):
+        try:
+            return await app.state.automation.set_enabled(room_id, body.enabled)
+        except KeyError as error:
+            raise HTTPException(404, '未配置此房间') from error
+
+    @app.post('/api/automation/rooms/{room_id}/likes', status_code=202, summary='明确次数的一次性点赞任务')
+    async def likes(room_id: str, body: LikeRequest):
+        try:
+            return app.state.automation.start_likes(room_id, body.count, body.request_id)
+        except (KeyError, ValueError) as error:
+            raise HTTPException(409, str(error)) from error
+
+    @app.post('/api/automation/likes/{request_id}/stop', summary='停止尚未完成的点赞')
+    async def stop_likes(request_id: str):
+        try:
+            return await app.state.automation.cancel_likes(request_id)
+        except KeyError as error:
+            raise HTTPException(404, '任务不存在') from error
+
+    @app.post('/api/automation/account', summary='切换预先注册的独立账号profile')
+    async def switch_account(body: AccountRequest):
+        try:
+            return await app.state.automation.switch_account(body.profile)
+        except ValueError as error:
+            raise HTTPException(422, str(error)) from error
+
+    @app.post('/api/automation/account/login', summary='打开当前账号的官方登录页面')
+    async def account_login():
+        automation = app.state.automation
+        await automation.accounts.login(automation.browser)
+        return {'opened': True}
 
     @app.get('/api/health', summary='检查服务与ASR状态', response_model=HealthResponse)
     async def health():

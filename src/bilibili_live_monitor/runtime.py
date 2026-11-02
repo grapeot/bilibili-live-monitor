@@ -108,6 +108,14 @@ def run_session(settings, until=None):
             continue
         connection.close()
         raise RuntimeError(f'端口已占用：{host}:{port}；不接管其他运行实例')
+    if settings.automation_config:
+        config = json.loads(Path(settings.automation_config).read_text())
+        if config.get('profiles'):
+            event = threading.Event()
+            for signum in (signal.SIGINT, signal.SIGTERM):
+                signal.signal(signum, lambda *_: event.set())
+            return run_owned([('backend', [sys.executable, '-m', 'bilibili_live_monitor', 'serve'])],
+                             settings.data_dir, deadline, env=dict(os.environ), stop_event=event)
     chrome = os.getenv('CHROME_BIN') or (
         '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
         if sys.platform == 'darwin' else shutil.which('google-chrome'))

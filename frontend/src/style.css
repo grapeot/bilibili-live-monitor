@@ -17,3 +17,22 @@ main{max-width:none;width:100%;min-height:100dvh;padding:24px}
 .cover{height:96px}.cover img{width:100%;height:100%;object-fit:cover}
 form{flex-wrap:wrap}form label{display:flex;align-items:center;gap:6px;white-space:nowrap}input[type=checkbox]{flex:none;min-width:0;width:auto} .cover img{object-fit:contain;background:#101c22}
 @media(max-width:600px){main{padding:14px}header{align-items:flex-start;gap:12px;flex-wrap:wrap}.grid{grid-template-columns:1fr}.header-actions{gap:8px}.segments{height:280px;max-height:280px}}
+/* 助手样式仅用于独立页面，快照组件保持原有布局。 */
+.top-nav{display:flex;gap:12px;padding:16px 24px;border-bottom:1px solid #425166}
+.top-nav button[aria-pressed="true"]{outline:2px solid #66c9b5}
+.assistant-columns{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:20px;margin-top:24px}
+.assistant-card{border:1px solid #425166;border-radius:12px;padding:16px;margin:12px 0;overflow-wrap:anywhere}
+.assistant-card p{margin:8px 0}
+.assistant-card pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:280px;overflow:auto;font-size:12px}
+.assistant-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.assistant-card details{margin-top:14px}
+.assistant-card form{display:flex;flex-wrap:wrap;padding:8px 0;gap:8px}
+.reading{display:block;color:#475569;font-size:14px;line-height:1.5}
+@media(max-width:960px){.assistant-columns{grid-template-columns:1fr}}
+.automation-panel {margin: 1rem auto; padding: 1rem; max-width: 1500px; border: 1px solid #64748b; border-radius: 12px;}
+.automation-actions {display:flex; flex-wrap:wrap; align-items:center; gap:.75rem;}
+.automation-actions input {width:6rem;}
+.automation-panel article {padding:.75rem 0; border-top:1px solid #64748b;}
+.historical-room-issue {margin-top:8px; font-size:11px; color:#70828e; overflow-wrap:anywhere;}
+.historical-room-issue summary {cursor:pointer;}
+.historical-room-issue p {margin-top:6px; color:inherit;}

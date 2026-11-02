@@ -1,5 +1,70 @@
 # 工作记录
 
+## F1：称呼等价关系完整匹配（2026-11-01）
+- 按 `.local/agentic_review_followup.md` 的F1复现新增39项回归：33个负例变体覆盖自称、正向/反向称呼关联、粉丝/朋友关系、长昵称前后缀，以及完整引用、截短引用和省略引用；6个正例覆盖完整自称与双向等价关系。修复前31个新增反例失败，确认前缀误认路径。
+- assistant_aliases.py将自称和双向关联改为fullmatch，完整原句与quoted_relation必须分别证明同一关系。不能在目标称呼之后接受任意尾文，也不能用截短摘录绕过原句；保留已有“修订后：”标签及完整称呼正例。拒绝的关系仍为unconfirmed，端到端验证不能据此把赠歌分配给粉丝。
+- 定向86项通过；完整 `pytest -q --basetemp=.local/pytest-f1-final` **393 passed（11.70秒）**，包含所有default-off与在途撤销回归；ruff通过；前端 **6 Node + 11 DOM** 与TypeScript/Vite构建通过。本阶段只改别名实现、对应测试和本记录；未修改审阅报告、未执行git写操作或访问生产/真实模型。
+
+## AI默认禁用与显式生命周期授权（2026-11-01）
+- 在同一R1–R4实现上增加服务端持久开关，不以“开始实现/继续部署”作为模型运行授权。fresh DB和没有新授权标记的旧DB默认false；每次worker/sidecar启动都关闭，只有用户明确启用后才运行AI。普通只读DB连接/页面轮询不重置已授权的同一生命周期。
+- meta.ai_control保存enabled/revision/时间/原因，ai_control_audit保留记录。模型请求前、多轮之间及工具应用事务内校验授权；关闭递增revision，即使随后立即启用，旧在途响应也不能写卡片、别名、工具回执或finish，不能推进AI cursor。重新启用续接原pending run，已提交动作依旧按持久回执幂等。
+- 关闭仍允许导入源事件、显示已存待办和人工修改。AI开关与直播状态分开；确认下播/owner结束保持ended且关闭，不能自动恢复或重新启用旧场次。已发出的网络请求无需等待其取消才完成关闭，返回结果会被拒绝应用。
+- 新接口：GET /api/assistant/control?session=...；PUT /api/assistant/control，正文为session和严格布尔enabled。state响应增加control；CLI新增control --db ... --session ... --enable/--disable，参数必须明确且互斥。界面默认“AI已关闭”，只在用户点击明确启用/关闭按钮时提交控制请求。操作说明见设计文档。
+- 新增13项控制回归，包含跨DB连接在途撤销、关闭后重新启用仍拒绝旧响应、重启后授权不继承/续跑不重复已提交动作、API/CLI与manual可用性。原模型mock测试逐个显式启用；底层apply入口也拒绝禁用时自动写入或空动作推进cursor。全套 `pytest -q --basetemp=.local/pytest-control-final` **354 passed（9.38秒）**，ruff与control CLI帮助通过；前端 **6 Node + 11 DOM**、TypeScript/Vite构建通过。未执行生产控制、真实模型、git写或部署；当前工作交付保持默认关闭。
+
+## Agent 独立审阅 R1–R4 / N1–N2 修复（2026-11-01）
+- 以 `.local/agentic_review.md` 为复现依据，先新增8个反例确认旧实现全部失败，再完成修复。最终新增21项Python回归，修正旧测试把200K tokens当200KB的错误断言。
+- R1：DB保留全部待办，模型每轮只拿至多20张相关卡片、10个称呼及计数/查询入口；分页从offset=0获取全量。字节硬限800000与token估算阈值200000独立，使用显式启发估算并用Ollama实际usage校准；不声称精确tokenizer。500/2000条普通聊天积压连续两批均调用模型并推进AI cursor至40，卡片不删除。真正最小输入超限显示context_capacity_paused，与网络重试分开。
+- R2/R3：新增assistant_aliases.py、alias_candidates和alias_history。身份/关系证据分开，短摘录必须证明本人自称或已知称呼的明确关联；无关、否定、问句、推测、歧义关系不变成可信身份。别名及其依赖每次展示/使用前检查当前版本，ASR修订后显示待复核并拒绝据此赠歌；新证据可重新确认，旧原文/版本仍留审计。旧记录缺少新关系字段时待复核。复杂句式可保守不确认。
+- R4：read_state不再附全量别名；read_aliases提供独立UID/关键词/状态过滤及分页。超长结果保留计数、原offset、next_offset和缩页建议，测试覆盖缩页后取回数据以及150条别名多轮分页后finish。
+- N1/N2：赠歌按来源、接收UID、歌曲名去重，同段语音可给不同观众建单；原弹幕点歌去重保持。每次工具交换先在事务中重载持久run，已finished任务不会被旧快照重放覆盖为active。
+- UI显示称呼的已查证/待复核/未确认状态，字节、估算tokens、实际usage分开展示。设计合同已同步。最终 `pytest -q --basetemp=.local/pytest-r1-r4-final` **341 passed（8.67秒）**；ruff、前端 **6 Node + 10 DOM**、TypeScript/Vite构建通过。测试均为合成数据/mock；无真实模型、生产Chrome/API/DB访问，无git写或部署。独立复核、PR及助手重启交主线程。
+
+## 每房间持久 Agent 与自动上下文裁剪（2026-11-01）
+- 按已确认设计实现真正多轮工具循环。新增 `assistant_agent.py`，通过read_state、viewer_events、search_transcripts、read_evidence、record_alias、update_assistant、finish_analysis完成查证与写入；无新观察且无进行中分析时不调用模型。runtime仍为Ollama Cloud deepseek-v4.1-flash。
+- 助手库增量新增aliases、agent_runs、agent_calls、agent_exchanges、agent_audit。UID归属+别名唯一约束、证据当前版本、卡片manual/CAS约束保留；写动作、幂等回执、完整工具配对轮次同事务提交。重启恢复进行中分析，成功写动作重放不再执行；只读工具每轮刷新。原cards/cursor/observations/history及真实送礼规则不改语义。
+- 主播主动赠歌使用song_origin=gift、recipient_uid及明确UID身份和歌曲/已查证称呼转写证据，不再要求用户先发点歌弹幕。英文昵称机器翻译不算别名事实；无原文别名/明确对象证据的请求拒绝。已有误判仍由人工可撤销操作修正。
+- 初版conversation按完整配对单元裁剪：200000阈值、120秒窗口，先移除旧轮次，再处理密集窗口。最初把全部未完成状态和别名常驻prompt；此策略与字节/token混用已由上节R1/R4修正为有界索引及独立预算。原始观察、业务history、别名、审计轨迹不删。UI新增折叠的状态/工具原因/幂等回执/compaction/coverage指标。
+- 旧CLI参数继续有效；新增max-tool-turns=8、max-tools-per-turn=8、context-tokens=200000、recent-seconds=120、tool-result-bytes=16000。max-bytes默认由64000提高为800000，显式旧值仍遵守。初版min(max-bytes,context-tokens)字节预算有单位错误，已在上节修复。总调用预算每个模型轮次都扣费，工具轮次触顶暂停，不无限重开。
+- 新增13项离线Agent回归：真实Store+mock Ollama HTTP的14次响应跨轮查证、别名持久、重启/裁剪后主动赠歌及唱完；覆盖旧结果与manual竞争、事务中断无半对话、幂等重放、逐轮预算/超时恢复、跨scope拒绝、别名冲突、旧ASR证据只读、输入时序、200K/120秒和密集窗口裁剪。最近全套320项pytest、ruff、16项前端测试（6 Node+10 DOM）及TypeScript/Vite构建通过；无真实模型或生产访问，未做git写/PR/merge/deploy。
+- 主线程部署时沿用同一助手DB、固定room/session/source/since与owner，只重启助手sidecar/worker即可；不要重启8765、录制、Chrome或ASR。尚未验证真实模型的语义质量/延迟与生产切换，独立review和发布仍归主线程。
+
+## G1：多笔送灯牌的有界判断证据（2026-11-01）
+- 完整阅读 `.local/gift_rule_review.md` 后修复G1：gift_evidence及累计数量/首末时间保留完整，新增最多3条qualification_evidence（首份有效gift与必要guard/identity）；主evidence合并最多9条状态依据，始终不超过原工具12条限制，不调高schema上限。
+- AI只须保留资格witness并附本次语音，前次有效状态依据在重算后继续保留于有界窗口，超出窗口的旧依据仍留history/observations。模型上下文去除完整gift_evidence清单，改为gift_receipt_count与有界引用；API审计仍解析全部送礼引用。
+- 新增12/16笔不同tid目标礼物的真实Store→worker→工具动作参数化回归，其中16笔场景还模拟旧版全量证据卡。完成动作可成功应用；连续12轮状态更新后主证据仍≤12、status≤9；后续送礼不复活已完成状态，manual锁继续拒绝AI覆盖，全部礼物数量/首末时间/观察和历史证据保留。
+- 全套 `pytest -q --basetemp=.local/pytest-witness-final` **307 passed（7.90秒）**，ruff与diff检查通过。无UI变更，复用前轮6 Node + 9 DOM及frontend build通过结果。未执行git写操作、生产访问或真实模型调用。修复等待主线程独立复核。
+
+## 灯牌改为实际送礼事件（2026-11-01）
+- 按用户纠正，中栏改名“送灯牌待跟进”。不再根据佩戴粉丝牌/等级触发，只接受当前固定room/source/since内结构化 `SEND_GIFT`/`SEND_GIFT_V2`、`gift_id='34001'`且`gift_name='粉丝团灯牌'`的非盲盒原子礼物；普通礼物、同名异ID、同ID异名、假面盲盒/黑猫提灯及文本提及不计。
+- 使用新规则 `fan_club_gift_v1` 和 `medal:gift:<uid>`，旧佩戴牌误建卡eligible置false但保留status/manual/evidence/history，不把旧错误AI结论迁给新送礼卡。前端也要求新规则标记，尚未重算的旧卡仍隐藏。
+- 目标礼物必须成为资格证据；新增gift_evidence、first_gift_at/last_gift_at（接收时间）和去重累计gift_quantity，界面显示首次收到时间及数量。保留原名与简洁拼音。身份/guard不明不假定非舰长，后续同UID明确entry/chat可补足；B3的观测时间优先级不变。
+- 已完成/人工操作状态不因重算或再次送礼而恢复pending。观察到点歌不等于完成，pending/queued点歌仍可跟进；sung/rejected终态或显式done/dismissed结束跟进。模型只更新状态，不决定送礼资格。口头赠歌/别名关联仍是已知缺口，本补丁不宣称修复；已核实的Hallucination完成状态由主线程可撤销人工纠正并留证。
+- 已更新旧真实Store回归中错误的佩戴牌触发预期，新增30项后端参数化用例与2项DOM回归。`pytest -q --basetemp=.local/pytest-gift-final` **305 passed（7.70秒）**；ruff、git diff --check通过；前端 **6 Node + 9 DOM通过**，TypeScript/Vite构建通过。全部使用合成源库/协议/HTTP或模型mock，没有生产/API/真实模型访问，没有git写操作。
+- 部署只需主线程构建/加载新前端并重启助手sidecar和worker，复用原助手DB与固定场次参数，等待首次资格重算；不重启录制后端、Chrome或ASR，不删库或重置cursor。实际部署与独立复核未由实现线程执行。
+
+## PR19 独立审阅修复（2026-11-01）
+- 完整读取 `.local/assistant_review.md`，针对 B1/B2/B3 和 N1 修复；本轮没有 git 写操作、生产访问、真实外部模型调用或部署，复核与推送交主线程。
+- B1：持久保存 generation 首条事件序号与最早观测时间。旧来源积压、旧来源迟到消息、无 session 的 startup-gap 不触发暂停；指定来源之后真正新 generation 仍暂停并跨重启保留。旧版仅有 `source_mismatch` 的状态库从源事件只读重建分类，不重置读取/AI游标，不重复生成卡片。
+- B2：工具 schema、prompt 和上下文允许 AI 更新既有 medal 待办的 pending/done/dismissed；不允许新建 medal，不接收真实资格、昵称、标题改写。保留来源证据、卡片/证据版本与 manual 锁；响应语音保存至 `status_evidence`，资格刷新后仍可查看。
+- B3：guard/medal/身份字段按实际接收观测时间更新，榜单按 observed_utc 而非插入id选取。榜单必须更新于明确guard事件才能覆盖；同时间保留事件证据。旧完整空榜不能覆盖之后的GUARD_BUY，部分榜单缺席仍不能证明非舰长。
+- N1与UI：多音字显示带声调候选并标不确定；扩展区未收录汉字（含𠮷）保留字并显示未知，override继续优先。顶部改为实际待分析观察行数及最近数据更新时间；不同基数的源事件游标/AI观察序号仅放诊断详情。
+- 新增 `tests/test_assistant_review.py` 的11项真实Store/协议回归（chat_message、gift_message/GUARD_BUY、Store.item/segment/guard_snapshot）；前端新增2项回归。最终 `pytest -q --basetemp=.local/pytest-review-final` **275 passed**（7.64秒）；`ruff check src tests`、`git diff --check` 通过；前端 **6项Node + 5项DOM测试通过**，TypeScript/Vite构建通过。仅保留既有依赖弃用提示，没有失败或跳过。原欢迎tick测试保留在全套验证中。
+
+## 直播助手与独立 sidecar（2026-11-01）
+- 设计与实现由 GPT-6.1 SOL 完成，产品 runtime 默认 Ollama Cloud `deepseek-v4.1-flash`、`think:false`。设计、schema、工具契约、盲区和部署回滚见 `docs/live_assistant_design.md`。
+- 新增独立助手状态库、只读事件 worker 和 FastAPI sidecar。固定 room/session/since/source generation，保存原始观察副本与证据修订、读取/AI双 cursor；工具操作使用原子校验和版本锁，人工操作永久优先。超时、非法响应、状态变化不推进 AI 完成进度；可配置调用频率、预算、上下文大小、owner PID/create_time。
+- 快照为默认页且持续保留其现有组件，助手可按已配置房间切换，支持未回应弹幕、符合条件的灯牌观众、点歌单、状态修改/恢复/撤销及证据展开。昵称带声调拼音和人工 override 只用于助手，原名与欢迎文案保留。unknown 舰长身份不纳入灯牌名单。
+- sidecar 提供新前端与助手 API，其他 API 流式代理到原后端，覆盖请求 body/query、SSE、断开关闭连接与资源采样文件透传。CLI 分开启动 serve/worker，每个 worker 独占一库，多房间可重复传 `serve --db`。不导入或操作现有后端/浏览器生命周期。
+- 验证：全套 `pytest -q --basetemp=.local/pytest-assistant-validation` **264 passed**（包含原14项欢迎tick测试）；`ruff check src tests`、`git diff --check` 通过；`npm test` 为既有6项与新增3项DOM操作测试全部通过；`npm run build` 通过；两个CLI子命令 `--help` 通过。新增32项后端用例覆盖幂等、重启cursor、跨场/跨房、ASR版本、人工保护、非法schema、runtime mock、超时/预算/下播/owner、源库误写拒绝、API及流式代理。
+- 测试与构建全部使用合成数据和 mock；未访问生产 Chrome/API/DB，未调用真实外部模型，未 commit/push/PR/merge/deploy。已部署欢迎tick的三文件改动完整保留。独立review与部署仍由主线程执行。
+- 已知覆盖边界：固定 source generation 改变后保守暂停；模型上下文为当前增量关联卡片加最近80项其他待办、8段语音，历史全部保存但更早待办可能需要人工关联。实际直播语义准确率和生产切换尚未验证。
+
+## 欢迎冷却到期的周期判定（2026-11-01）
+- `WelcomeDecision.tick(now)`与新UID观察共用门槛、窗口清理和一次性领取状态。循环每轮在处理增量后检查，冷却期间290/295秒积累的两名有效候选可在300秒无新报文时触发；窗口恰好30秒仍有效，乱序接收时间中的过期候选也会清除。
+- 保留本场首次观察身份、调用方传入的minimum/window/cooldown、单次退出与连续批次、发送前账本、失败不重发和开播检查。周期触发的`trigger_raw_id`记录最后消费的游标，不表示该报文刚刚到达。未扩大解析命令或错误恢复范围。
+- 新增14项离线测试，包含周期执行链、无第三人触发、三批冷却、过期/少于门槛/身份去重、暂停恢复后窗口过期、下播及发送前状态变化、失败后禁止重启。全套232项pytest、ruff、Python sdist/wheel及前端TypeScript/Vite构建通过；仅使用合成测试数据库与浏览器/发送替身。
+
 ## 单场持续欢迎与下播退出（2026-11-01）
 - 用户授权当前一间直播：30秒至少2个本场首次观察UID，欢迎批次之间至少300秒，复用已批准文案。本场下播后结束全部录制、转写和欢迎，不再随下次开播恢复。
 - 单次欢迎CLI保留；新增单场CLI，持续消费同一观察流，成功后保留seen并清空已欢迎窗口，继承此前测试的成功时间计算冷却。状态未知或首次离线暂停发送，只有新鲜的两次离线确认才结束；部分发送不自动重试。
@@ -176,3 +241,12 @@
 - 首页面向推荐只显示约20个房间，沿实际/all链接找到69个新候选，补足30路。发现函数补/all并等待真实房间卡片，实测返回59个候选，仍不保证候选可播放。
 - 完成视频可行性探索：3来源各3张JPEG连续变化，约5.2秒VP8采样可解26帧；隔离3路1fps MJPEG经Tailscale实际显示并持续更新，22:00退出另有自管owner。原始证据与画面在.local/overnight_20261022/video_probe/，不提交。结论见docs/video_feasibility.md。
 - 最终同一修复版在补充实际可播放来源后，30路各至少两个有效30秒窗口及SSE续传检查通过，证据`thirty_rooms_final.json`；早先失败记录不覆盖。核查时30路均capturing、ASR重启/重试/过载为0。最近150段中138 done、5 empty、6 queued、1 transcribing，推理均值791.8ms、P95 1413ms，已完成段排队P95 6398ms；仅代表该时段样本。
+# 持久自动化迭代
+
+- 新增分房间欢迎配置与动态开关、跨场开下播通知、独立账号profile管理和显式次数点赞API/CLI/看板。
+- 持久模式将直播结束与服务退出分离；AI推理默认关闭的既有合同保留。
+- 设计、API与验证边界见`persistent_automation.md`；实际测试与部署结果在完成后追加，不将未执行的邮件/点赞记为成功。
+- 本轮离线验收：421项Python测试、ruff、19项前端测试及TypeScript/Vite构建通过。独立审阅发现的账号切换竞态、跨场识别、Chrome进程归属、发送未知状态保留与点赞取消问题已补修及回归；最终放行记录留在私有部署证据中。
+# 历史错误展示修正
+
+- 已停止房间的采集错误默认折叠为中性“历史采集信息”，保留原文和记录更新时间；当前活动房间错误继续直接告警。仅调整前端展示，不删除数据库历史错误。

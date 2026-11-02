@@ -8,7 +8,28 @@ from .store import utc_now
 
 async def room_statuses(browser, candidates):
     queries = list(candidates) + [{'url': c['room_id']} for c in candidates if c.get('room_id')]
-    return await inspect(await browser.connect(), queries)
+    context = await browser.connect()
+    result = await inspect(context, queries)
+    # room_init提供直播开始时间，用于识别服务停机期间已换场但仍显示在线的情况。
+    checked = set()
+    for row in result.values():
+        rid = str(row['room_id'])
+        if row.get('live_status') != 1 or rid in checked or row.get('live_time'):
+            continue
+        checked.add(rid)
+        response = await context.request.get(
+            'https://api.live.bilibili.com/room/v1/Room/room_init?' + urlencode({'id': rid}), timeout=20000)
+        if response.status != 200:
+            raise RuntimeError('开播时间查询失败，保留上一确认状态')
+        payload = await response.json()
+        if payload.get('code') != 0:
+            raise RuntimeError('开播时间查询未成功，保留上一确认状态')
+        data = payload.get('data', {})
+        if str(data.get('room_id')) != rid or data.get('live_status') != 1:
+            raise RuntimeError('查播期间房间状态变化，等待下次确认')
+        if data.get('live_time'):
+            row['live_time'] = str(data['live_time'])
+    return result
 
 
 async def guard_snapshot(browser, room_id, anchor_uid):

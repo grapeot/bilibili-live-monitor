@@ -3,6 +3,9 @@ import {createRoot} from 'react-dom/client';
 import './style.css';
 import {giftLabel, giftText, type Gift} from './gifts';
 import {transcriptLabel} from './transcripts';
+import {Assistant} from './Assistant';
+import {AutomationControls} from './Automation';
+import {RoomIssue} from './RoomIssue';
 
 type Segment = {seq:number; start_utc:string; end_utc:string; text:string; status:string;
   queue_wait_ms:number; infer_ms:number; rms_dbfs:number; error:string|null; coverage_ratio?:number|null};
@@ -12,7 +15,7 @@ type Room = {room_id:string; title:string; url:string; cover_url:string; status:
   reconnect_attempts?:number;next_retry_utc?:string|null;
   record_mode:'none'|'audio'|'video';asr_enabled:boolean;preview_enabled:boolean;
   recording_status:string;recorded_seconds:number;recording_files:number;recording_bytes:number;
-  error:string|null; chunk_seconds:number; segments:Segment[];items:Item[]};
+   error:string|null; updated_at?:string; chunk_seconds:number; segments:Segment[];items:Item[]};
 type Item = {id:number;room_id:string;kind:'transcript'|'danmaku'|'gift'|'entry'|'like';at_utc:string;received_utc:string;text:string;
   entry?:{event_type:string;time_source:'event'|'received'}|null;
   transcript_version?:'realtime'|'offline'|null;stable_text?:string|null;is_final?:boolean|null;
@@ -145,7 +148,7 @@ const RoomCard = React.memo(function RoomCard({room,status,onError}:{room:Room;s
     <RoomPreview room={room}/>
     <div className="card-body"><div className="room-heading"><a href={room.url} target="_blank" rel="noreferrer">{room.title.replace(/ - 哔哩哔哩直播.*$/,'')}</a><span className={'badge '+status}>{labels[status]||status}</span></div>
     <div className="room-sub"><span>房间 {room.room_id} · 流式输入 5 秒 · 上下文 ≤30 秒</span><button className="text-button" disabled={room.status==='stopped'} onClick={()=>api(`rooms/${room.room_id}/stop`,{method:'POST'}).catch(e=>onError(e.message))}>停止监控</button></div>
-    {room.error&&<p className="room-error">{room.error}</p>}
+    <RoomIssue status={room.status} error={room.error} updatedAt={room.updated_at}/>
     {!!room.reconnect_attempts&&<p className="room-sub">连续失败 {room.reconnect_attempts} 次{room.next_retry_utc?` · 下次重试 ${time(room.next_retry_utc)}`:''}</p>}
     <p className="room-sub">保存：{({none:'关闭',audio:'原始音频',video:'原始音视频'})[room.record_mode]} · ASR：{room.asr_enabled?'启用':'禁用'} · 弹幕 / 礼物 / 入场 / 点赞：保存并显示</p>
     {room.like_summary&&<p className="room-sub like-summary">平台累计点赞：{room.like_summary.reported_total??'尚未收到'} · 个人点赞通知：{room.like_summary.notifications} 条 / 可识别 {room.like_summary.identified_users} 人{room.like_summary.observed_utc?` · 更新 ${time(room.like_summary.observed_utc)}`:''}</p>}
@@ -164,7 +167,7 @@ const RoomCard = React.memo(function RoomCard({room,status,onError}:{room:Room;s
     </div></article>;
 });
 
-function App(){
+function SnapshotApp(){
   const [state,setState] = useState<State>({rooms:[],queue_depth:0,queue_capacity:20,asr_ready:false,asr_enabled:false,overload_count:0,inflight:null,active_count:0,pending_count:0,asr_restarts:0,asr_retries:0,asr_error:null});
   const [recordMode,setRecordMode]=useState('audio');
   const [asrEnabled,setAsrEnabled]=useState(false);
@@ -242,5 +245,12 @@ function App(){
     <section className="grid">{state.rooms.map(room=><RoomCard key={room.room_id} room={room} status={room.status==='capturing'&&state.inflight?.room_id===room.room_id?'transcribing':room.status} onError={setError}/>)}</section>
     <p className="footnote">每房间显示最近80条弹幕、礼物与转写；完整时间线保存于本地SQLite，可导出JSONL。付费金额统一显示电池（100金瓜子＝1电池，1元＝10电池）；免费礼物仍显示银币。盲盒花费与抽中礼物单价分列，均不代表主播净收入；导出保留协议原始单位。游戏声和背景音乐可能造成误识别。</p>
   </main>;
+}
+export function App(){
+  const [page,setPage]=useState<'snapshot'|'assistant'>('snapshot');
+  return <><nav className="top-nav" aria-label="页面">
+    <button aria-pressed={page==='snapshot'} onClick={()=>setPage('snapshot')}>快照</button>
+    <button aria-pressed={page==='assistant'} onClick={()=>setPage('assistant')}>直播助手</button>
+   </nav><AutomationControls/><div hidden={page!=='snapshot'}><SnapshotApp/></div>{page==='assistant'&&<main><Assistant/></main>}</>;
 }
 createRoot(document.getElementById('root')!).render(<React.StrictMode><App/></React.StrictMode>);
