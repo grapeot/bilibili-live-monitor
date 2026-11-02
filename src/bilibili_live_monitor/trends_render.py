@@ -16,7 +16,7 @@ footer{margin:20px 0;font-size:13px;color:#617089;line-height:1.8}
 small{display:block;margin:7px 0 0}svg{min-width:680px}}'''
 
 
-def render(data):
+def render(data, activities=None):
     zone = ZoneInfo(data['timezone'])
     lo = datetime.fromisoformat(data['since']).timestamp()
     hi = datetime.fromisoformat(data['until']).timestamp()
@@ -42,6 +42,17 @@ def render(data):
         def y(v):
             return bottom - (v-low)/(high-low)*(bottom-top)
         parts = [f'<svg viewBox="0 0 1080 252" role="img" aria-label="{esc(name)}">']
+        if activities is not None:
+            colors = {'singing': '#22a06b', 'speaking': '#5288d8', 'mixed': '#e4a32d', 'unknown': '#aab2bf'}
+            parts.append('<g data-activity-layer="true">')
+            for band in activities:
+                start, end = max(lo, band['start']), min(hi, band['end'])
+                if start < end:
+                    parts.append(f'<rect x="{x(start)}" y="{top}" width="{x(end)-x(start)}" '
+                                 f'height="{bottom-top}" fill="{colors[band["label"]]}" opacity=".13"/>')
+                    parts.append(f'<rect x="{x(start)}" y="210" width="{x(end)-x(start)}" '
+                                 f'height="6" fill="{colors[band["label"]]}" opacity=".85"/>')
+            parts.append('</g>')
         for value in range(low, high+1, spacing):
             yy = y(value)
             parts.append(f'<path class="grid" d="M {left} {yy} H {right}"/>'

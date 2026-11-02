@@ -23,6 +23,8 @@ description: 在Apple Silicon Mac运行B站常驻录制平台，通过AI控制�
 
 直播中或结束后，使用 `bili-live trends build` 从已有数据库只读生成入场流量、送礼频次、关注总数与粉丝团人数四图及冻结数据；参数、口径与 `trends verify` 验收见 [直播趋势子skill](trends.md)。不画大航海人数，不访问控制面或中断录制。
 
+需要对照唱歌/讲话与关注变化时，见 [活动候选时间轴](activity.md)：`activity build/verify` 支持绿色唱歌、蓝色讲话、混合/不确定色带、本地试听与标注修订。自动候选不等于人工验收，不推断因果。
+
 ## 环境与安装
 
 需要Apple Silicon Mac、Python3.12、uv、Node.js、Chrome与ffmpeg。在仓库根目录执行：
