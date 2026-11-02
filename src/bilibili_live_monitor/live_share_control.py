@@ -179,7 +179,8 @@ def verify_snapshot(config):
     state, cutoff, source = source_at_cutoff(config)
     if epoch(snapshot['updated_at']) != cutoff:
         errors.append('stale_or_incorrect_cutoff')
-    if (state.get('phase') == 'completed' or state.get('stop_intent')) and snapshot.get('phase') != 'completed':
+    stopped_phases = {'completed', 'finalizing'} if config.get('workflow_key') else {'completed'}
+    if (state.get('phase') == 'completed' or state.get('stop_intent')) and snapshot.get('phase') not in stopped_phases:
         errors.append('completed_page_still_live')
     known = set(config.get('approved_songs', [])) | set(verified_titles(workspace))
     annotations = json.loads((workspace / 'annotations.json').read_text())

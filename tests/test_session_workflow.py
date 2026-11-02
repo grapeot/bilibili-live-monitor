@@ -461,3 +461,31 @@ def test_probe_failure_retries_and_never_certifies_partial_asr(tmp_path, monkeyp
     from pathlib import Path
     assert len(json.loads(Path(destination).read_text())) == 2
     assert probes == [second.name]
+
+
+@pytest.mark.parametrize('injected,valid', [
+    (b'', True),
+    (b'<script type="module" src="https://static.cloudflareinsights.com/beacon.min.js/v1" data-cf-beacon=\'{}\'></script>\n', True),
+    (b'<script src="https://example.org/changed.js"></script>', False),
+    (b'<script src="https://example.org/changed.js" data-src="https://static.cloudflareinsights.com/beacon.min.js/v1"></script>', False),
+    (b'<script src="https://example.org/changed.js" src="https://static.cloudflareinsights.com/beacon.min.js/v1"></script>', False),
+    (b'changed content', False),
+])
+def test_remote_verification_allows_only_known_cdn_beacon(tmp_path, monkeypatch, injected, valid):
+    import io
+
+    from bilibili_live_monitor.session_runner import verify_remote
+    public = tmp_path / 'public'
+    public.mkdir()
+    (public / 'index.html').write_bytes(b'<html>content</html>')
+    (public / 'snapshot.json').write_bytes(b'{}')
+    def fetch(request, **kwargs):
+        assert request.get_header('User-agent') == 'bilibili-live-monitor/0.1'
+        return io.BytesIO(b'<html>content' + injected + b'</html>' if request.full_url.endswith('index.html') else b'{}')
+    monkeypatch.setattr('urllib.request.urlopen', fetch)
+    config = {'workspace': str(tmp_path), 'url': 'https://example.org/'}
+    if valid:
+        verify_remote(config)
+    else:
+        with pytest.raises(RuntimeError, match='不一致'):
+            verify_remote(config)

@@ -187,7 +187,8 @@ JSON为 {{"updated_at":"{iso(now)}","reviews":[{{"seq":1,"fingerprint":"从input
 灯牌与盲盒名单由程序按本场规则{json.dumps(config.get('followup_rules', {}), ensure_ascii=False)}基于实际送礼事件生成，同单结果已去重。不得新建名单、改名字、改赠礼资格。所有弹幕可用来查上下文，但不可把其他人的请求归给该观众。
 只有明确同一位观众已点歌并得到主播确认，或主播明确已为其演唱/完成，才加入completed_followups。只是感谢礼物、打招呼、泛指有人点歌不算完成。不确定保留待办。
 对每个待办主动追踪：送礼→本人请求（考虑昵称简称和同音转写）→主播接单→后续唱段。也可能先点歌再送礼，song_requests可引用首次送礼前5分钟内的请求，但必须有last_gift_at之后的接单或演唱证据；completed_followups仍只引用送礼之后的证据。song_requests记录歌名和accepted（已接单）/performed（已唱）阶段，须有确切原文id；演唱阶段需有对应唱段，不能以“谢谢礼物”代替。同一观众新一轮送礼后，旧接单不能自动完成新跟进；检查last_gift_at之后的新证据。
-human_status是用户修正，优先于模型：done不可撤回；awaiting_response表示已cue但仍待观众回应，只有该修正at时间之后明确属于该观众的新回应/点歌确认/演唱完成才可完成，不能引用旧点名或旧邀请冒充回应。
+识别到已为该观众唱完，直接把song_requests.stage设为performed，程序会自动划掉；不需要另写completed_followups，不再等待一次额外确认。
+human_status中的done不可撤回；尚未演唱时，awaiting_response表示已cue但仍待观众回应，不能把旧点名或旧邀请当作回应；已唱则直接完成。
 完成判断必须引用该项送礼之后的确切证据id；不复制对话。保留以前仍有效的完成项，并合并新项；没有完成就保留空数组。
 不要把原文、昵称或推理写入annotations。调查过程和未解决原因可另写本地 {workspace / 'investigation_notes.json'}，不公开。完成后简述复核窗口数、新歌名、实际追踪成功数及剩余缺哪条证据。外部负责调度，你不创建或延续任务。
 '''

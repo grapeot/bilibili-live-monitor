@@ -5,6 +5,7 @@ import json
 import os
 import re
 import sys
+import time
 import urllib.request
 from email.utils import parseaddr
 
@@ -38,18 +39,36 @@ def main():
     args = parser.parse_args()
     load_dotenv(args.env_file)
     payload = json.load(sys.stdin)
-    body, message_id = prepare(payload, os.environ)
+    body, _ = prepare(payload, os.environ)
     if args.dry_run:
         print(json.dumps({'valid': True, 'threaded': bool(payload.get('in_reply_to'))}))
         return 0
     request = urllib.request.Request('https://api.resend.com/emails',
         data=json.dumps(body).encode(), headers={'Authorization': 'Bearer ' + os.environ['RESEND_API_KEY'],
-        'Content-Type': 'application/json', 'Idempotency-Key': 'bili-' + payload['id']})
-    with urllib.request.urlopen(request, timeout=60) as response:
+        'Content-Type': 'application/json', 'Idempotency-Key': 'bili-' + payload['id'],
+        'User-Agent': 'bilibili-live-monitor/0.1'})
+    with urllib.request.urlopen(request, timeout=30) as response:
         receipt = json.load(response)
     if not receipt.get('id'):
         raise RuntimeError('通知缺少发送回执')
-    print(json.dumps({'id': receipt['id'], 'message_id': message_id}))
+    # Resend可能替换自定义Message-ID；线程必须引用服务端实际采用的RFC ID。
+    actual_id = None
+    for attempt in range(3):
+        try:
+            metadata = urllib.request.Request('https://api.resend.com/emails/' + receipt['id'],
+                headers={'Authorization': 'Bearer ' + os.environ['RESEND_API_KEY'],
+                         'User-Agent': 'bilibili-live-monitor/0.1'})
+            with urllib.request.urlopen(metadata, timeout=10) as response:
+                actual_id = json.load(response).get('message_id')
+            if actual_id and re.fullmatch(r'<[^\s<>]+@[^\s<>]+>', actual_id):
+                break
+            actual_id = None
+        except (OSError, ValueError):
+            pass
+        if attempt < 2:
+            time.sleep(1)
+    print(json.dumps({'id': receipt['id'], 'message_id': actual_id,
+                      'thread_error': None if actual_id else 'provider_message_id_unavailable'}))
     return 0
 
 

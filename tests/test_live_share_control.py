@@ -85,6 +85,20 @@ def test_validation_rejects_different_broadcast_and_public_database(tmp_path):
         validate_config({**config, 'database': str(tmp_path / 'session/public/private.sqlite3')})
 
 
+def test_workflow_finalizing_snapshot_is_valid_after_live_collection_stops(tmp_path):
+    config = initialized(tmp_path)
+    workspace = tmp_path / 'session'
+    atomic_json(workspace / 'state.json', {'phase': 'completed', 'cutoff': epoch(END)})
+    export_snapshot(config)
+    path = workspace / 'public/snapshot.json'
+    snapshot = json.loads(path.read_text())
+    snapshot['phase'] = 'finalizing'
+    atomic_json(path, snapshot)
+    assert 'completed_page_still_live' in verify_snapshot(config)['errors']
+    config['workflow_key'] = 'synthetic-workflow'
+    assert verify_snapshot(config)['valid']
+
+
 def test_ai_interpreter_preserves_venv_symlink(tmp_path):
     base = tmp_path / 'base-python'
     base.touch()

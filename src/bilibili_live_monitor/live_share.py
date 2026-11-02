@@ -169,10 +169,10 @@ def public_followups(source: dict, start: str, annotations: dict, overrides: dic
                     and all(isinstance(ref, str) and ref in evidence
                             and epoch(evidence[ref]['at']) >= epoch(item['first_gift_at']) - 300 for ref in cited)
                     and any(epoch(evidence[ref]['at']) >= epoch(item['last_gift_at']) for ref in cited)
-                    and any(evidence[ref]['kind'] == 'transcript' or evidence[ref].get('uid') == item['uid'] for ref in cited)
-                    and (override.get('status') != 'awaiting_response'
-                         or all(epoch(evidence[ref]['at']) > epoch(override['at']) for ref in cited))):
+                     and any(evidence[ref]['kind'] == 'transcript' or evidence[ref].get('uid') == item['uid'] for ref in cited)):
                 request = {'request_song': candidate['song'], 'request_stage': candidate['stage']}
+        if request.get('request_stage') == 'performed':
+            status = 'done'
         result.append({'name': item['name'], 'first_gift_at': item['first_gift_at'],
                        'gift_count': item['gift_count'], 'lamp_count': item['lamp_count'],
                        'blind_orders': item['blind_orders'], 'status': status, **request})

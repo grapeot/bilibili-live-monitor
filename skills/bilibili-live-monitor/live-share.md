@@ -56,7 +56,7 @@ AI默认关闭，仅同时提供已存在的会话、完整模型名、OpenCode�
 - 仅实际送礼触发；灯牌默认接受两个已支持的协议ID，排除已知大航海，`--include-guard-lamps` 可纳入。配置中的 `followup_rules.lamp_ids` / `lamp_name` 可指定其他已核协议值。
 - 默认纳入盲盒，`--no-blind-gifts` 可关闭；重复的 `--blind-gift-name` 按原始盲盒名过滤，不能按抽中奖品名过滤。例如一个主播接受心动盲盒，另一个接受假面盲盒；未指定名称时纳入所有盲盒。同单盲盒结果按订单去重，普通灯牌保留批内项目。
 - 送灯牌不等于首次入团；终身首次资格需另外取得历史证据，不能从本场数据推断。
-- `config.json` 的 `followup_overrides` 以UID为键，允许 `excluded`、`done`、`awaiting_response`；后者必须有带时区的 `at`。人工修正优先，旧证据不能覆盖新人工边界。
+- `config.json` 的 `followup_overrides` 以UID为键，允许 `excluded`、`done`、`awaiting_response`；后者必须有带时区的 `at`。尚未演唱时保留人工待回应边界；已识别为 `performed` 则直接划掉，不等待第二次确认或另写完成记录。
 - 同一观众再次送礼需新完成证据。现有 `done` 只表示点歌已收到/确认，不表示整首已唱；`song_requests` 分开记录 `accepted` / `performed` 及原始证据。可引用送礼前5分钟内的请求，但必须有最新送礼之后的有效证据；完成跟进引用的证据还须全部在首次送礼之后。
 
 ## 5. 看板视图与数据契约

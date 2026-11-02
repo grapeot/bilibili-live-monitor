@@ -335,7 +335,7 @@ def test_verified_song_registry_checks_public_page_and_local_path(tmp_path):
     assert verified_titles(tmp_path) == ()
 
 
-def test_song_request_respects_newer_human_awaiting_override():
+def test_performed_song_completes_without_separate_confirmation():
     from bilibili_live_monitor.live_share import followup_candidates, followup_evidence, public_followups
     source = {'raw': [], 'items': [gift_item()], 'segments': [
         {'seq': 1, 'start_utc': START, 'end_utc': NOW, 'text': '已唱', 'is_final': True}]}
@@ -343,7 +343,7 @@ def test_song_request_respects_newer_human_awaiting_override():
                'evidence': [followup_evidence(source)[0]['id']]}
     result = public_followups(source, START, {'song_requests': [request]},
                               {'123': {'status': 'awaiting_response', 'at': NOW}}, ('测试歌',))
-    assert result[0]['status'] == 'awaiting_response' and 'request_song' not in result[0]
+    assert result[0]['status'] == 'done' and result[0]['request_stage'] == 'performed'
 
 
 def test_lamp_batch_items_distinct_but_blind_results_one_order():

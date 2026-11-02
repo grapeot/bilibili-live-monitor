@@ -3,10 +3,12 @@ import argparse
 import fcntl
 import hashlib
 import json
+import re
 import shlex
 import subprocess
 import time
 import urllib.request
+from html.parser import HTMLParser
 from pathlib import Path
 
 from . import live_share_watch as watch
@@ -22,12 +24,30 @@ from .session_ai import ai_control
 from .session_offline import recording_files, run_offline
 
 
+def _strip_cdn_beacon(match):
+    class Script(HTMLParser):
+        sources = ()
+
+        def handle_starttag(self, tag, attrs):
+            self.sources = tuple(value for key, value in attrs if tag == 'script' and key == 'src')
+
+    parser = Script()
+    parser.feed(match.group().decode())
+    if (len(parser.sources) == 1 and parser.sources[0]
+            and re.fullmatch(r'https://static\.cloudflareinsights\.com/beacon\.min\.js(?:[/?][^\s]*)?', parser.sources[0])):
+        return b''
+    return match.group()
+
+
 def verify_remote(config):
     for name in ('index.html', 'snapshot.json'):
         local = (Path(config['workspace']) / 'public' / name).read_bytes()
-        req = urllib.request.Request(config['url'] + name, headers={'Cache-Control': 'no-cache'})
+        req = urllib.request.Request(config['url'] + name,
+                                     headers={'Cache-Control': 'no-cache', 'User-Agent': 'bilibili-live-monitor/0.1'})
         with urllib.request.urlopen(req, timeout=20) as response:
             remote = response.read()
+        if name == 'index.html':
+            remote = re.sub(rb'<script\b[^>]*></script>\n?', _strip_cdn_beacon, remote)
         if hashlib.sha256(remote).digest() != hashlib.sha256(local).digest():
             raise RuntimeError('远端看板内容与本次本地产物不一致')
 
@@ -59,9 +79,7 @@ def advance(config, state, now):
     phase = state.setdefault('stage', 'created')
     if phase == 'created':
         if not state.get('ai_preflight'):
-            subprocess.run([config['opencode_python'], '-m', 'opencode_skill', 'submit',
-                            '--dry-run', '--model', config['model'], '--agent', 'build', '--json'],
-                           cwd=config['opencode_cwd'], check=True, capture_output=True, timeout=180)
+            ai_control(config, 'preflight', model=config['model'])
             state['ai_preflight'] = True
         if not state.get('remote_prepared'):
             host, directory = config['remote'].split(':', 1)
