@@ -13,12 +13,25 @@ from .activity_page import page_html
 from .trends import aggregate, digest, instant
 
 LABELS = ('singing', 'speaking', 'mixed', 'unknown')
+MUSIC_SOURCES = ('probable_live', 'recording', 'uncertain', 'none')
 TALK = re.compile(r'欢迎|谢谢|感谢|关注|灯牌|舰长|提督|点歌|这首歌|下一首|一首.{0,14}送给|'
                   r'大家|你们|宝宝|直播|(?:昨天|今天|明天)(?:我|我们|直播|嗓子)|刚才|我觉得|我感觉|我去|等一下|'
                   r'什么意思|是不是|对吧|好不好|哈哈|笑死')
+CONNECTIVES = re.compile(r'但是|然后|就是|那个|这个|因为|所以|其实|怎么|什么|我觉得|我感觉')
 
 
-def suggest(text, rms=None):
+def text_features(text, duration):
+    """转写密度不是实际语速；全块时长包含停顿、音乐和ASR漏字。"""
+    clauses = [s for s in re.split(r'[，。！？!?；;\n]', re.sub(r'\s+', '', text)) if s]
+    chars = sum(len(re.findall(r'\w', s)) for s in clauses)
+    talking_chars = sum(len(re.findall(r'\w', s)) for s in clauses if TALK.search(s))
+    return {'transcribed_chars': chars, 'chars_per_second': round(chars/duration, 3) if duration > 0 else 0,
+            'interaction_keyword_count': len(TALK.findall(text)),
+            'interaction_char_ratio': round(talking_chars/chars, 3) if chars else 0,
+            'conversational_connective_count': len(CONNECTIVES.findall(text))}
+
+
+def suggest(text, rms=None, duration=30):
     """用于初始涂色的可解释启发式；所有结果仍需试听复核。"""
     compact = re.sub(r'\s+', '', text)
     if len(compact) < 12 or (rms is not None and rms < -50):
@@ -26,10 +39,15 @@ def suggest(text, rms=None):
     clauses = [s for s in re.split(r'[，。！？!?；;\n]', compact) if s]
     talking = [s for s in clauses if TALK.search(s)]
     other_chars = sum(len(s) for s in clauses if not TALK.search(s))
+    features = text_features(text, duration)
     if talking:
-        if other_chars >= 45 and len(talking) < len(clauses)/2:
+        if other_chars >= 45 and features['interaction_char_ratio'] < .2:
+            return 'singing', '非互动文本占主导，仅少量插话；疑似歌词，需语义/试听复核'
+        if other_chars >= 45 and features['interaction_char_ratio'] < .65:
             return 'mixed', '同块有互动用语和较长非互动文本，可能夹杂唱歌/讲话'
         return 'speaking', '文本出现互动或日常对话用语'
+    if features['conversational_connective_count'] >= 3 and features['chars_per_second'] >= 3.5:
+        return 'speaking', '转写较密且多口语连接词，疑似连续讲话；密度不能单独证明分类'
     if len(compact) >= 28:
         return 'singing', '较长连续非互动文本，疑似歌词；也可能是独白或播放录音'
     return 'unknown', '缺少足够的互动或歌词线索'
@@ -74,9 +92,10 @@ def load_windows(path, trends):
             continue
         if not isinstance(row['text'], str):
             raise ValueError('ASR文本必须为字符串')
-        label, reason = suggest(row['text'], row.get('rms_dbfs'))
+        label, reason = suggest(row['text'], row.get('rms_dbfs'), end-start)
         windows.append({**row, 'start': start, 'end': end, 'label': label, 'reason': reason,
-                        'provenance': 'automatic_candidate'})
+                        'provenance': 'automatic_candidate', 'text_features': text_features(row['text'], end-start),
+                        'music_source': 'uncertain' if label in ('singing', 'mixed') else 'none'})
     return sorted(windows, key=lambda w: (w['start'], w['source_key']))
 
 
@@ -99,9 +118,13 @@ def apply_labels(windows, overrides):
             raise ValueError('标注有重复/未知窗口或非法分类')
         if row.get('provenance') not in ('manual', 'automatic_candidate', 'semantic_review'):
             raise ValueError('标注来源无效')
+        source = row.get('music_source', 'uncertain' if row['label'] in ('singing', 'mixed') else 'none')
+        if source not in MUSIC_SOURCES or (row['label'] == 'singing' and source == 'none'):
+            raise ValueError('歌曲声源无效')
         seen.add(key)
         if row['provenance'] != 'automatic_candidate':
             known[key].update(label=row['label'], provenance=row['provenance'],
+                               music_source=source,
                               reason=row.get('reason') or ('人工复核修订' if row['provenance'] == 'manual'
                                                           else '语义复核候选，仍需试听'))
 
@@ -118,7 +141,8 @@ def bands(windows, lo, hi):
     for a, b in zip(edges, edges[1:]):
         for i, add in events.get(a, []):
             active.add(i) if add else active.discard(i)
-        kinds = {windows[i]['label'] for i in active}
+        kinds = {windows[i]['label'] if windows[i]['label'] != 'singing' or
+                 windows[i].get('music_source') == 'probable_live' else 'unknown' for i in active}
         label = next(iter(kinds)) if len(kinds) == 1 else 'unknown'
         reason = '无ASR覆盖' if not active else '重叠窗口分类不同' if len(kinds) > 1 else ''
         if result and result[-1]['label'] == label and result[-1]['reason'] == reason:
@@ -200,6 +224,7 @@ def verify(output):
         raise ValueError('页面与活动数据不一致')
     return {'verified': True, 'windows': len(bundle['windows']),
             'counts': dict(Counter(w['label'] for w in bundle['windows'])),
+            'music_sources': dict(Counter(w.get('music_source', 'uncertain') for w in bundle['windows'])),
             'manual_windows': sum(w['provenance'] == 'manual' for w in bundle['windows'])}
 
 
@@ -224,7 +249,7 @@ def main(args):
             (args.output/'activity.json').write_text(json.dumps(bundle, ensure_ascii=False, indent=2))
             (args.output/'index.html').write_text(page_html(bundle))
             labels = {'schema_version': 1, 'dataset_id': dataset_id(windows),
-                      'labels': [{k: w[k] for k in ('source_key', 'label', 'provenance', 'reason')}
+                       'labels': [{k: w[k] for k in ('source_key', 'label', 'music_source', 'provenance', 'reason')}
                                                     for w in windows]}
             (args.output/'labels.json').write_text(json.dumps(labels, ensure_ascii=False, indent=2))
             files = {str(p.relative_to(args.output)): digest(p) for p in args.output.rglob('*') if p.is_file()}

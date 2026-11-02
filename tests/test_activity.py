@@ -2,6 +2,7 @@ import argparse
 import hashlib
 import json
 import shutil
+import subprocess
 import wave
 
 import pytest
@@ -15,8 +16,10 @@ from bilibili_live_monitor.activity import (
     load_windows,
     main,
     suggest,
+    text_features,
     verify,
 )
+from bilibili_live_monitor.activity_page import SCRIPT
 from bilibili_live_monitor.trends import aggregate
 
 
@@ -44,12 +47,25 @@ def test_candidates_are_conservative_for_short_and_quiet_audio():
 
 
 def test_mixed_is_not_forced_to_a_song():
-    text = '谢谢礼物。' + '月光洒在遥远的海面上，你的心从来不曾遗忘。'*4
+    text = '谢谢大家送来的礼物。欢迎大家来到今天的直播间。' + '月光洒在遥远的海面上，你的心从来不曾遗忘。'*3
     assert suggest(text)[0] == 'mixed'
 
 
+def test_brief_thanks_does_not_dominate_long_lyrics():
+    text = '谢谢。' + '月光洒在遥远的海面上，你的心从来不曾遗忘。'*4
+    assert suggest(text)[0] == 'singing'
+
+
+def test_density_uses_actual_duration_and_is_not_a_classifier_alone():
+    assert text_features('你好，世界。', 2)['chars_per_second'] == 2
+    assert text_features('', 0)['chars_per_second'] == 0
+    text = '月光洒在遥远的海面上，你的心从来不曾遗忘。'*4
+    assert suggest(text, duration=10)[0] == suggest(text, duration=60)[0] == 'singing'
+    assert text_features('谢谢礼物。月光洒在海上。', 30)['interaction_keyword_count'] == 1
+
+
 def test_bands_preserve_gaps_overlap_and_partial_range():
-    result = bands([{'start': -10, 'end': 20, 'label': 'singing'},
+    result = bands([{'start': -10, 'end': 20, 'label': 'singing', 'music_source': 'probable_live'},
                     {'start': 10, 'end': 30, 'label': 'speaking'}], 0, 40)
     assert [(b['start'], b['end'], b['label']) for b in result] == [
         (0, 10, 'singing'), (10, 20, 'unknown'), (20, 30, 'speaking'), (30, 40, 'unknown')]
@@ -64,6 +80,55 @@ def test_manual_revision_roundtrip(tmp_path):
     apply_labels(windows, {'schema_version': 1, 'dataset_id': dataset_id(windows), 'labels': [
         {'source_key': 'clip:0', 'label': 'mixed', 'provenance': 'manual'}]})
     assert windows[0]['label'] == 'mixed' and windows[0]['provenance'] == 'manual'
+
+
+def test_legacy_manual_song_does_not_imply_live_source(tmp_path):
+    path = tmp_path/'asr.jsonl'
+    path.write_text(json.dumps(record()))
+    windows = load_windows(path, trend())
+    apply_labels(windows, {'schema_version': 1, 'dataset_id': dataset_id(windows), 'labels': [
+        {'source_key': 'clip:0', 'label': 'singing', 'provenance': 'manual'}]})
+    assert windows[0]['provenance'] == 'manual'
+    assert windows[0]['music_source'] == 'uncertain'
+    assert all(b['label'] != 'singing' for b in bands(windows, windows[0]['start'], windows[0]['end']))
+
+
+@pytest.mark.parametrize('source,actions,expected', [
+    ('recording', [('i', 'singing')], 'recording'),
+    ('uncertain', [('i', 'singing')], 'uncertain'),
+    ('none', [('i', 'singing')], 'uncertain'),
+    ('none', [('sourceI', 'recording'), ('i', 'singing')], 'recording'),
+    ('none', [('sourceI', 'probable_live'), ('i', 'singing')], 'probable_live'),
+    ('recording', [('i', 'speaking'), ('i', 'singing')], 'recording'),
+])
+def test_browser_activity_edit_preserves_source(tmp_path, source, actions, expected):
+    path = tmp_path/'asr.jsonl'
+    path.write_text(json.dumps(record()))
+    windows = load_windows(path, trend())
+    windows[0].update(label='mixed', music_source=source, provenance='semantic_review')
+    state = {**trend(), 'windows': windows, 'dataset_id': dataset_id(windows)}
+    harness = r'''
+const vm=require('node:vm');
+const input=JSON.parse(require('node:fs').readFileSync(0,'utf8'));
+const elements={};const layer={innerHTML:''};let blob;
+const document={getElementById(id){return elements[id]??=(
+ {value:'all',textContent:'',innerHTML:'',handlers:{},addEventListener(k,f){this.handlers[k]=f;}});},
+ querySelectorAll(){return [layer];},createElement(){return {click(){}};}};
+document.getElementById('activity-data').textContent=JSON.stringify(input.state);
+const context={document,console,Date,URL:{createObjectURL(b){blob=b;return 'blob:test';},revokeObjectURL(){}},
+ Blob:class{constructor(parts){this.text=parts.join('');}},setTimeout(){}};
+vm.runInNewContext(input.script,context);
+for(const [key,value] of input.actions){document.getElementById('review-rows').handlers.change({target:{dataset:{[key]:'0'},value}});}
+document.getElementById('export-labels').onclick();
+console.log(JSON.stringify({exported:JSON.parse(blob.text),green:layer.innerHTML.includes('#22c55e')}));
+'''
+    result = subprocess.run(['node', '-e', harness], input=json.dumps(
+        {'state': state, 'script': SCRIPT, 'actions': actions}), text=True, capture_output=True, check=True)
+    observed = json.loads(result.stdout)
+    assert observed['exported']['labels'][0]['music_source'] == expected
+    assert observed['green'] == (expected == 'probable_live')
+    apply_labels(windows, observed['exported'])
+    assert windows[0]['label'] == 'singing' and windows[0]['music_source'] == expected
 
 
 @pytest.mark.parametrize('changes', [dict(room_id='654321'), dict(relative_end=10),
@@ -143,6 +208,32 @@ def test_semantic_review_stays_candidate(tmp_path):
     apply_labels(windows, {'schema_version': 1, 'dataset_id': dataset_id(windows), 'labels': [
         {'source_key': 'clip:0', 'label': 'singing', 'provenance': 'semantic_review'}]})
     assert windows[0]['provenance'] == 'semantic_review'
+    assert windows[0]['music_source'] == 'uncertain'
+
+
+def test_recording_and_unknown_source_are_not_live_singing_bands():
+    result = bands([
+        {'start': 0, 'end': 10, 'label': 'singing', 'music_source': 'recording'},
+        {'start': 10, 'end': 20, 'label': 'singing', 'music_source': 'uncertain'},
+        {'start': 20, 'end': 30, 'label': 'singing', 'music_source': 'probable_live'},
+    ], 0, 40)
+    assert [(b['start'], b['end']) for b in result if b['label'] == 'singing'] == [(20, 30)]
+    assert result[-1]['reason'] == '无ASR覆盖'
+
+
+def test_source_revision_preserves_playback_and_rejects_invalid_source(tmp_path):
+    path = tmp_path/'asr.jsonl'
+    path.write_text(json.dumps(record()))
+    windows = load_windows(path, trend())
+    override = {'schema_version': 1, 'dataset_id': dataset_id(windows), 'labels': [
+        {'source_key': 'clip:0', 'label': 'singing', 'music_source': 'recording',
+         'provenance': 'semantic_review', 'reason': '后文明确说明放的是录音'}]}
+    apply_labels(windows, override)
+    assert windows[0]['music_source'] == 'recording'
+    assert not any(b['label'] == 'singing' for b in bands(windows, windows[0]['start'], windows[0]['end']))
+    override['labels'][0]['music_source'] = 'none'
+    with pytest.raises(ValueError, match='声源'):
+        apply_labels(windows, override)
 
 
 @pytest.mark.skipif(not shutil.which('ffmpeg') or not shutil.which('ffprobe'), reason='需要ffmpeg')

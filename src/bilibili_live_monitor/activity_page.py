@@ -6,7 +6,7 @@ from .trends_render import render
 SCRIPT = r'''
 const state = JSON.parse(document.getElementById('activity-data').textContent);
 const names={singing:'唱歌',speaking:'讲话',mixed:'混合',unknown:'不确定'};
-const colors={singing:'#22a06b',speaking:'#5288d8',mixed:'#e4a32d',unknown:'#aab2bf'};
+const sourceNames={probable_live:'主播现场演唱候选',recording:'播放录音／他人演唱',uncertain:'声源不确定',none:'无歌曲活动'};
 const win=state.windows, lo=Date.parse(state.since)/1000, hi=Date.parse(state.until)/1000;
 let offset=0, stopAt=null, playRequest=0;
 const audio=document.getElementById('listen');
@@ -22,28 +22,54 @@ function table(){
  document.getElementById('review-rows').innerHTML=rows.slice(offset,offset+30).map(({w,i})=>
   `<tr><td>${clock(w.start)}<br>${clock(w.end)}</td><td><select data-i="${i}" aria-label="活动分类 ${i}">`+
   Object.entries(names).map(([k,n])=>`<option value="${k}" ${k===w.label?'selected':''}>${n}</option>`).join('')+
-  `</select><br><small>${w.provenance==='manual'?'人工修订':w.provenance==='semantic_review'?'语义复核候选':'自动候选'}</small></td>`+
+   `</select><br><select data-source-i="${i}" aria-label="歌曲声源 ${i}">`+
+   Object.entries(sourceNames).map(([k,n])=>`<option value="${k}" ${k===w.music_source?'selected':''}>${n}</option>`).join('')+
+   `</select><br><small>${w.provenance==='manual'?'人工修订':w.provenance==='semantic_review'?'语义复核候选':'自动候选'}</small></td>`+
   `<td><button data-play="${i}" ${w.audio?'':'disabled'}>试听</button></td>`+
-  `<td>${esc(w.text)}<br><small>${esc(w.reason)}</small></td></tr>`).join('');
+  `<td>${esc(w.text)}<br><small>${esc(w.reason)}</small>`+
+  (w.text_features?`<small>转写密度 ${w.text_features.chars_per_second} 字/秒 · 互动词 ${w.text_features.interaction_keyword_count}处 · 互动句文字占比 ${Math.round(w.text_features.interaction_char_ratio*100)}%</small>`:'')+
+  `</td></tr>`).join('');
 }
 function paint(){
  const edges=[...new Set([lo,hi,...win.flatMap(w=>[Math.max(lo,w.start),Math.min(hi,w.end)])])].sort((a,b)=>a-b);
  let rectangles='';
  for(let i=0;i<edges.length-1;i++){
   const a=edges[i],b=edges[i+1]; if(b<=lo||a>=hi)continue;
-  const active=win.filter(w=>w.start<b&&w.end>a), labels=new Set(active.map(w=>w.label));
-  const label=labels.size===1?[...labels][0]:'unknown';
-  const x=65+(a-lo)/(hi-lo)*980,width=(b-a)/(hi-lo)*980;
-  rectangles+=`<rect x="${x}" y="16" width="${width}" height="191" fill="${colors[label]}" opacity=".13"><title>${clock(a)}–${clock(b)} ${names[label]}</title></rect>`;
-  rectangles+=`<rect x="${x}" y="210" width="${width}" height="6" fill="${colors[label]}" opacity=".85"><title>${clock(a)}–${clock(b)} ${names[label]}</title></rect>`;
+   const active=win.filter(w=>w.start<b&&w.end>a), labels=new Set(active.map(w=>
+    w.label==='singing'&&w.music_source!=='probable_live'?'unknown':w.label));
+   const label=labels.size===1?[...labels][0]:'unknown';
+   if(label!=='singing'&&active.length)continue;
+   const x=65+(a-lo)/(hi-lo)*980,width=(b-a)/(hi-lo)*980;
+   if(!active.length){
+    rectangles+=`<rect x="${x}" y="16" width="${width}" height="191" fill="#94a3b8" opacity=".25" data-missing-audio="true"><title>${clock(a)}–${clock(b)} 无音频数据覆盖</title></rect>`;
+    continue;
+   }
+   rectangles+=`<rect x="${x}" y="16" width="${width}" height="191" fill="#22c55e" opacity=".30"><title>${clock(a)}–${clock(b)} ${names[label]}</title></rect>`;
+   rectangles+=`<rect x="${x}" y="210" width="${width}" height="6" fill="#22c55e" opacity=".95"><title>${clock(a)}–${clock(b)} ${names[label]}</title></rect>`;
  }
- document.querySelectorAll('[data-activity-layer]').forEach(g=>g.innerHTML=rectangles);
- const counts={};win.forEach(w=>counts[w.label]=(counts[w.label]||0)+1);
- document.getElementById('label-counts').textContent=Object.entries(names).map(([k,n])=>`${n} ${counts[k]||0}块`).join(' · ');
+  document.querySelectorAll('[data-activity-layer]').forEach(g=>g.innerHTML=rectangles);
+  const counts={};win.forEach(w=>counts[w.label]=(counts[w.label]||0)+1);
+  const songs=win.filter(w=>w.label==='singing');
+  document.getElementById('label-counts').textContent=[
+   `现场演唱候选 ${songs.filter(w=>w.music_source==='probable_live').length}块`,
+   `录音中的歌曲 ${songs.filter(w=>w.music_source==='recording').length}块`,
+   `声源不明的歌曲 ${songs.filter(w=>w.music_source!=='probable_live'&&w.music_source!=='recording').length}块`,
+   ...['speaking','mixed','unknown'].map(k=>`${names[k]} ${counts[k]||0}块`)
+  ].join(' · ');
 }
 document.getElementById('review-rows').addEventListener('change',e=>{
- if(e.target.dataset.i===undefined)return;
- const w=win[Number(e.target.dataset.i)]; w.label=e.target.value; w.provenance='manual';w.reason='人工复核修订';
+ const sourceEdit=e.target.dataset.sourceI!==undefined;
+ const index=sourceEdit?e.target.dataset.sourceI:e.target.dataset.i;
+ if(index===undefined)return;
+ const w=win[Number(index)];
+ if(sourceEdit){
+  if(e.target.value==='none'&&w.label==='singing'){table();return;}
+  w.music_source=e.target.value;
+ }else{
+  w.label=e.target.value;
+   if(['singing','mixed'].includes(w.label)&&(!w.music_source||w.music_source==='none'))w.music_source='uncertain';
+ }
+ w.provenance='manual';w.reason=sourceEdit?'人工复核声源修订':'人工复核修订';
  paint();table();document.getElementById('edit-status').textContent='有未导出的人工修订';
 });
 document.getElementById('review-rows').addEventListener('click',async e=>{
@@ -67,7 +93,7 @@ document.getElementById('kind-filter').addEventListener('change',()=>{offset=0;t
 document.getElementById('prev').onclick=()=>{offset-=30;table();};
 document.getElementById('next').onclick=()=>{offset+=30;table();};
 document.getElementById('export-labels').onclick=()=>{
- const data={schema_version:1,dataset_id:state.dataset_id,labels:win.map(w=>({source_key:w.source_key,label:w.label,provenance:w.provenance,reason:w.reason}))};
+ const data={schema_version:1,dataset_id:state.dataset_id,labels:win.map(w=>({source_key:w.source_key,label:w.label,music_source:w.music_source,provenance:w.provenance,reason:w.reason}))};
  const url=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:'application/json'}));
  const link=document.createElement('a');link.href=url;link.download='labels.reviewed.json';link.click();
  setTimeout(()=>URL.revokeObjectURL(url),1000);document.getElementById('edit-status').textContent='已导出修订，刷新前请保留文件';
@@ -81,10 +107,12 @@ def page_html(bundle):
     page = render(trend, activities=bundle['bands'])
     page = page.replace('href="data.json"', 'href="activity.json"').replace('下载冻结数据', '下载活动数据')
     note = '''<section id="activity-help"><h2>活动候选 · 可试听修订</h2>
-<p><span style="color:#168456">■ 绿色：疑似唱歌</span>　<span style="color:#3979ce">■ 蓝色：疑似讲话</span>　
-<span style="color:#b47b14">■ 黄色：混合</span>　<span style="color:#758090">■ 灰色：不确定/缺音频</span></p>
+<p><span style="background:#22c55e4d;color:#126b36;padding:4px 8px;border-radius:4px">■ 绿色背景：主播现场演唱候选</span>　
+<span style="background:#94a3b840;padding:4px 8px;border-radius:4px">■ 灰色：无数据覆盖</span>　
+播放录音、声源不确定、讲话及混合不着色。</p>
 <p>颜色来自ASR文本启发式或语义复核候选，不是声学分类真值。歌词、独白、背景音乐和录播可能误判；
-时间是源片与约30秒切块的估算。请试听并修订，不能据此直接归因关注增长。</p><p id="label-counts"></p></section>'''
+时间是源片与约30秒切块的估算。转写密度按文字数/整块时长计算，不是实际语速，不能单独区分说唱。
+请试听并修订，不能据此直接归因关注增长。</p><p id="label-counts"></p></section>'''
     review = '''<section id="review"><h2>逐块复核</h2><p>试听会从该块起点播放，到终点暂停。
 修改下拉选项会同步更新四图色带；修改暂存于本页，刷新前请导出JSON。
 下一轮用 <code>activity build --labels labels.reviewed.json</code> 复用修订。</p>
@@ -99,7 +127,8 @@ td,th{border-bottom:1px solid #e0e6ef;padding:10px;text-align:left;vertical-alig
 td small{margin:0}button,select{padding:7px;margin:4px;border:1px solid #ccd5e3;border-radius:6px;background:white;color:#17273f}
 audio{width:100%;margin-top:16px}#playing{max-height:90px;overflow:auto}#edit-status{font-size:12px;color:#ab5e0c}</style>'''
     public_windows = [{k: v for k, v in w.items() if k in (
-        'source_key', 'start', 'end', 'relative_start', 'relative_end', 'text', 'label', 'reason', 'provenance', 'audio')}
+        'source_key', 'start', 'end', 'relative_start', 'relative_end', 'text', 'label', 'music_source', 'reason', 'provenance', 'audio',
+        'text_features')}
         for w in bundle['windows']]
     data = json.dumps({'windows': public_windows, 'dataset_id': bundle['dataset_id'],
                        'since': trend['since'], 'until': trend['until'],
