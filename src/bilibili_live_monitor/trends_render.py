@@ -12,11 +12,67 @@ margin:16px 0;box-shadow:0 4px 16px #18243b05}h2{font-size:18px;margin:0 0 12px}
 small{font-size:12px;color:#69788d;font-weight:400;margin-left:16px}svg{width:100%;display:block}
 svg text{fill:#748094;font-size:12px}.grid{stroke:#e7edf4;stroke-width:1}a{color:#2563eb}
 footer{margin:20px 0;font-size:13px;color:#617089;line-height:1.8}
+.song-hit{fill:transparent;stroke:transparent;pointer-events:all}
+.song-hit.song-active{fill:#16a34a;fill-opacity:.22;stroke:#15803d;stroke-width:1.5}
+.song-list{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px}
+.song-chip{font:inherit;font-size:14px;text-align:left;padding:9px 12px;border-radius:9px;
+border:1px solid #d4e7da;background:#f5faf6;color:#183d29;cursor:pointer}
+.song-chip.song-active{background:#dcfce7;border-color:#15803d;outline:2px solid #15803d}
+.song-chip span{display:block;font-size:12px;color:#53637a;margin-top:4px}
+.song-tooltip{position:fixed;z-index:1000;pointer-events:none;width:max-content;max-width:calc(100vw - 24px);
+box-sizing:border-box;padding:14px 18px;border:1px solid #8ccda3;border-radius:12px;
+background:#f5fff8;color:#123e25;box-shadow:0 8px 28px #17372530;line-height:1.4}
+.song-tooltip[hidden]{display:none}.song-tooltip strong{display:block;font-size:21px;font-weight:650}
+.song-tooltip span{display:block;font-size:14px;margin-top:5px;color:#496453}
 @media(max-width:600px){body{padding:12px}section{padding:12px 6px;overflow-x:auto}
 small{display:block;margin:7px 0 0}svg{min-width:680px}}'''
 
 
-def render(data, activities=None):
+SONG_SCRIPT = '''<div id="song-tooltip" class="song-tooltip" role="status" hidden><strong></strong><span></span></div><script>
+(()=>{
+ let pinned=null,lastPointer=null;
+ const tooltip=document.getElementById('song-tooltip');
+ const nodes=()=>[...document.querySelectorAll('[data-song-id]')];
+ const target=e=>e.target?.closest?.('[data-song-id]');
+ function activate(id){nodes().forEach(n=>n.classList.toggle('song-active',!n.disabled&&n.dataset.songId===id));}
+ function show(n,x,y){
+  tooltip.querySelector('strong').textContent=n.dataset.songTitle;
+  tooltip.querySelector('span').textContent=n.dataset.songTime;
+  tooltip.hidden=false;
+  const box=tooltip.getBoundingClientRect();
+  tooltip.style.left=Math.max(12,Math.min(x+16,innerWidth-box.width-12))+'px';
+  const top=y-box.height-16;
+  tooltip.style.top=Math.max(12,Math.min(top>=12?top:y+20,innerHeight-box.height-12))+'px';
+ }
+ function reset(){tooltip.hidden=true;activate(pinned);}
+ function hoverTarget(e){
+  const direct=target(e);if(direct)return direct;
+  const svg=e.target?.closest?.('svg');
+  return svg&&[...svg.querySelectorAll('.song-hit')].find(n=>{
+   const r=n.getBoundingClientRect();return e.clientX>=r.left&&e.clientX<=r.right&&e.clientY>=r.top&&e.clientY<=r.bottom;
+  });
+ }
+ document.addEventListener('pointermove',e=>{lastPointer={x:e.clientX,y:e.clientY};const n=hoverTarget(e);if(n&&!n.disabled){activate(n.dataset.songId);show(n,e.clientX,e.clientY);}else reset();});
+ document.addEventListener('mouseover',e=>{lastPointer={x:e.clientX,y:e.clientY};const n=target(e);if(n&&!n.disabled){activate(n.dataset.songId);show(n,e.clientX,e.clientY);}});
+ document.addEventListener('mouseout',e=>{if(!e.relatedTarget||target(e))reset();});
+ document.addEventListener('focusin',e=>{const n=target(e);if(n&&!n.disabled){activate(n.dataset.songId);const r=n.getBoundingClientRect();show(n,r.left,r.top);}});
+ document.addEventListener('focusout',e=>{if(target(e))reset();});
+ document.addEventListener('click',e=>{const n=target(e);if(n&&!n.disabled){pinned=pinned===n.dataset.songId?null:n.dataset.songId;activate(pinned);}});
+ document.addEventListener('song-bands-updated',()=>{
+  if(!nodes().some(n=>n.classList.contains('song-hit')&&n.dataset.songId===pinned))pinned=null;
+  reset();
+ });
+ document.addEventListener('scroll',()=>{
+  if(!lastPointer){tooltip.hidden=true;return;}
+  const {x,y}=lastPointer,n=hoverTarget({target:document.elementFromPoint(x,y),clientX:x,clientY:y});
+  if(n&&!n.disabled){activate(n.dataset.songId);show(n,x,y);}else reset();
+ },true);
+ window.addEventListener('blur',()=>{tooltip.hidden=true;});
+})();
+</script>'''
+
+
+def render(data, activities=None, songs=None):
     zone = ZoneInfo(data['timezone'])
     lo = datetime.fromisoformat(data['since']).timestamp()
     hi = datetime.fromisoformat(data['until']).timestamp()
@@ -104,7 +160,21 @@ def render(data, activities=None):
         if mode == 'stock' and points:
             last = points[-1]
             parts.append(f'<path d="M {x(last["t"])} {y(last["v"])} H {right}" '
-                         f'fill="none" stroke="{color}" stroke-width="2" stroke-dasharray="4 4"/>')
+                          f'fill="none" stroke="{color}" stroke-width="2" stroke-dasharray="4 4"/>')
+        # 背景命中层置于曲线下方，保留数据点原有悬停提示。
+        overlays = []
+        for song in songs or []:
+            for segment in song['segments']:
+                start, end = max(lo, segment['start']), min(hi, segment['end'])
+                if start < end:
+                    overlays.append(f'<rect class="song-hit" data-song-id="{esc(song["id"])}" '
+                                    f'data-song-title="{esc(song["title"])}" data-song-time="{clock(start)}–{clock(end)}" '
+                                    f'data-start="{start}" data-end="{end}" x="{x(start)}" y="{top}" '
+                                    f'width="{x(end)-x(start)}" height="{bottom-top}" '
+                                    f'aria-label="{esc(song["title"])} · {clock(start)}–{clock(end)}"></rect>')
+        if overlays:
+            insertion = next((i for i, part in enumerate(parts) if 'class="grid"' in part), len(parts))
+            parts[insertion:insertion] = ['<g data-song-layer="true">'+''.join(overlays)+'</g>']
         parts.append('</svg>')
         return ''.join(parts)
 
@@ -129,13 +199,20 @@ def render(data, activities=None):
         note = (f'最新 {points[-1]["v"]} · 推送于 {clock(points[-1]["t"])} · 总量（纵轴不从零起）'
                 if points else '无观测数据')
         cards.append(f'<section><h2>{name}<small>{note}</small></h2>{chart(name,points,color,"stock")}</section>')
+    song_list = ''
+    if songs:
+        chips = ''.join(f'<button class="song-chip" data-song-id="{esc(song["id"])}" '
+                        f'data-song-title="{esc(song["title"])}" data-song-time="{clock(song["segments"][0]["start"])}–{clock(song["segments"][-1]["end"])}">'
+                        f'{esc(song["title"])}<span>{clock(song["segments"][0]["start"])}–'
+                        f'{clock(song["segments"][-1]["end"])}</span></button>' for song in songs)
+        song_list = '<section id="songs"><h2>本场歌单</h2><p>悬停歌名高亮对应唱段；点按可固定，再点取消。只列已交叉核对的歌名。</p><div class="song-list">'+chips+'</div></section>'
     return ('<!doctype html><html lang="zh-CN"><meta charset="utf-8">'
             '<meta name="viewport" content="width=device-width,initial-scale=1">'
             f'<title>{esc(data["title"])} · 直播趋势</title><style>{STYLE}</style><main>'
             f'<h1>{esc(data["title"])} · 直播趋势</h1><p>{clock(lo,True)}—{clock(hi,True)} '
             f'（{esc(data["timezone"])}）<br>范围内已观测入场账号 {summary["unique_entry_uids"]:,} · '
             f'送礼事件 {summary["gift_events"]} · <a href="data.json" download>下载冻结数据</a></p>' +
-            ''.join(cards) + '<footer>点或柱悬停可查看数值。关注与粉丝团显示平台总量原值；'
+            ''.join(cards) + song_list + (SONG_SCRIPT if songs else '') + '<footer>点或柱悬停可查看数值。关注与粉丝团显示平台总量原值；'
             '点间沿用上一观测值，首点前不补值，末点后虚线延续。<br>'
             '入场在桶内按UID去重，跨桶可重复；匿名入场不计入人数，明细计数在JSON。'
             '送礼按订单/事件计次，含免费礼物、SC与上舰，不按件数或金额计数；'

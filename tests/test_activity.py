@@ -113,7 +113,7 @@ const input=JSON.parse(require('node:fs').readFileSync(0,'utf8'));
 const elements={};const layer={innerHTML:''};let blob;
 const document={getElementById(id){return elements[id]??=(
  {value:'all',textContent:'',innerHTML:'',handlers:{},addEventListener(k,f){this.handlers[k]=f;}});},
- querySelectorAll(){return [layer];},createElement(){return {click(){}};}};
+ querySelectorAll(selector){return selector==='.song-hit'?[]:[layer];},createElement(){return {click(){}};}};
 document.getElementById('activity-data').textContent=JSON.stringify(input.state);
 const context={document,console,Date,URL:{createObjectURL(b){blob=b;return 'blob:test';},revokeObjectURL(){}},
  Blob:class{constructor(parts){this.text=parts.join('');}},setTimeout(){}};
