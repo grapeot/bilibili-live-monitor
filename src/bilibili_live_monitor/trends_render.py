@@ -23,6 +23,8 @@ border:1px solid #d4e7da;background:#f5faf6;color:#183d29;cursor:pointer}
 box-sizing:border-box;padding:14px 18px;border:1px solid #8ccda3;border-radius:12px;
 background:#f5fff8;color:#123e25;box-shadow:0 8px 28px #17372530;line-height:1.4}
 .song-tooltip[hidden]{display:none}.song-tooltip strong{display:block;font-size:21px;font-weight:650}
+.activity-table{overflow-x:auto}table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:10px 12px;border-bottom:1px solid #e7edf4;white-space:nowrap}
 .song-tooltip span{display:block;font-size:14px;margin-top:5px;color:#496453}
 @media(max-width:600px){body{padding:12px}section{padding:12px 6px;overflow-x:auto}
 small{display:block;margin:7px 0 0}svg{min-width:680px}}'''
@@ -72,7 +74,8 @@ SONG_SCRIPT = '''<div id="song-tooltip" class="song-tooltip" role="status" hidde
 </script>'''
 
 
-def render(data, activities=None, songs=None):
+def render(data, activities=None, songs=None, *, charts=None, header=None, footer=None,
+           show_song_list=True, refresh_revision=None):
     zone = ZoneInfo(data['timezone'])
     lo = datetime.fromisoformat(data['since']).timestamp()
     hi = datetime.fromisoformat(data['until']).timestamp()
@@ -97,7 +100,7 @@ def render(data, activities=None, songs=None):
 
         def y(v):
             return bottom - (v-low)/(high-low)*(bottom-top)
-        parts = [f'<svg viewBox="0 0 1080 252" role="img" aria-label="{esc(name)}">']
+        parts = [f'<svg viewBox="0 0 1110 252" role="img" aria-label="{esc(name)}">']
         if activities is not None:
             parts.append('<g data-activity-layer="true">')
             for band in activities:
@@ -119,7 +122,8 @@ def render(data, activities=None, songs=None):
         for value in range(low, high+1, spacing):
             yy = y(value)
             parts.append(f'<path class="grid" d="M {left} {yy} H {right}"/>'
-                         f'<text x="52" y="{yy+4}" text-anchor="end">{value}</text>')
+                         f'<text data-axis="left" x="52" y="{yy+4}" text-anchor="end">{value}</text>'
+                         f'<text data-axis="right" x="{right+13}" y="{yy+4}" text-anchor="start">{value}</text>')
         for i in range(6):
             t = lo + (hi-lo)*i/5
             parts.append(f'<text x="{x(t)}" y="233" text-anchor="middle">{clock(t)[:5]}</text>')
@@ -179,8 +183,8 @@ def render(data, activities=None, songs=None):
         return ''.join(parts)
 
     cards = []
-    for field, name, color, mode in [('unique_entries', '入场流量', '#2563eb', 'line'),
-                                    ('gifts', '送礼频次', '#e79024', 'bar')]:
+    for field, name, color, mode in ([] if charts is not None else [('unique_entries', '入场流量', '#2563eb', 'line'),
+                                    ('gifts', '送礼频次', '#e79024', 'bar')]):
         points = []
         for bucket in summary['bins']:
             observed = bucket['raw_messages'] or bucket['entries'] or bucket['gifts']
@@ -193,31 +197,84 @@ def render(data, activities=None, songs=None):
         unit = f'每{data["bin_seconds"]}秒' + ('可识别入场人数（桶内去重）' if mode == 'line'
                                             else '送礼事件数（含SC，有订单ID时合并）')
         cards.append(f'<section><h2>{name}<small>{unit}</small></h2>{chart(name,points,color,mode)}</section>')
-    for field, name, color in [('followers', '关注总数', '#8b5cf6'), ('fans_club', '粉丝团人数', '#e2578b')]:
+    for field, name, color in ([] if charts is not None else [('followers', '关注总数', '#8b5cf6'), ('fans_club', '粉丝团人数', '#e2578b')]):
         points = [{'t': row['t'], 'v': row[field], 'label': f'{clock(row["t"],True)}：{row[field]}'}
                   for row in data['source']['stocks'] if row[field] is not None]
         note = (f'最新 {points[-1]["v"]} · 推送于 {clock(points[-1]["t"])} · 总量（纵轴不从零起）'
                 if points else '无观测数据')
         cards.append(f'<section><h2>{name}<small>{note}</small></h2>{chart(name,points,color,"stock")}</section>')
+    for spec in charts or []:
+        cards.append(f'<section data-chart="{esc(spec["field"])}"><h2>{esc(spec["name"])}'
+                     f'<small>{esc(spec["note"])}</small></h2>'
+                     f'{chart(spec["name"],spec["points"],spec["color"],spec["mode"])}</section>')
     song_list = ''
-    if songs:
+    if songs and show_song_list:
         chips = ''.join(f'<button class="song-chip" data-song-id="{esc(song["id"])}" '
                         f'data-song-title="{esc(song["title"])}" data-song-time="{clock(song["segments"][0]["start"])}–{clock(song["segments"][-1]["end"])}">'
                         f'{esc(song["title"])}<span>{clock(song["segments"][0]["start"])}–'
                         f'{clock(song["segments"][-1]["end"])}</span></button>' for song in songs)
         song_list = '<section id="songs"><h2>本场歌单</h2><p>悬停歌名高亮对应唱段；点按可固定，再点取消。只列已交叉核对的歌名。</p><div class="song-list">'+chips+'</div></section>'
+    default_footer = ('点或柱悬停可查看数值。关注与粉丝团显示平台总量原值；'
+             '点间沿用上一观测值，首点前不补值，末点后虚线延续。<br>'
+             '入场在桶内按UID去重，跨桶可重复；匿名入场不计入人数，明细计数在JSON。'
+             '送礼按订单/事件计次，含免费礼物、SC与上舰，不按件数或金额计数；'
+             '缺订单ID时按源事件键计数，不能保证合并同单盲盒结果。<br>'
+             '空心点、浅色柱为不足完整桶宽的首尾桶；无业务报文的空桶显示缺测，不填零。'
+             '灰带为长时间无业务报文的可疑缺口，不能据此断言停播或真实低流量。'
+             '所有横轴按接收时刻对齐。这是冻结快照，不自动刷新。')
+    default_header = (f'<p>{clock(lo,True)}—{clock(hi,True)} '
+             f'（{esc(data["timezone"])}）<br>范围内已观测入场账号 {summary["unique_entry_uids"]:,} · '
+             f'送礼事件 {summary["gift_events"]} · <a href="data.json" download>下载冻结数据</a></p>')
     return ('<!doctype html><html lang="zh-CN"><meta charset="utf-8">'
             '<meta name="viewport" content="width=device-width,initial-scale=1">'
-            f'<title>{esc(data["title"])} · 直播趋势</title><style>{STYLE}</style><main>'
-            f'<h1>{esc(data["title"])} · 直播趋势</h1><p>{clock(lo,True)}—{clock(hi,True)} '
-            f'（{esc(data["timezone"])}）<br>范围内已观测入场账号 {summary["unique_entry_uids"]:,} · '
-            f'送礼事件 {summary["gift_events"]} · <a href="data.json" download>下载冻结数据</a></p>' +
-            ('<p class="song-help">鼠标指向绿色区域可以看见唱的是什么歌（仅显示已识别歌名）；也可在下方歌单点选。</p>' if songs else '') +
-            ''.join(cards) + song_list + (SONG_SCRIPT if songs else '') + '<footer>点或柱悬停可查看数值。关注与粉丝团显示平台总量原值；'
-            '点间沿用上一观测值，首点前不补值，末点后虚线延续。<br>'
-            '入场在桶内按UID去重，跨桶可重复；匿名入场不计入人数，明细计数在JSON。'
-            '送礼按订单/事件计次，含免费礼物、SC与上舰，不按件数或金额计数；'
-            '缺订单ID时按源事件键计数，不能保证合并同单盲盒结果。<br>'
-            '空心点、浅色柱为不足完整桶宽的首尾桶；无业务报文的空桶显示缺测，不填零。'
-            '灰带为长时间无业务报文的可疑缺口，不能据此断言停播或真实低流量。'
-            '所有横轴按接收时刻对齐。这是冻结快照，不自动刷新。</footer></main></html>')
+            '<meta name="robots" content="noindex,nofollow,noarchive"><meta name="referrer" content="no-referrer">'
+            f'<title>{esc(data["title"])} · 直播趋势</title><style>{STYLE}</style>'
+            f'<main data-revision="{esc(refresh_revision or "")}">'
+            f'<h1>{esc(data["title"])} · 直播趋势</h1>' + (default_header if header is None else header) +
+            ('<p class="song-help">鼠标指向绿色区域可以看见唱的是什么歌（仅显示已识别歌名）。</p>' if songs else '') +
+            ''.join(cards) + song_list + (SONG_SCRIPT if songs or refresh_revision else '') +
+            '<footer>' + (default_footer if footer is None else footer) + '</footer></main>' +
+            (REFRESH_SCRIPT if refresh_revision else '') + '</html>')
+
+
+REFRESH_SCRIPT = '''<script>
+(()=>{let busy=false;
+ const synchronized=new WeakMap();
+ document.addEventListener('scroll',event=>{
+  const source=event.target;
+  if(!source.matches?.('section[data-chart]'))return;
+  const expected=synchronized.get(source);synchronized.delete(source);
+  if(expected!==undefined&&Math.abs(source.scrollLeft-expected)<=1)return;
+  const range=source.scrollWidth-source.clientWidth;
+  if(range<=0)return;
+  const position=Math.max(0,Math.min(1,source.scrollLeft/range));
+  document.querySelectorAll('section[data-chart]').forEach(target=>{
+   if(target===source)return;
+   const left=position*(target.scrollWidth-target.clientWidth);
+   if(Math.abs(target.scrollLeft-left)>1){target.scrollLeft=left;synchronized.set(target,target.scrollLeft);}
+  });
+ },true);
+ function latest(){requestAnimationFrame(()=>{
+  document.querySelectorAll('section[data-chart]').forEach(n=>{
+   n.scrollLeft=n.scrollWidth-n.clientWidth;synchronized.set(n,n.scrollLeft);
+  });
+ });}
+ async function refresh(){
+  if(document.hidden||busy)return;busy=true;
+  try{
+   const response=await fetch('index.html?t='+Date.now(),{cache:'no-store'});
+   if(!response.ok)throw new Error('refresh');
+   const next=new DOMParser().parseFromString(await response.text(),'text/html').querySelector('main');
+   const old=document.querySelector('main');
+   if(next&&next.dataset.revision!==old.dataset.revision){
+    next.querySelectorAll('script').forEach(n=>n.remove());
+    const tooltip=document.getElementById('song-tooltip');
+    if(tooltip){tooltip.hidden=true;next.querySelector('#song-tooltip')?.replaceWith(tooltip);}
+    old.replaceWith(next);document.dispatchEvent(new Event('song-bands-updated'));latest();
+   }
+  }catch(e){}finally{busy=false;}
+ }
+ latest();window.addEventListener('resize',latest);
+ setInterval(refresh,10000);document.addEventListener('visibilitychange',refresh);
+})();
+</script>'''

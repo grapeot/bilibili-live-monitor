@@ -8,6 +8,8 @@ from .activity import configure_parser as configure_activity
 from .activity import main as activity_main
 from .browser import Browser
 from .config import load_settings
+from .live_share_control import configure_parser as configure_live_share
+from .live_share_control import main as live_share_main
 from .offline_asr import configure_parser
 from .offline_asr import main as offline_asr_main
 from .rotation import configure_parser as configure_rotation
@@ -32,6 +34,7 @@ def main():
     configure_trends(commands)
     configure_activity(commands)
     configure_trailer(commands)
+    configure_live_share(commands)
     args = parser.parse_args()
     if args.command == 'offline-asr':
         return offline_asr_main(args)
@@ -43,6 +46,8 @@ def main():
         return activity_main(args)
     if args.command == 'trailer':
         return trailer_main(args)
+    if args.command == 'live-share':
+        return live_share_main(args)
     settings = load_settings()
     if args.command == 'serve':
         import uvicorn
