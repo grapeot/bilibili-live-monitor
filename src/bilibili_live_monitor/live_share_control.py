@@ -70,7 +70,7 @@ def load_config(path):
     return {**config, '_config_path': str(Path(path).resolve())}
 
 
-def initialize(args):
+def initialize(args, *, resume=False):
     workspace = args.workspace.resolve()
     database = args.database.resolve()
     if not database.is_file():
@@ -95,12 +95,20 @@ def initialize(args):
                                  'blind_gift_names': args.blind_gift_name,
                                  'exclude_guard_lamps': not args.include_guard_lamps}}
     validate_config(config)
-    if workspace.exists() and (not workspace.is_dir() or any(workspace.iterdir())):
-        raise ValueError('工作目录非空；必须为每场直播创建新目录')
+    if workspace.exists():
+        if not workspace.is_dir():
+            raise ValueError('工作目录不是目录')
+        allowed = {'config.json', 'annotations.json', 'verified_songs.json'}
+        allowed |= {name + '.tmp' for name in allowed}
+        if any(not resume or p.name not in allowed or not p.is_file() or p.is_symlink()
+               for p in workspace.iterdir()):
+            raise ValueError('工作目录非空；必须为每场直播创建新目录')
     workspace.mkdir(parents=True, exist_ok=True, mode=0o700)
     atomic_json(workspace / 'config.json', config)
-    atomic_json(workspace / 'annotations.json', {'reviews': [], 'completed_followups': [], 'song_requests': []})
-    atomic_json(workspace / 'verified_songs.json', [])
+    if not (workspace / 'annotations.json').exists():
+        atomic_json(workspace / 'annotations.json', {'reviews': [], 'completed_followups': [], 'song_requests': []})
+    if not (workspace / 'verified_songs.json').exists():
+        atomic_json(workspace / 'verified_songs.json', [])
     return {'config': str(workspace / 'config.json'), 'ai_enabled': config['ai_enabled'],
             'published': False, 'started': False}
 
@@ -111,9 +119,19 @@ def source_at_cutoff(config):
     cutoff = min(state.get('cutoff', state.get('last_live_at', epoch(config['start_utc']))), config['deadline'])
     if cutoff < epoch(config['start_utc']):
         raise ValueError('冻结上界早于本场开播')
-    source = scope_source(read_source(Path(config['database']), config['room_id'], config['start_utc']),
+    source = scope_source(read_session_source(config),
                           config['start_utc'], cutoff)
     return state, cutoff, source
+
+
+def read_session_source(config):
+    source = read_source(Path(config['database']), config['room_id'], config['start_utc'])
+    if config.get('offline_segments'):
+        path = Path(config['offline_segments']).resolve()
+        if not path.is_relative_to(Path(config['workspace']).resolve()) or 'public' in path.parts:
+            raise ValueError('离线转写须保存在本场私有工作区')
+        source['segments'] = json.loads(path.read_text())
+    return source
 
 
 def export_snapshot(config):

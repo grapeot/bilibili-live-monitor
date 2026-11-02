@@ -6,6 +6,7 @@ import json
 import time
 import uuid
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 from .likes import trigger_likes
 from .welcome import WelcomeDecision, correct_page, message_limit, observations, send_chat, welcome_messages
@@ -36,6 +37,9 @@ class Automation:
         self.tasks = {}
         self.lock = asyncio.Lock()
         self.loop = None
+        from .session_workflow import SessionWorkflows
+        self.workflows = SessionWorkflows(self, config.get('session_workflow', {}))
+        self.platform.session_workflow_rooms = set(self.rooms) if self.workflows.enabled else set()
         for row in self.state['likes'].values():
             if row['status'] in ('running', 'queued'):
                 row['status'] = 'interrupted'
@@ -77,6 +81,8 @@ class Automation:
              'welcome_running': 'welcome:'+rid in self.tasks}
             for rid, cfg in self.rooms.items()],
             'notifications': list(self.state['notifications'].values())[-20:],
+            'session_workflows': list(self.workflows.records.values())[-20:],
+            'workflow_errors': self.state.get('workflow_errors', {}),
             'likes': list(self.state['likes'].values())[-20:]}
 
     async def set_enabled(self, room_id, enabled):
@@ -129,6 +135,8 @@ class Automation:
                 for key, notification in self.state['notifications'].items():
                     if notification['status'] == 'pending' and 'mail:'+key not in self.tasks:
                         self.tasks['mail:'+key] = asyncio.create_task(self.send_notification(key))
+                if 'workflow:tick' not in self.tasks and self.workflows.enabled:
+                    self.tasks['workflow:tick'] = asyncio.create_task(self.workflows.tick())
                 self.save()
             except asyncio.CancelledError:
                 raise
@@ -161,9 +169,15 @@ class Automation:
         # 初次已离线只是基线；首次观察到在线则发“检测到开播”。
         if current == 'live' or previous == 'live':
             key = hashlib.sha256(f'{rid}:{row["session"]}:{current}'.encode()).hexdigest()
+            try:
+                live_start = datetime.strptime(row.get('live_start', ''), '%Y-%m-%d %H:%M:%S').replace(
+                    tzinfo=ZoneInfo('Asia/Shanghai')).astimezone(timezone.utc).isoformat()
+            except ValueError:
+                live_start = row.get('live_start', '')
             self.state['notifications'].setdefault(key, {
                 'id': key, 'room_id': rid, 'label': self.rooms[rid]['label'],
                 'event': current, 'observed_utc': datetime.now(timezone.utc).isoformat(),
+                'live_start': live_start,
                 'status': 'pending' if self.notification_command else 'not_configured'})
 
     def consume(self, rid):
@@ -244,11 +258,14 @@ class Automation:
         row = self.state['notifications'][key]
         row['status'] = 'sending'
         self.save()
-        event = '检测到开播' if row['event'] == 'live' else '确认下播'
-        payload = {**row, 'subject': f'{row["label"]} · {event}',
+        event = {'live': '检测到开播', 'offline': '确认下播', 'dashboard': '实时看板'}[row['event']]
+        row.setdefault('subject', f'{row["label"]} · {event}')
+        payload = {**row, 'subject': row['subject'],
                    'html': f'<p>{html.escape(row["label"])}：{event}</p>'
                            f'<p>观察时间（UTC）：{row["observed_utc"]}</p>'
-                           f'<p><a href="https://live.bilibili.com/{row["room_id"]}">打开直播间</a></p>'}
+                            f'<p><a href="https://live.bilibili.com/{row["room_id"]}">打开直播间</a></p>'}
+        if row['event'] == 'dashboard':
+            payload['html'] = f'<p>{html.escape(row["label"])} · 实时看板</p><p><a href="{html.escape(row["url"], quote=True)}">打开本场看板</a></p>'
         process = None
         try:
             process = await asyncio.create_subprocess_exec(*self.notification_command,
@@ -256,7 +273,10 @@ class Automation:
             output, _ = await asyncio.wait_for(process.communicate(json.dumps(payload).encode()), 90)
             row['status'] = 'accepted' if process.returncode == 0 else 'unknown'
             if process.returncode == 0:
-                row['receipt'] = json.loads(output).get('id')
+                receipt = json.loads(output)
+                row['receipt'] = receipt.get('id')
+                if receipt.get('message_id'):
+                    row['message_id'] = receipt['message_id']
         except (Exception, asyncio.CancelledError):
             row['status'] = 'unknown'
         finally:
@@ -325,7 +345,7 @@ class Automation:
             try:
                 await self.platform.reconcile_lock.acquire()
                 acquired = True
-                tasks = [t for k, t in self.tasks.items() if not k.startswith('mail:')]
+                tasks = [t for k, t in self.tasks.items() if not k.startswith(('mail:', 'workflow:'))]
                 for row in self.state['likes'].values():
                     if row['status'] == 'running':
                         row['status'] = 'cancelled'

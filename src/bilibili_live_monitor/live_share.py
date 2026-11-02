@@ -325,7 +325,7 @@ def render_snapshot(snapshot: dict) -> str:
                          (f' · {esc(item["request_song"])}（' + {'accepted': '已接单', 'performed': '已唱'}[item['request_stage']] + '）'
                           if item.get('request_song') else '') + '</li>'
                         for item in snapshot['followups'])
-    status = '本场已结束' if snapshot['phase'] == 'completed' else '直播中'
+    status = {'completed': '本场已结束', 'finalizing': '本场已结束，正在整理最终版', 'live': '直播中'}[snapshot['phase']]
     header = (f'<p>{clock(lo)}—{clock(hi)}（北京时间） · {status}<br>'
               f'更新于 {clock(hi)}</p>')
     footer = ('绿色：唱歌；其他内容不着色；灰色：暂无内容记录。'
@@ -361,7 +361,7 @@ def render_snapshot(snapshot: dict) -> str:
             'summary': {'gaps': [], 'unique_entry_uids': 0, 'gift_events': snapshot['counts']['gifts']}}
     revision = hashlib.sha256(json.dumps(snapshot, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
     return render(data, bands, songs, charts=charts, header=header, footer=footer,
-                  show_song_list=False, refresh_revision=revision)
+                  show_song_list=False, refresh_revision=revision if snapshot['phase'] != 'completed' else None)
 
 
 def atomic_json(path: Path, value: dict) -> None:

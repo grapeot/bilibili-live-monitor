@@ -29,6 +29,8 @@ description: 在Apple Silicon Mac运行B站常驻录制平台，通过AI控制�
 
 用户要求为一场直播建立每分钟更新的四图、歌名/点歌跟进和分段汇总时，见[单场实时共享看板](live-share.md)。使用 `bili-live live-share init/export/verify/register-song` 配置每场规则、核验来源和页面；可复用到不同主播，默认不启用AI或远端发布。
 
+用户要求固定监控自动为每场建看板、同线程通知URL、下播离线ASR并更新同一URL时，见[自动逐场工作流](session-workflow.md)。一次配置后由Automation与独立单场进程接力，默认关闭，不需逐场手动初始化。
+
 需要从整场直播制作2–3分钟引流预告时，见[直播引流预告片](trailer.md)：事件选择、源时间映射、隐私裁剪、`trailer render/verify`、剪点与独立审阅。真实精剪表和媒体留在私有输出目录。
 
 ## 环境与安装

@@ -46,7 +46,7 @@ def test_annotation_requires_current_text_fingerprint_and_strips_extra_fields():
 
 
 def test_terminal_requires_fresh_confirmed_offline_and_recording_stopped():
-    path = Path(__file__).parents[1] / 'scripts/live_share_watch.py'
+    path = Path(__file__).parents[1] / 'src/bilibili_live_monitor/live_share_watch.py'
     spec = importlib.util.spec_from_file_location('watch_for_test', path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -80,7 +80,7 @@ def test_next_session_segment_end_is_clipped_out():
 
 
 def test_missing_live_start_unknown_and_future_status_do_not_stop():
-    path = Path(__file__).parents[1] / 'scripts/live_share_watch.py'
+    path = Path(__file__).parents[1] / 'src/bilibili_live_monitor/live_share_watch.py'
     spec = importlib.util.spec_from_file_location('watch_more_test', path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -100,7 +100,7 @@ def test_missing_live_start_unknown_and_future_status_do_not_stop():
 
 def test_deadline_stops_even_when_api_unavailable(tmp_path, monkeypatch):
     import json
-    path = Path(__file__).parents[1] / 'scripts/live_share_watch.py'
+    path = Path(__file__).parents[1] / 'src/bilibili_live_monitor/live_share_watch.py'
     spec = importlib.util.spec_from_file_location('watch_deadline_test', path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -114,7 +114,7 @@ def test_deadline_stops_even_when_api_unavailable(tmp_path, monkeypatch):
 def test_live_api_failure_is_persisted_and_does_not_mark_completion(tmp_path, monkeypatch):
     import json
     import time
-    path = Path(__file__).parents[1] / 'scripts/live_share_watch.py'
+    path = Path(__file__).parents[1] / 'src/bilibili_live_monitor/live_share_watch.py'
     spec = importlib.util.spec_from_file_location('watch_failure_test', path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -126,7 +126,7 @@ def test_live_api_failure_is_persisted_and_does_not_mark_completion(tmp_path, mo
 
 
 def test_stop_intent_never_invokes_ai(monkeypatch):
-    path = Path(__file__).parents[1] / 'scripts/live_share_watch.py'
+    path = Path(__file__).parents[1] / 'src/bilibili_live_monitor/live_share_watch.py'
     spec = importlib.util.spec_from_file_location('watch_stop_test', path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -138,7 +138,7 @@ def test_cycle_old_live_confirmation_never_includes_later_events(tmp_path, monke
     import json
 
     from bilibili_live_monitor.live_share import epoch
-    path = Path(__file__).parents[1] / 'scripts/live_share_watch.py'
+    path = Path(__file__).parents[1] / 'src/bilibili_live_monitor/live_share_watch.py'
     spec = importlib.util.spec_from_file_location('watch_cross_session_test', path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -152,7 +152,7 @@ def test_cycle_old_live_confirmation_never_includes_later_events(tmp_path, monke
                  'asr_ready': True, 'queue_depth': 0}
     monkeypatch.setattr(module.time, 'time', lambda: now)
     monkeypatch.setattr(module, 'request', lambda url: platform if url.endswith('/platform') else api_state)
-    monkeypatch.setattr(module, 'read_source', lambda *args: {
+    monkeypatch.setattr(module, 'read_session_source', lambda *args: {
         'raw': [('2026-11-02T17:04:30Z', 'WATCHED_CHANGE', {'data': {'num': 999}})],
         'items': [('entry', '2026-11-02T17:04:30Z', {})], 'segments': []})
     config = {'workspace': str(tmp_path), 'database': 'unused', 'room_id': 'test', 'start_utc': START,
@@ -173,7 +173,7 @@ def test_ai_input_has_same_start_end_bounds(tmp_path, monkeypatch):
     from types import SimpleNamespace
 
     from bilibili_live_monitor.live_share import epoch
-    path = Path(__file__).parents[1] / 'scripts/live_share_watch.py'
+    path = Path(__file__).parents[1] / 'src/bilibili_live_monitor/live_share_watch.py'
     spec = importlib.util.spec_from_file_location('watch_ai_scope_test', path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -259,7 +259,7 @@ def test_ai_keeps_early_followup_evidence_and_backfills_legacy_labels(tmp_path, 
     from types import SimpleNamespace
 
     from bilibili_live_monitor.live_share import epoch
-    spec = importlib.util.spec_from_file_location('watch_history', Path(__file__).parents[1] / 'scripts/live_share_watch.py')
+    spec = importlib.util.spec_from_file_location('watch_history', Path(__file__).parents[1] / 'src/bilibili_live_monitor/live_share_watch.py')
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     result = SimpleNamespace(stdout='{}', stderr='', check_returncode=lambda: None)
@@ -365,7 +365,7 @@ def test_stop_api_failure_rebuilds_visible_html(tmp_path, monkeypatch):
     import json
 
     from bilibili_live_monitor.live_share import atomic_json, render_snapshot
-    spec = importlib.util.spec_from_file_location('watch_final_page', Path(__file__).parents[1] / 'scripts/live_share_watch.py')
+    spec = importlib.util.spec_from_file_location('watch_final_page', Path(__file__).parents[1] / 'src/bilibili_live_monitor/live_share_watch.py')
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     monkeypatch.setattr(module, 'request', lambda *a: (_ for _ in ()).throw(OSError('offline')))

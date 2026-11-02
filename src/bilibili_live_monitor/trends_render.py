@@ -229,7 +229,7 @@ def render(data, activities=None, songs=None, *, charts=None, header=None, foote
             '<meta name="viewport" content="width=device-width,initial-scale=1">'
             '<meta name="robots" content="noindex,nofollow,noarchive"><meta name="referrer" content="no-referrer">'
             f'<title>{esc(data["title"])} · 直播趋势</title><style>{STYLE}</style>'
-            f'<main data-revision="{esc(refresh_revision or "")}">'
+            f'<main data-revision="{esc(refresh_revision or "")}" data-refresh="{"live" if refresh_revision else "static"}">'
             f'<h1>{esc(data["title"])} · 直播趋势</h1>' + (default_header if header is None else header) +
             ('<p class="song-help">鼠标指向绿色区域可以看见唱的是什么歌（仅显示已识别歌名）。</p>' if songs else '') +
             ''.join(cards) + song_list + (SONG_SCRIPT if songs or refresh_revision else '') +
@@ -271,10 +271,13 @@ REFRESH_SCRIPT = '''<script>
     const tooltip=document.getElementById('song-tooltip');
     if(tooltip){tooltip.hidden=true;next.querySelector('#song-tooltip')?.replaceWith(tooltip);}
     old.replaceWith(next);document.dispatchEvent(new Event('song-bands-updated'));latest();
+    if(next.dataset.refresh==='static')clearInterval(timer);
    }
   }catch(e){}finally{busy=false;}
  }
  latest();window.addEventListener('resize',latest);
- setInterval(refresh,10000);document.addEventListener('visibilitychange',refresh);
+ const timer=setInterval(refresh,10000);document.addEventListener('visibilitychange',()=>{
+  if(document.querySelector('main')?.dataset.refresh!=='static')refresh();
+ });
 })();
 </script>'''
