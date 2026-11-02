@@ -10,6 +10,8 @@ from .offline_asr import configure_parser
 from .offline_asr import main as offline_asr_main
 from .rotation import configure_parser as configure_rotation
 from .rotation import main as rotation_main
+from .trends import configure_parser as configure_trends
+from .trends import main as trends_main
 
 
 def main():
@@ -23,11 +25,14 @@ def main():
     discover.add_argument('--limit', type=int, default=10, choices=range(1, 101))
     configure_parser(commands)
     configure_rotation(commands)
+    configure_trends(commands)
     args = parser.parse_args()
     if args.command == 'offline-asr':
         return offline_asr_main(args)
     if args.command == 'rotate-live':
         return rotation_main(args)
+    if args.command == 'trends':
+        return trends_main(args)
     settings = load_settings()
     if args.command == 'serve':
         import uvicorn

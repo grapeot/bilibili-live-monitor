@@ -49,6 +49,8 @@ Tailscale内访问可使用 `tailscale serve --bg --https=8447 http://127.0.0.1:
 
 ## 存储与接口
 
+直播中或结束后可运行 `bili-live trends build --db <monitor.sqlite3> --room 123456 --since '2030-01-01T10:00:00+08:00' --output <新的私有目录>`，生成入场流量、送礼频次、关注总数与粉丝团人数四图。数据只读、输出冻结、不影响录制；`bili-live trends verify --output <目录>` 可脱离源库复核。完整参数、隐私边界和统计口径见 [趋势分析子skill](skills/bilibili-live-monitor/trends.md)。
+
 ### 独立的录制、ASR和缩略图选项
 
 新增房间表单与 `POST /api/rooms` 支持三个独立选项：
