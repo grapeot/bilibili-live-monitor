@@ -79,7 +79,7 @@ def prepare(config):
     _, info = correction_context(root.parent, source)
     atomic_json(root / 'context.json', {'windows': windows, 'events': source['items'],
                 'evidence': followup_evidence(source), 'correction_context': info})
-    plan = {'id': ident, 'shards': shards, 'concurrency': config.get('final_concurrency', 4),
+    plan = {'id': ident, 'shards': shards, 'concurrency': config.get('final_concurrency', 10),
             'subagent': config.get('final_subagent', 'general')}
     atomic_json(path, plan)
     return plan
