@@ -253,7 +253,7 @@ def make_snapshot(source: dict, *, start: str, now: str, label: str, phase: str,
             return None
     for key in ('latest_transcript_at', 'latest_message_at'):
         safe_health[key] = safe_time(health.get(key))
-    from .activity_summary import summarize_activity, summarize_session
+    from .activity_summary import summarize_activity, summarize_gifters, summarize_session
     return {'schema_version': 1, 'label': label, 'session_start': start, 'updated_at': now,
             'phase': phase, 'series': {k: sorted(v.values()) for k, v in buckets.items()},
             'latest': latest, 'counts': counts, 'health': safe_health,
@@ -262,13 +262,15 @@ def make_snapshot(source: dict, *, start: str, now: str, label: str, phase: str,
             'followups': public_followups(source, start, annotations, followup_overrides, approved_songs, followup_rules),
             'activity_summary': summarize_activity(source, activity, upper, completed=phase == 'completed'),
             'session_summary': summarize_session(source),
+            'gift_summary': summarize_gifters(source),
             'notes': ['在线人数为平台上报口径；入场、礼物为本系统收到的事件数。',
-                      '歌唱与歌名是AI候选判断，不代表已完成听审；不公开原始转写或UID，仅显示灯牌跟进所需公开昵称。']}
+                       '歌唱与歌名是AI候选判断，不代表已完成听审；不公开原始转写或UID，仅显示送礼汇总与点歌跟进所需公开昵称。']}
 
 
-def render_snapshot(snapshot: dict) -> str:
+def render_snapshot(snapshot: dict, *, navigation=None) -> str:
     """实时页复用离线趋势页的 SVG、版式和悬浮交互。"""
     import html
+    from urllib.parse import urlsplit
     from zoneinfo import ZoneInfo
 
     from .trends_render import render
@@ -327,8 +329,16 @@ def render_snapshot(snapshot: dict) -> str:
                           if item.get('request_song') else '') + '</li>'
                         for item in snapshot['followups'])
     status = {'completed': '本场已结束', 'finalizing': '本场已结束，正在整理最终版', 'live': '直播中'}[snapshot['phase']]
+    if snapshot['phase'] == 'live':
+        status = '<span class="live-pill">'+status+'</span>'
     header = (f'<p>{clock(lo)}—{clock(hi)}（北京时间） · {status}<br>'
-              f'更新于 {clock(hi)}</p>')
+               f'更新于 {clock(hi)}</p>')
+    if navigation and Path(navigation).is_file():
+        home = json.loads(Path(navigation).read_text()).get('home_url', '')
+        parsed = urlsplit(home)
+        if parsed.scheme != 'https' or not parsed.hostname or parsed.username or parsed.password:
+            raise ValueError('场次主页必须为有效HTTPS地址')
+        header = f'<nav class="archive-nav"><a href="{esc(home)}">← 返回主页</a></nav>' + header
     footer = ('绿色：唱歌；其他内容不着色；灰色：暂无内容记录。'
               '<section id="followups"><h2>灯牌与盲盒点歌跟进</h2><ul>' +
               (followups or '<li>暂无灯牌或盲盒点歌记录</li>') + '</ul></section>')
@@ -349,6 +359,8 @@ def render_snapshot(snapshot: dict) -> str:
                '<tbody>' + (''.join(rows) or '<tr><td colspan="6">暂无已识别的内容片段</td></tr>') +
                '</tbody></table></div></section>')
     totals = snapshot.get('session_summary', {})
+    from .activity_summary import render_gifters
+    footer += render_gifters(snapshot.get('gift_summary', []))
     change = totals.get('followers_change')
     fans = '—' if change is None else f'{change:+d}' if change else '0'
     count = str(totals.get('gift_count', 0)) + ('+' if totals.get('gift_count_unknown') else '')

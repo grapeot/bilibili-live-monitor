@@ -353,7 +353,7 @@ class Monitor:
         reset_budget = False
         last_store = 0
         if room.get('asr_enabled', True):
-            audio_task = asyncio.create_task(self.capture_cycles(room, page, generation))
+            audio_task = asyncio.create_task(self.capture_audio(room, page, generation))
         try:
             await self.inspect_page(room, page)
             if room.get('record_mode', 'none') != 'none':
@@ -430,6 +430,29 @@ class Monitor:
             self.store.event('platform_action', {'at_utc': iso_ms(time.time()*1000),
                              'action': 'human_attention', 'room_id': room['room_id'], 'attention': attention})
 
+    async def capture_audio(self, room, page, generation):
+        failures = 0
+        while True:
+            try:
+                await self.capture_cycles(room, page, generation)
+                raise RuntimeError('audio_capture_ended')
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                if room.get('record_mode', 'none') == 'none':
+                    raise
+                # 音频采集与独立ffmpeg录像分开恢复；播放器更换不再截断录像。
+                failures += 1
+                room['audio_error'] = f'{type(error).__name__}: {error}'[:500]
+                self.store.room(room)
+                self.store.event('audio_capture_retry', {'room_id': room['room_id'],
+                                                        'attempt': failures, 'error': room['audio_error']})
+                await asyncio.sleep(min(30, 2 ** min(failures - 1, 5)))
+                try:
+                    await ensure_playing(page)
+                except Exception:
+                    continue
+
     async def capture_cycles(self, room, page, generation):
         room_id = room['room_id']
         seconds = 5
@@ -470,6 +493,8 @@ class Monitor:
                     self.stream_error(segment, segment['error'])
                     raise
                 self.submit(segment, pcm, generation)
+                if room.pop('audio_error', None):
+                    self.store.room(room)
                 offset += len(pcm)//2
                 if room.get('record_mode', 'none') == 'none':
                     # 短暂恢复不清零，连续有效采集60秒才重置失败预算。

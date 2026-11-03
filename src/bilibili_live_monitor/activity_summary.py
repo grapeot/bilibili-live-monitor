@@ -54,11 +54,7 @@ def gift_amount(gift):
     return None
 
 
-def observations(source):
-    stocks = sorted((epoch(at), data['data']['fans']) for at, command, data in source['raw']
-                    if command == 'ROOM_REAL_TIME_MESSAGE_UPDATE'
-                    and isinstance(data.get('data'), dict)
-                    and nonnegative_integer(data['data'].get('fans')) is not None)
+def gift_observations(source):
     gifts, seen = [], set()
     for index, (kind, at, data) in enumerate(source['items']):
         gift = data.get('gift')
@@ -73,8 +69,52 @@ def observations(source):
             continue
         seen.add(key)
         count = nonnegative_integer(gift.get('num'))
-        gifts.append((epoch(at), count, gift_amount(gift)))
+        uid = gift.get('sender_uid') or data.get('sender_uid')
+        gifts.append((epoch(at), count, gift_amount(gift), uid, str(data.get('author') or '')[:200]))
+    return gifts
+
+
+def observations(source):
+    stocks = sorted((epoch(at), data['data']['fans']) for at, command, data in source['raw']
+                    if command == 'ROOM_REAL_TIME_MESSAGE_UPDATE'
+                    and isinstance(data.get('data'), dict)
+                    and nonnegative_integer(data['data'].get('fans')) is not None)
+    gifts = [item[:3] for item in gift_observations(source)]
     return stocks, gifts
+
+
+def summarize_gifters(source):
+    """Group by private identity; publish only names and aggregate totals."""
+    people = {}
+    for at, count, amount, uid, name in gift_observations(source):
+        key = ('uid', str(uid)) if uid else ('unknown',)
+        row = people.setdefault(key, {'name': name if uid and name else
+                                     '未命名观众' if uid else '未识别观众（合计）',
+                                     'gift_count':0, 'gift_count_unknown':0,
+                                     'amount_milli':0, 'amount_unknown':0})
+        if uid and name:
+            row['name'] = name
+        row['gift_count'] += count or 0
+        row['gift_count_unknown'] += count is None
+        row['amount_milli'] += amount or 0
+        row['amount_unknown'] += amount is None
+    return [{'name':row['name'], 'gift_count':row['gift_count'],
+             'gift_count_unknown':row['gift_count_unknown'],
+             'amount_yuan':row['amount_milli']/1000, 'amount_unknown':row['amount_unknown']}
+            for row in sorted(people.values(), key=lambda item:-item['amount_milli'])]
+
+
+def render_gifters(rows):
+    import html
+
+    body = ''.join('<tr><td>'+html.escape(row['name'])+'</td><td>'+str(row['gift_count'])+
+                   ('+' if row['gift_count_unknown'] else '')+'</td><td>'+f'{row["amount_yuan"]:.2f}'+
+                   ('+' if row['amount_unknown'] else '')+'</td></tr>' for row in rows)
+    return ('<section id="gift-summary"><h2>每人送礼汇总</h2>'
+            '<div class="activity-table"><table><thead><tr><th>观众</th><th>礼物件数</th>'
+            '<th>累计金额（元）</th></tr></thead><tbody>'+ (body or '<tr><td colspan="3">暂无礼物记录</td></tr>')+
+            '</tbody></table></div><p>按礼物平台标价汇总，包含盲盒结果；非主播实收。'
+            '“+”表示另有金额或数量未知的礼物。</p></section>')
 
 
 def summarize_activity(source, activity, cutoff, *, completed=False):

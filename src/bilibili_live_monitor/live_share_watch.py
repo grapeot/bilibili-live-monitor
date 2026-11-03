@@ -104,7 +104,7 @@ def build(config, state, platform, api_state, now, upload=True):
     destination.mkdir(exist_ok=True)
     page = destination / 'index.html'
     temporary = page.with_suffix('.tmp')
-    temporary.write_text(render_snapshot(snapshot))
+    temporary.write_text(render_snapshot(snapshot, navigation=Path(config['workspace']) / 'navigation.json'))
     temporary.replace(page)
     atomic_json(destination / 'snapshot.json', snapshot)
     state['last_exported_at'] = iso(now)
@@ -262,7 +262,7 @@ def cycle(config, path, mode, upload=True):
                     atomic_json(saved, snapshot)
                     page = saved.parent / 'index.html'
                     temporary = page.with_suffix('.tmp')
-                    temporary.write_text(render_snapshot(snapshot))
+                    temporary.write_text(render_snapshot(snapshot, navigation=Path(config['workspace']) / 'navigation.json'))
                     temporary.replace(page)
                     try:
                         if upload and config.get('remote'):

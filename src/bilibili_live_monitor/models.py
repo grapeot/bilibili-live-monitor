@@ -42,6 +42,7 @@ class LikeSummary(BaseModel):
 
 
 class RoomResponse(BaseModel):
+    audio_error: str | None = None
     like_summary: LikeSummary | None = None
     reconnect_attempts: int = 0
     next_retry_utc: str | None = None

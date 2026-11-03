@@ -286,6 +286,24 @@ def test_live_song_gap_above_two_seconds_is_not_merged():
     assert render_snapshot(result).count('data-song-title="测试歌"') == 8
 
 
+def test_navigation_and_live_pill_survive_both_page_phases(tmp_path):
+    from bilibili_live_monitor.live_share import render_snapshot
+
+    navigation = tmp_path/'navigation.json'
+    navigation.write_text('{"home_url":"https://example.com/archive/"}')
+    result = snapshot({'raw':[], 'items':[], 'segments':[]})
+    live = render_snapshot(result, navigation=navigation)
+    assert 'href="https://example.com/archive/"' in live
+    assert '<span class="live-pill">直播中</span>' in live
+    result['phase'] = 'completed'
+    final = render_snapshot(result, navigation=navigation)
+    assert 'href="https://example.com/archive/"' in final
+    assert '<span class="live-pill">直播中</span>' not in final
+    navigation.write_text('{"home_url":"javascript:alert(1)"}')
+    with pytest.raises(ValueError, match='HTTPS'):
+        render_snapshot(result, navigation=navigation)
+
+
 def test_ai_keeps_early_followup_evidence_and_backfills_legacy_labels(tmp_path, monkeypatch):
     import json
     from types import SimpleNamespace

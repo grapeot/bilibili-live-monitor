@@ -131,7 +131,31 @@ def read_session_source(config):
         if not path.is_relative_to(Path(config['workspace']).resolve()) or 'public' in path.parts:
             raise ValueError('离线转写须保存在本场私有工作区')
         source['segments'] = json.loads(path.read_text())
+    else:
+        path = Path(config['workspace']) / 'live_backfill_segments.json'
+        if path.exists():
+            if path.is_symlink():
+                raise ValueError('直播回填须保存在本场私有工作区')
+            offline = json.loads(path.read_text())
+            source['segments'] = prefer_offline(source['segments'], offline)
     return source
+
+
+def prefer_offline(live, offline):
+    """只替换已完整覆盖的实时窗口，保留缺口及跨回填边界的实时证据。"""
+    spans = []
+    for row in sorted(offline, key=lambda s: epoch(s['start_utc'])):
+        start, end = epoch(row['start_utc']), epoch(row['end_utc'])
+        if end < start:
+            raise ValueError('离线窗口结束早于开始')
+        if spans and start <= spans[-1][1] + .001:
+            spans[-1][1] = max(spans[-1][1], end)
+        else:
+            spans.append([start, end])
+    retained = [row for row in live if not any(
+        start - .001 <= epoch(row['start_utc']) and epoch(row['end_utc']) <= end + .001
+        for start, end in spans)]
+    return sorted([*offline, *retained], key=lambda row: (epoch(row['start_utc']), row['seq']))
 
 
 def export_snapshot(config):
@@ -149,7 +173,7 @@ def export_snapshot(config):
     destination = workspace / 'public'
     destination.mkdir(exist_ok=True)
     temporary = destination / 'index.html.tmp'
-    temporary.write_text(render_snapshot(snapshot))
+    temporary.write_text(render_snapshot(snapshot, navigation=workspace / 'navigation.json'))
     temporary.replace(destination / 'index.html')
     atomic_json(destination / 'snapshot.json', snapshot)
     return {'output': str(destination), 'published': False, 'phase': snapshot['phase'], 'cutoff': iso(cutoff)}

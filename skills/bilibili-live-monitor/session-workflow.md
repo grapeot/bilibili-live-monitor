@@ -79,6 +79,17 @@ python -m bilibili_live_monitor.broadcast_email --env-file /PRIVATE/notify.env -
 
 ## 恢复与验收
 
+| 操作 | 命令/文件 | 约束 |
+|---|---|---|
+| 直播中回填预检 | `python -m bilibili_live_monitor.session_backfill --config /PRIVATE/sessions/SESSION/config.json --dry-run` | 只选已封口素材，不推进场次状态 |
+| 执行或续跑该回填批次 | 同上去掉 `--dry-run` | `live_backfill/manifest.json`固定批次上界；重复命令续跑同一批，不扩展上界 |
+| 直播回填输出 | `live_backfill_segments.json` | 私有；自动优先于完整覆盖的实时窗口，缺口和跨界实时证据保留 |
+| 健康巡检预检 | `python -m bilibili_live_monitor.session_health --config /PRIVATE/sessions/SESSION/config.json --dry-run` | 不发起恢复或调度 |
+| 检查并建立五分钟巡检链 | 同上改为 `--schedule` | 单场锁、单pending；completed/attention即停；默认由runner自动建立 |
+| 健康记录 | `health.json`、`health_history.jsonl` | 与五分钟内容AI复核独立，不创建AI会话；失败录制仅有界resume，不覆盖操作者停用 |
+
+`health_enabled:false`可在本场私有config禁用巡检。调度故障独立记入`health_schedule_error`，publisher继续运行并在后续周期补链。音频采集隔离修改属于常驻采集代码，需采集服务加载新版本；仅重载publisher不能使其生效。
+
 单场文件锁排除重复实例。backend 恢复后按 label 找已有进程，子进程恢复原工作区；离线 ASR 保留已完成文件，终审继续使用该场的会话。收尾超时或超过复核预算时保留 `attention`、错误及现有页面，不报告最终成功。
 
 私有 `workflow.json` 记录阶段、URL就绪、错误和收尾进度，`state.json` 记录看板截止点；`/api/automation` 提供逐场工作流状态。验收应覆盖断线重启不重复建场、同线程通知、下播先停止AI、源文件封口、离线转写进入页面、原URL不变和最终停止轮询。合成测试不代替真实部署、邮件送达与模型质量验收。

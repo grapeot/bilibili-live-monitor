@@ -3,7 +3,9 @@ import pytest
 from bilibili_live_monitor.activity_summary import (
     content_blocks,
     gift_amount,
+    render_gifters,
     summarize_activity,
+    summarize_gifters,
     summarize_session,
 )
 from bilibili_live_monitor.live_share import epoch, iso, make_snapshot, render_snapshot
@@ -95,4 +97,36 @@ def test_session_scope_watched_and_public_html_module_order():
     assert total['gift_count'] == 1 and total['gift_amount_yuan'] == 1
     assert 'private-uid' not in str(result)
     html = render_snapshot(result)
-    assert html.index('id="followups"') < html.index('id="activity-summary"') < html.index('id="session-summary"')
+    assert html.index('id="followups"') < html.index('id="activity-summary"') < html.index('id="gift-summary"') < html.index('id="session-summary"')
+
+
+def test_gifters_group_by_identity_dedupe_and_match_session_totals():
+    first = gift(10, 'one', count=2, amount=5000)
+    first[2]['author'] = '<合成观众>'
+    second = gift(20, 'two', count=1, amount=2000)
+    second[2]['author'] = '改名观众'
+    third = gift(30, 'three', count=3, amount=9000, sender_uid='other-private-uid')
+    third[2]['author'] = '改名观众'
+    source = {'raw':[], 'segments':[], 'items':[first, first, second, third]}
+    rows = summarize_gifters(source)
+    assert [row['amount_yuan'] for row in rows] == [9, 7]
+    assert len(rows) == 2 and rows[0]['name'] == rows[1]['name'] == '改名观众'
+    assert sum(row['gift_count'] for row in rows) == summarize_session(source)['gift_count'] == 6
+    assert sum(row['amount_yuan'] for row in rows) == summarize_session(source)['gift_amount_yuan'] == 16
+    assert 'uid' not in str(rows)
+    rows[0]['name'] = '<script>alert(1)</script>'
+    html = render_gifters(rows)
+    assert '<script>' not in html and '&lt;script&gt;' in html
+
+
+def test_gifters_keep_free_unknown_guard_and_superchat_values():
+    source = {'raw':[], 'segments':[], 'items':[
+        gift(1, 'guard', count=1, event_type='GUARD_BUY', guard_price_gold=198000),
+        gift(2, 'sc', count=1, event_type='SUPER_CHAT_MESSAGE', price_yuan=30),
+        gift(3, 'free', count=2, coin_type='silver'),
+        gift(4, 'unknown', count=None, amount=None, sender_uid=None)]}
+    rows = summarize_gifters(source)
+    assert sum(row['amount_yuan'] for row in rows) == 228
+    assert sum(row['amount_unknown'] for row in rows) == 1
+    assert sum(row['gift_count_unknown'] for row in rows) == 1
+    assert rows[-1]['name'] == '未识别观众（合计）'

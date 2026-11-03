@@ -12,6 +12,9 @@ margin:16px 0;box-shadow:0 4px 16px #18243b05}h2{font-size:18px;margin:0 0 12px}
 small{font-size:12px;color:#69788d;font-weight:400;margin-left:16px}svg{width:100%;display:block}
 svg text{fill:#748094;font-size:12px}.grid{stroke:#e7edf4;stroke-width:1}a{color:#2563eb}
 footer{margin:20px 0;font-size:13px;color:#617089;line-height:1.8}
+.archive-nav{margin:0 0 12px}.archive-nav a{text-decoration:none;font-weight:600}
+.live-pill{display:inline-flex;align-items:center;gap:7px;padding:4px 12px;border-radius:999px;background:#dbeafe;border:1px solid #93c5fd;color:#1d4ed8;font-weight:700;line-height:1.4}
+.live-pill::before{content:"";width:7px;height:7px;border-radius:50%;background:#2563eb;box-shadow:0 0 0 3px #2563eb18}
 .song-hit{fill:transparent;stroke:transparent;pointer-events:all}
 .song-hit.song-active{fill:#16a34a;fill-opacity:.22;stroke:#15803d;stroke-width:1.5}
 .song-list{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px}
