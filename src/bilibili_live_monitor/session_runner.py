@@ -12,7 +12,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 
 from . import live_share_watch as watch
-from .live_share import atomic_json, fingerprint, iso
+from .live_share import atomic_json, iso
 from .live_share_control import (
     export_snapshot,
     load_config,
@@ -177,13 +177,14 @@ def advance(config, state, now):
         export_snapshot(config)
         report = verify_local(config)
         source = read_session_source(config)
+        from .session_finalize import reviewed as is_reviewed
+        from .transcript_corrections import correction_context
+        corrections, _ = correction_context(workspace, source)
         reviews = json.loads((workspace / 'annotations.json').read_text()).get('reviews', [])
-        reviewed = {r.get('seq'): r.get('fingerprint') for r in reviews
-                    if isinstance(r, dict) and r.get('investigation_version') == 2
-                    and r.get('label') in ('singing', 'speaking')
-                    and r.get('music_source') in ('probable_live', 'recording', 'uncertain', 'none')}
-        remaining = sum(s.get('is_final') and bool(s.get('text')) and reviewed.get(s['seq']) != fingerprint(s)
-                        for s in source['segments'])
+        reviewed = {r.get('seq'): r for r in reviews if isinstance(r, dict)}
+        remaining = sum(s.get('is_final') and bool(s.get('text')) and not is_reviewed(
+                         reviewed.get(s['seq']), {**s, **corrections.get(s['seq'], {})})
+                         for s in source['segments'])
         state.update(unreviewed_windows=remaining, unpublished_songs=report['unpublished_songs'])
         if not remaining and not report['unpublished_songs']:
             state['stage'] = 'finalizing'
@@ -201,6 +202,10 @@ def advance(config, state, now):
         if config.get('finalize_parallel'):
             from .session_finalize import finish
             finish(config)  # 所有写入者停止后，重验实际待发布内容。
+        else:
+            from .session_finalize import corrections
+            if corrections(config)['needs_review']:
+                raise ValueError('转写校正尚未完成复核，不能发布最终版')
         export_snapshot(config)
         verify_local(config)
         watch.publish(config, workspace / 'public')

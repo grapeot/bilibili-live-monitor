@@ -174,16 +174,19 @@ def test_media_selection_excludes_previous_and_next_broadcast(tmp_path):
 
 
 def test_final_publish_stays_same_url_and_only_happens_after_verification(tmp_path, monkeypatch):
+    from bilibili_live_monitor import session_finalize
     config = {'workspace': str(tmp_path), 'url': 'https://example.org/s/stable/'}
     state = {'stage': 'finalizing', 'final_session': 'owned-final'}
     events = []
     monkeypatch.setattr(runner, 'stop_ai', lambda *a, **k: events.append('stop') or True)
+    monkeypatch.setattr(session_finalize, 'corrections', lambda *a:
+                        events.append('corrections') or {'needs_review': []})
     monkeypatch.setattr(runner, 'export_snapshot', lambda *a: events.append('export'))
     monkeypatch.setattr(runner, 'verify_local', lambda *a: events.append('verify'))
     monkeypatch.setattr(runner.watch, 'publish', lambda *a: events.append('publish'))
     monkeypatch.setattr(runner, 'verify_remote', lambda c: events.append(c['url']))
     runner.advance(config, state, 100)
-    assert events == ['stop', 'export', 'verify', 'publish', 'https://example.org/s/stable/']
+    assert events == ['stop', 'corrections', 'export', 'verify', 'publish', 'https://example.org/s/stable/']
     assert state['stage'] == 'completed'
 
 

@@ -186,7 +186,8 @@ def verify_snapshot(config):
     page = (public / 'index.html').read_text()
     errors = []
     forbidden = {'uid', 'sender_uid', 'text', 'evidence', 'fingerprint', 'source_key',
-                 'reviews', 'song_requests', 'database', 'workspace', 'opencode_python'}
+                  'reviews', 'song_requests', 'database', 'workspace', 'opencode_python',
+                  'corrected_text', 'correction_id', 'correction_reason', 'correction_evidence'}
     def check(value):
         if isinstance(value, dict):
             errors.extend('private_field:' + key for key in value if key in forbidden)

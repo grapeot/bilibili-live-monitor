@@ -69,6 +69,8 @@ python -m bilibili_live_monitor.broadcast_email --env-file /PRIVATE/notify.env -
 
 新开播恢复该房间实时 ASR。本场显式更新 policy 可以降级，跨重启保留该选择，下一场再恢复；不启用自由聊天或点赞。独立 `update_periodic` 会话使用完整模型名，经过 OpenCode 项目校验和 dry-run preflight，不启动或重启 OpenCode 服务。程序每分钟更新看板，每五分钟向同一会话追加复核；busy 时跳过当轮。歌曲查证、灯牌/盲盒和隐私规则沿用实时看板契约。
 
+五分钟复核在核实歌词、歌名或前后文后，可回溯纠正本场旧ASR。校正版写入私有`transcript_corrections.json`，绑定原稿指纹、原因和确切来源引文；不改原始转写。后续AI输入同时提供原文与有效校正版，新校正影响的旧窗口重新复核。原稿被回填替换时，不盲目迁移旧校正，重新查证后再采用；校正与来源均不公开。这里只做文字纠错，不补写缺失歌词或把推断改成原话。
+
 两次新鲜离线确认且录制停止、明确换场或达到时长上限时，冻结本场上界并停止实时派发，确认本场专属 AI 已停止。固定监控主服务继续运行。页面显示本场结束、正在整理最终版，并继续等待最终产物。
 
 本场文件停止变化至少 `seal_seconds` 后，读取本场命名时间范围内的录制源，运行无 VAD 的离线 ASR。源文件只读，转写独立保存在工作区，不覆盖采集数据库。墙钟映射采用文件 UTC 加前序媒体时长的估计，不宣称精确字幕对齐；探测失败项会重新探测，全部选中源文件完成后才能进入终审。不可恢复的媒体进入 `attention`，不把部分稿当作全场完成。
@@ -76,6 +78,8 @@ python -m bilibili_live_monitor.broadcast_email --env-file /PRIVATE/notify.env -
 另建 `finalize` 总会话，项目归属使用 `opencode_project`，只向它提交一次完整收尾任务。默认按30分钟分片，前后各60秒上下文，最多4个子任务并行；`final_subagent`须为目标服务实际可用的agent，默认general继承总会话模型。子任务只写独立结果文件，总会话统一合并并处理跨片点歌、未登记歌名。总会话的任务清单和子会话关系用于观察进度。
 
 `session_finalize merge --config ...`校验分片身份、指纹和完整覆盖后统一合并；`session_finalize finish --config ...`复核所有窗口及歌名登记后生成完成标记。会话暂时idle不等于完成，程序不会因此再追加一轮。AI复核完成后，程序在同一URL发布并验证最终页；总会话不能提前宣称页面已发布。`finalize_parallel:false`保留原逐批模式，`final_review_batches`仅用于该兼容模式。
+
+终审也执行ASR回溯纠错：分片提出有来源的局部候选，总会话统一审核并合并私有`transcript_corrections.json`。以当前离线窗口指纹重新定位，不将实时校正按序号套用；原稿与冻结输入不修改。运行`python -m bilibili_live_monitor.session_finalize corrections --config ...`查看有效校正、失效原因与待重审窗口。校正影响的窗口须重新判断歌名、唱聊及声源，并记录当前`correction_id`；未完成时`finish`拒绝收尾。完成标记也绑定校正版本，校正新增、变化或撤销后不可沿用旧完成状态。
 
 ## 恢复与验收
 

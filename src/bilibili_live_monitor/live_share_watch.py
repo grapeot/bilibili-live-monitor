@@ -22,6 +22,7 @@ from bilibili_live_monitor.live_share import (
 )
 from bilibili_live_monitor.live_share_control import load_config, read_session_source
 from bilibili_live_monitor.song_sources import verified_titles
+from bilibili_live_monitor.transcript_corrections import correction_context, correction_prompt, review_window
 
 
 def request(url, value=None):
@@ -132,14 +133,18 @@ def ai_once(config, state, source, now, *, final=False):
                  if isinstance(r, dict) and r.get('investigation_version') == 2 and r.get('music_source') in
                 {'probable_live', 'recording', 'uncertain', 'none'}}
     all_segments = [s for s in source['segments'] if s.get('is_final') and s.get('text')]
+    corrections, correction_info = correction_context(workspace, source)
     known_titles = set(config.get('approved_songs', [])) | set(verified_titles(workspace))
     old_reviews = {r.get('seq'): r for r in previous.get('reviews', []) if isinstance(r, dict)}
     def priority(segment):
         old = old_reviews.get(segment['seq'], {})
         unresolved = (old.get('music_source') == 'uncertain'
-                      or bool(old.get('song')) and old['song'] not in known_titles)
+                       or bool(old.get('song')) and old['song'] not in known_titles
+                       or old.get('correction_id') != corrections.get(segment['seq'], {}).get('correction_id'))
         return (not unresolved, segment['start_utc'])
-    unreviewed = sorted((s for s in all_segments if reviewed.get(s['seq']) != fingerprint(s)), key=priority)[:80]
+    unreviewed = sorted((s for s in all_segments if reviewed.get(s['seq']) != fingerprint(s)
+                        or old_reviews.get(s['seq'], {}).get('correction_id') !=
+                        corrections.get(s['seq'], {}).get('correction_id')), key=priority)[:80]
     segments = list({s['seq']: s for s in unreviewed + all_segments[-40:]}.values())
     candidates = followup_candidates(source, config['start_utc'], config.get('followup_rules'))
     overrides = config.get('followup_overrides', {})
@@ -163,11 +168,11 @@ def ai_once(config, state, source, now, *, final=False):
                 and isinstance(row.get('song'), str) and row['song'] and row['song'] not in known_titles):
             unpublished.setdefault(row['song'], [])
     atomic_json(workspace / 'full_context.json', {'evidence': evidence, 'followups': candidates,
-        'windows': [{'seq': s['seq'], 'start': s['start_utc'], 'end': s['end_utc'],
-                     'text': s['text'], 'fingerprint': fingerprint(s)} for s in all_segments]})
+        'correction_context': correction_info,
+        'windows': [review_window(s, corrections) for s in all_segments]})
     atomic_json(workspace / 'ai_input.json', {'updated_at': iso(now), 'windows': [
-        {'seq': s['seq'], 'start': s['start_utc'], 'end': s['end_utc'], 'text': s['text'],
-         'fingerprint': fingerprint(s)} for s in segments],
+        review_window(s, corrections) for s in segments],
+        'correction_context': correction_info,
         'followups': candidates,
         'unpublished_songs': [{'song': title, 'seqs': seqs} for title, seqs in unpublished.items()],
         'followup_evidence': retained})
@@ -182,7 +187,7 @@ def ai_once(config, state, source, now, *, final=False):
 已核验歌名：{json.dumps(list(config.get('approved_songs', [])) + list(verified_titles(workspace)), ensure_ascii=False)}。
 优先处理input.unpublished_songs：这些歌名虽已识别，却因没有有效来源登记而仍在页面显示待确认。即使是熟悉的常见歌曲，也须登记来源；不能把填了reviews.song当成已经显示。复用已有搜索结果，剩余项按搜索额度逐轮补齐，不要遗漏。
 新歌名经公开页面标题和歌词核验后，用以下命令登记（自行替换并正确引用参数）：{registration} --title '确切歌名' --source 'CLI返回的完整结果JSON路径' --result-index 0。索引从0开始，页面title须包含确切歌名且有正文。该工具会在私有song_sources目录保存来源并锁内合并verified_songs.json，不要手工覆盖整个登记文件。不能把搜索词直接当答案；不改config白名单。
-仅写上述歌名来源文件及 {workspace / 'annotations.json'}，临时文件原子替换。保留其他seq，本批seq覆盖。每处理10–20窗口立即合并保存，避免思考完却没落盘。新旧窗口复核后都加investigation_version=2；不能未读就全局补这个字段。因本轮搜索额度用完尚未调查的疑难项，不加该字段，留待下轮。
+仅写上述歌名来源文件、私有transcript_corrections.json及 {workspace / 'annotations.json'}，临时文件原子替换。保留其他seq，本批seq覆盖。每处理10–20窗口立即合并保存，避免思考完却没落盘。新旧窗口复核后都加investigation_version=2；不能未读就全局补这个字段。因本轮搜索额度用完尚未调查的疑难项，不加该字段，留待下轮。
 JSON为 {{"updated_at":"{iso(now)}","reviews":[{{"seq":1,"fingerprint":"从input原样复制","label":"speaking","music_source":"none","song":null,"confidence":"low","investigation_version":2}}],"completed_followups":[{{"id":"程序提供的followup.id","evidence":["程序提供的evidence.id"]}}],"song_requests":[{{"id":"followup.id","song":"确切歌名","stage":"accepted或performed","evidence":["请求与回应或演唱的证据id"]}}]}}。
 灯牌与盲盒名单由程序按本场规则{json.dumps(config.get('followup_rules', {}), ensure_ascii=False)}基于实际送礼事件生成，同单结果已去重。不得新建名单、改名字、改赠礼资格。所有弹幕可用来查上下文，但不可把其他人的请求归给该观众。
 只有明确同一位观众已点歌并得到主播确认，或主播明确已为其演唱/完成，才加入completed_followups。只是感谢礼物、打招呼、泛指有人点歌不算完成。不确定保留待办。
@@ -192,6 +197,7 @@ human_status中的done不可撤回；尚未演唱时，awaiting_response表示�
 完成判断必须引用该项送礼之后的确切证据id；不复制对话。保留以前仍有效的完成项，并合并新项；没有完成就保留空数组。
 不要把原文、昵称或推理写入annotations。调查过程和未解决原因可另写本地 {workspace / 'investigation_notes.json'}，不公开。完成后简述复核窗口数、新歌名、实际追踪成功数及剩余缺哪条证据。外部负责调度，你不创建或延续任务。
 '''
+    prompt += correction_prompt(workspace)
     if final:
         prompt += '\n本轮为下播后的离线全量转写复核，继续上述同场证据规则，优先处理所有尚未审阅窗口，每10–20项落盘；本轮结束必须完成input.windows中的实际复核，不创建定时任务。\n'
     prompt_path = workspace / 'ai_prompt.md'
