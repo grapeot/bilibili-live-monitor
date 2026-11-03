@@ -97,11 +97,14 @@ class Platform:
         self.status_task = self.guard_task = None
         self.next_status_check = 0
         self.status_refused = saved.get('status_refused')
+        self.session_workflow_rooms = set()
+        self.session_asr = saved.get('session_asr', {})
 
     def save(self):
         self.store.save_control('platform', {'policy': self.policy.model_dump(), 'revision': self.revision,
                                             'candidates': self.candidates,
-                                            'discovery_blocked': self.discovery_blocked,
+                                             'discovery_blocked': self.discovery_blocked,
+                                             'session_asr': self.session_asr,
                                             'status_refused': self.status_refused})
 
     def event(self, action, **data):
@@ -118,6 +121,9 @@ class Platform:
             if any(url not in self.candidates for url in policy.fixed_rooms):
                 raise ValueError('固定房间必须先导入候选')
         self.policy = policy
+        # 显式策略更新可临时降级本场ASR；下一次新开播才自动恢复。
+        for row in self.session_asr.values():
+            row['enabled'] = None
         self.next_status_check = 0
         self.revision += 1
         self.save()
@@ -242,6 +248,9 @@ class Platform:
             candidate.update(room_id=canonical, anchor_uid=str(row.get('uid') or ''),
                              title=row.get('title') or candidate['title'],
                              live_start=str(row.get('live_time') or row.get('live_start_time') or ''))
+            if (state == 1 and canonical in self.session_workflow_rooms and candidate['live_start']
+                    and self.session_asr.get(canonical, {}).get('start') != candidate['live_start']):
+                self.session_asr[canonical] = {'start': candidate['live_start'], 'enabled': True}
             candidate['alias_duplicate'] = canonical in seen
             candidate['blocked_alias'] = canonical in blocked_ids
             seen.add(canonical)
@@ -361,6 +370,15 @@ class Platform:
         self.save()
         self.event('source_failed', url=candidate['url'], error=error, blocked=candidate['blocked'])
 
+    def capture_options(self, candidate):
+        options = self.policy.model_dump(exclude={'enabled', 'target_rooms', 'mode', 'fixed_rooms'})
+        rid = candidate.get('room_id')
+        override = self.session_asr.get(rid, {})
+        if (rid in self.session_workflow_rooms and override.get('enabled') is True
+                and override.get('start') == candidate.get('live_start')):
+            options['asr_enabled'] = True
+        return options
+
     async def launch(self, candidate):
         previous = self.retry_room(candidate)
         if previous and 'reconnect_attempts' in previous:
@@ -369,7 +387,7 @@ class Platform:
         self.save()
         try:
             old = next((r for r in self.store.rooms() if r['room_id'] == candidate.get('room_id')), {})
-            options = self.policy.model_dump(exclude={'enabled', 'target_rooms', 'mode', 'fixed_rooms'})
+            options = self.capture_options(candidate)
             room = await self.monitor.add(candidate['url'], self.settings.chunk_seconds,
                                           retry_attempts=candidate['attempts'], **options)
             candidate['room_id'] = room['room_id']
@@ -468,8 +486,7 @@ class Platform:
                 self.launching.pop(url)
                 excess = max(0, excess-1)
         for url, rid in reversed(list(self.active.items())):
-            options_changed = any(rooms.get(rid, {}).get(k) != v for k, v in
-                                  self.policy.model_dump(exclude={'enabled', 'target_rooms', 'mode', 'fixed_rooms'}).items())
+            options_changed = any(rooms.get(rid, {}).get(k) != v for k, v in self.capture_options(self.candidates[url]).items())
             if (len(self.monitor.tasks)>target or self.candidates[url]['blocked'] or options_changed
                     or (fixed and (url not in self.fixed_urls() or self.candidates[url].get('blocked_alias')))):
                 await self.monitor.stop(rid)
