@@ -294,7 +294,8 @@ def render_snapshot(snapshot: dict) -> str:
         start, end = epoch(item['start']), epoch(item['end'])
         bands.append({'start': start, 'end': end, 'label': 'singing'})
         if item['song']:
-            if songs and songs[-1]['title'] == item['song'] and songs[-1]['segments'][-1]['end'] >= start - 1:
+            # ASR slice timestamps may differ slightly at the same performance boundary.
+            if songs and songs[-1]['title'] == item['song'] and songs[-1]['segments'][-1]['end'] >= start - 2:
                 songs[-1]['segments'][-1]['end'] = max(end, songs[-1]['segments'][-1]['end'])
             else:
                 songs.append({'id': f'song-{len(songs)}', 'title': item['song'],
