@@ -254,6 +254,23 @@ def test_live_renderer_reuses_four_charts_singing_and_gaps():
     assert 'data-song-title="测试歌"' not in render_snapshot(snapshot(source, {'reviews': [review]}))
 
 
+def test_live_song_slices_merge_but_keep_repeats_and_other_songs():
+    from bilibili_live_monitor.live_share import iso, render_snapshot
+
+    result = snapshot({'raw': [], 'items': [], 'segments': []})
+    from bilibili_live_monitor.live_share import epoch
+    start = epoch(START)
+    result['activity'] = [
+        {'start': iso(start+a), 'end': iso(start+b), 'label': 'singing',
+         'music_source': 'probable_live', 'song': title}
+        for a, b, title in [(0,30,'测试歌'), (30.018,60,'测试歌'),
+                            (90,120,'测试歌'), (120,150,'另一首'), (150,180,'测试歌')]]
+    page = render_snapshot(result)
+    assert page.count('data-song-title="测试歌"') == 12  # Three performances in four charts.
+    assert page.count('data-song-title="另一首"') == 4
+    assert 'data-song-time="01:00:00–01:01:00"' in page
+
+
 def test_ai_keeps_early_followup_evidence_and_backfills_legacy_labels(tmp_path, monkeypatch):
     import json
     from types import SimpleNamespace

@@ -54,12 +54,14 @@ SONG_SCRIPT = '''<div id="song-tooltip" class="song-tooltip" role="status" hidde
    const r=n.getBoundingClientRect();return e.clientX>=r.left&&e.clientX<=r.right&&e.clientY>=r.top&&e.clientY<=r.bottom;
   });
  }
- document.addEventListener('pointermove',e=>{lastPointer={x:e.clientX,y:e.clientY};const n=hoverTarget(e);if(n&&!n.disabled){activate(n.dataset.songId);show(n,e.clientX,e.clientY);}else reset();});
+ document.addEventListener('pointermove',e=>{if(e.pointerType==='touch')return;lastPointer={x:e.clientX,y:e.clientY};const n=hoverTarget(e);if(n&&!n.disabled){activate(n.dataset.songId);show(n,e.clientX,e.clientY);}else reset();});
  document.addEventListener('mouseover',e=>{lastPointer={x:e.clientX,y:e.clientY};const n=target(e);if(n&&!n.disabled){activate(n.dataset.songId);show(n,e.clientX,e.clientY);}});
  document.addEventListener('mouseout',e=>{if(!e.relatedTarget||target(e))reset();});
  document.addEventListener('focusin',e=>{const n=target(e);if(n&&!n.disabled){activate(n.dataset.songId);const r=n.getBoundingClientRect();show(n,r.left,r.top);}});
  document.addEventListener('focusout',e=>{if(target(e))reset();});
- document.addEventListener('click',e=>{const n=target(e);if(n&&!n.disabled){pinned=pinned===n.dataset.songId?null:n.dataset.songId;activate(pinned);}});
+ function pin(n,x,y){pinned=pinned===n.dataset.songId?null:n.dataset.songId;activate(pinned);if(pinned)show(n,x,y);else reset();}
+ document.addEventListener('click',e=>{const n=hoverTarget(e);lastPointer=null;if(n&&!n.disabled){pin(n,e.clientX,e.clientY);}else{pinned=null;reset();}});
+ document.addEventListener('keydown',e=>{if(e.key==='Escape'){pinned=null;reset();return;}const n=target(e);if(n instanceof SVGElement&&(e.key==='Enter'||e.key===' ')){e.preventDefault();const r=n.getBoundingClientRect();pin(n,r.left,r.top);}});
  document.addEventListener('song-bands-updated',()=>{
   if(!nodes().some(n=>n.classList.contains('song-hit')&&n.dataset.songId===pinned))pinned=null;
   reset();
@@ -175,7 +177,7 @@ def render(data, activities=None, songs=None, *, charts=None, header=None, foote
                                     f'data-song-title="{esc(song["title"])}" data-song-time="{clock(start)}–{clock(end)}" '
                                     f'data-start="{start}" data-end="{end}" x="{x(start)}" y="{top}" '
                                     f'width="{x(end)-x(start)}" height="{bottom-top}" '
-                                    f'aria-label="{esc(song["title"])} · {clock(start)}–{clock(end)}"></rect>')
+                                    f'tabindex="0" role="button" aria-label="{esc(song["title"])} · {clock(start)}–{clock(end)}"></rect>')
         if overlays:
             insertion = next((i for i, part in enumerate(parts) if 'class="grid"' in part), len(parts))
             parts[insertion:insertion] = ['<g data-song-layer="true">'+''.join(overlays)+'</g>']
