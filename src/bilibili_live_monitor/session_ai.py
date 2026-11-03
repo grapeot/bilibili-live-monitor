@@ -36,13 +36,19 @@ elif operation == 'create':
     if s.get('directory') != v['project'] or s.get('projectID') != project['id']:
         raise RuntimeError('OpenCode project mismatch')
     result = {'id': s['id']}
-elif operation in ('status', 'abort'):
+elif operation in ('status', 'abort', 'children', 'submitted'):
     params = {'directory': v['project']} if v.get('project') else {}
     s = call('GET', '/session/' + v['session'], params=params)
     directory = s['directory']
     if v.get('project') and directory != v['project']:
         raise RuntimeError('OpenCode session directory mismatch')
-    if operation == 'status':
+    if operation == 'submitted':
+        messages = call('GET', '/session/' + v['session'] + '/message', params={'directory': directory})
+        result = any(m.get('info', {}).get('role') == 'user' and any(
+            p.get('type') == 'text' and v['marker'] in p.get('text', '') for p in m.get('parts', [])) for m in messages)
+    elif operation == 'children':
+        result = [child['id'] for child in call('GET', '/session/' + v['session'] + '/children', params={'directory': directory})]
+    elif operation == 'status':
         result = call('GET', '/session/status', params={'directory': directory}).get(v['session'], {'type': 'idle'})
     else:
         result = call('POST', '/session/' + v['session'] + '/abort', params={'directory': directory})

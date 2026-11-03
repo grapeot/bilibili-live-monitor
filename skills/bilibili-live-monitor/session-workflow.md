@@ -32,6 +32,9 @@
     "seal_seconds": 300,
     "finish_timeout": 21600,
     "final_review_batches": 40,
+    "finalize_parallel": true,
+    "final_concurrency": 4,
+    "final_subagent": "general",
     "publish": {
       "default": {"remote": "HOST:/share/", "url": "https://example.org/share/"},
       "rooms": {
@@ -70,7 +73,9 @@ python -m bilibili_live_monitor.broadcast_email --env-file /PRIVATE/notify.env -
 
 本场文件停止变化至少 `seal_seconds` 后，读取本场命名时间范围内的录制源，运行无 VAD 的离线 ASR。源文件只读，转写独立保存在工作区，不覆盖采集数据库。墙钟映射采用文件 UTC 加前序媒体时长的估计，不宣称精确字幕对齐；探测失败项会重新探测，全部选中源文件完成后才能进入终审。不可恢复的媒体进入 `attention`，不把部分稿当作全场完成。
 
-另建 `finalize` 会话，按新离线转写指纹分批复核；已识别但缺来源登记的歌名继续补证，不能直接冻结。完成后停止该会话，在同一 URL 下发布最终 `index.html`、`snapshot.json`，核对远端双文件 hash。最终 HTML 不含自动刷新脚本；已打开的实时页拉取最终版后也取消旧轮询。
+另建 `finalize` 总会话，项目归属使用 `opencode_project`，只向它提交一次完整收尾任务。默认按30分钟分片，前后各60秒上下文，最多4个子任务并行；`final_subagent`须为目标服务实际可用的agent，默认general继承总会话模型。子任务只写独立结果文件，总会话统一合并并处理跨片点歌、未登记歌名。总会话的任务清单和子会话关系用于观察进度。
+
+`session_finalize merge --config ...`校验分片身份、指纹和完整覆盖后统一合并；`session_finalize finish --config ...`复核所有窗口及歌名登记后生成完成标记。会话暂时idle不等于完成，程序不会因此再追加一轮。AI复核完成后，程序在同一URL发布并验证最终页；总会话不能提前宣称页面已发布。`finalize_parallel:false`保留原逐批模式，`final_review_batches`仅用于该兼容模式。
 
 ## 恢复与验收
 

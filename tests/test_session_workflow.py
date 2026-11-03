@@ -177,7 +177,7 @@ def test_final_publish_stays_same_url_and_only_happens_after_verification(tmp_pa
     config = {'workspace': str(tmp_path), 'url': 'https://example.org/s/stable/'}
     state = {'stage': 'finalizing', 'final_session': 'owned-final'}
     events = []
-    monkeypatch.setattr(runner, 'stop_ai', lambda *a: events.append('stop') or True)
+    monkeypatch.setattr(runner, 'stop_ai', lambda *a, **k: events.append('stop') or True)
     monkeypatch.setattr(runner, 'export_snapshot', lambda *a: events.append('export'))
     monkeypatch.setattr(runner, 'verify_local', lambda *a: events.append('verify'))
     monkeypatch.setattr(runner.watch, 'publish', lambda *a: events.append('publish'))
@@ -264,6 +264,7 @@ def test_end_to_end_lifecycle_uses_offline_reviews_and_same_public_url(tmp_path,
     record = manager.prepare('123456', candidate)
     path = manager.initialize(record)
     config = load_config(path)
+    config['finalize_parallel'] = False  # 继续覆盖旧单会话逐批模式的兼容路径。
     state = {'stage': 'created', 'ai_preflight': True}
     moment = epoch(START) + 60
     candidate['status_checked_utc'] = iso(moment)
@@ -285,6 +286,7 @@ def test_end_to_end_lifecycle_uses_offline_reviews_and_same_public_url(tmp_path,
     monkeypatch.setattr(runner.watch, 'ai_once', review)
     runner.advance(config, state, moment)
     config = load_config(path)
+    config['finalize_parallel'] = False
     runner.advance(config, state, moment)
     assert state['stage'] == 'live' and state['ready']
     candidate.update(live_status=0, offline_checks=2)
@@ -305,6 +307,7 @@ def test_end_to_end_lifecycle_uses_offline_reviews_and_same_public_url(tmp_path,
     monkeypatch.setattr(runner, 'run_offline', offline)
     runner.advance(config, state, moment)
     config = load_config(path)
+    config['finalize_parallel'] = False
     runner.advance(config, state, moment)  # 创建finalize会话
     runner.advance(config, state, moment)  # 实际离线复核
     runner.advance(config, state, moment)  # 校验完整复核
@@ -404,6 +407,7 @@ def test_final_review_keeps_working_when_identified_title_is_not_registered(tmp_
     manager = SessionWorkflows(service, settings(tmp_path))
     path = manager.initialize(manager.prepare('123456', candidate))
     config = load_config(path)
+    config['finalize_parallel'] = False
     segment = {'seq': -1, 'start_utc': START, 'end_utc': iso(epoch(START) + 10), 'text': '合成歌词', 'is_final': True}
     config['offline_segments'] = str(path.parent / 'offline_segments.json')
     atomic_json(path.parent / 'offline_segments.json', [segment])

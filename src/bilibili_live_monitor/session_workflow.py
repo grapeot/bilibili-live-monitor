@@ -25,6 +25,12 @@ def validate_settings(config, rooms):
         raise ValueError('session_workflow.enabled须为布尔值')
     if not config.get('enabled'):
         return
+    if type(config.get('finalize_parallel', True)) is not bool:
+        raise ValueError('finalize_parallel须为布尔值')
+    if type(config.get('final_concurrency', 4)) is not int or not 1 <= config.get('final_concurrency', 4) <= 8:
+        raise ValueError('final_concurrency须为1到8的整数')
+    if not isinstance(config.get('final_subagent', 'general'), str) or not config.get('final_subagent', 'general').strip():
+        raise ValueError('final_subagent须为非空agent名称')
     for key, default in (('max_hours', 12), ('seal_seconds', 300), ('finish_timeout', 21600)):
         value = config.get(key, default)
         if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
@@ -105,6 +111,9 @@ class SessionWorkflows:
             seal_seconds=cfg.get('seal_seconds', 300),
             final_review_batches=cfg.get('final_review_batches', 40),
             finish_timeout=cfg.get('finish_timeout', 21600), workflow_key=record['key'])
+        config.update(finalize_parallel=cfg.get('finalize_parallel', True),
+                      final_concurrency=cfg.get('final_concurrency', 4),
+                      final_subagent=cfg.get('final_subagent', 'general'))
         config['followup_rules'].update(self.automation.rooms[rid].get('followup_rules', {}))
         atomic_json(path, config)
         return path
@@ -150,6 +159,9 @@ class SessionWorkflows:
                 path = self.initialize(record)
                 status_path = path.parent / 'workflow.json'
                 state = json.loads(status_path.read_text()) if status_path.exists() else {}
+                for field in ('final_session', 'finalize_progress'):
+                    if field in state:
+                        record[field] = state[field]
                 record['url_queued'] = self.notify_url(record, state)
                 if state.get('stage') in ('completed', 'attention'):
                     record['stage'] = state['stage']

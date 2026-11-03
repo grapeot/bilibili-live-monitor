@@ -1,0 +1,184 @@
+"""一次提交离线总任务；分片独立写入，程序统一合并与验收。"""
+import argparse
+import hashlib
+import json
+import shlex
+import subprocess
+import sys
+from pathlib import Path
+
+from .live_share import atomic_json, epoch, fingerprint
+from .live_share_control import export_snapshot, load_config, source_at_cutoff, verify_snapshot
+
+
+def reviewed(row, segment):
+    return (isinstance(row, dict) and row.get('fingerprint') == fingerprint(segment)
+            and row.get('investigation_version') == 2 and row.get('label') in ('singing', 'speaking')
+            and row.get('music_source') in ('probable_live', 'recording', 'uncertain', 'none'))
+
+
+def frozen_source(config):
+    _, cutoff, source = source_at_cutoff(config)
+    segments = [s for s in source['segments'] if s.get('is_final') and s.get('text')]
+    windows = [{'seq': s['seq'], 'start': s['start_utc'], 'end': s['end_utc'],
+                'text': s['text'], 'fingerprint': fingerprint(s)} for s in segments]
+    identity = {'room': config['room_id'], 'start': config['start_utc'], 'cutoff': cutoff, 'windows': windows}
+    ident = hashlib.sha256(json.dumps(identity, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+    return ident, source, segments, windows
+
+
+def assert_frozen(config, plan):
+    if frozen_source(config)[0] != plan['id']:
+        raise ValueError('冻结输入或场次边界已变化，不能沿用旧完成结果')
+
+
+def prepare(config):
+    root = Path(config['workspace']) / 'finalize'
+    root.mkdir(exist_ok=True)
+    path = root / 'plan.json'
+    if path.exists():
+        return json.loads(path.read_text())
+    ident, source, segments, windows = frozen_source(config)
+    previous = json.loads((root.parent / 'annotations.json').read_text())
+    reviews = {r.get('seq'): r for r in previous.get('reviews', []) if isinstance(r, dict)}
+    buckets = {}
+    for s in segments:
+        if not reviewed(reviews.get(s['seq']), s):
+            bucket = int((epoch(s['start_utc']) - epoch(config['start_utc'])) // 1800)
+            buckets.setdefault(bucket, []).append(s)
+    shards = []
+    for bucket, targets in sorted(buckets.items()):
+        name = f'{bucket:03d}'
+        lower = min(epoch(s['start_utc']) for s in targets) - 60
+        upper = max(epoch(s['end_utc']) for s in targets) + 60
+        input_file, result_file = root / f'{name}.input.json', root / f'{name}.result.json'
+        atomic_json(input_file, {'plan_id': ident, 'target_seqs': [s['seq'] for s in targets],
+            'windows': [w for w in windows if lower <= epoch(w['end']) and epoch(w['start']) <= upper]})
+        shards.append({'input': str(input_file), 'result': str(result_file), 'targets': len(targets)})
+    atomic_json(root / 'context.json', {'windows': windows, 'events': source['items']})
+    plan = {'id': ident, 'shards': shards, 'concurrency': config.get('final_concurrency', 4),
+            'subagent': config.get('final_subagent', 'general')}
+    atomic_json(path, plan)
+    return plan
+
+
+def merge(config):
+    root = Path(config['workspace']) / 'finalize'
+    plan = json.loads((root / 'plan.json').read_text())
+    assert_frozen(config, plan)
+    source = {s['seq']: s for s in source_at_cutoff(config)[2]['segments']}
+    merged = {}
+    for shard in plan['shards']:
+        inputs = json.loads(Path(shard['input']).read_text())
+        result = json.loads(Path(shard['result']).read_text())
+        if result.get('plan_id') != plan['id']:
+            raise ValueError('分片结果不属于本轮输入')
+        targets = set(inputs['target_seqs'])
+        rows = result.get('reviews', [])
+        if len(rows) != len(targets) or {r.get('seq') for r in rows} != targets:
+            raise ValueError('分片必须恰好覆盖负责窗口，不能包含上下文窗口')
+        expected = {w['seq']: w['fingerprint'] for w in inputs['windows']}
+        for row in rows:
+            seq = row['seq']
+            if seq in merged or seq not in source or fingerprint(source[seq]) != expected[seq] or not reviewed(row, source[seq]):
+                raise ValueError('窗口重复、已变化或结果不完整')
+            if (row.get('confidence', 'low') not in ('high', 'medium', 'low')
+                    or row.get('song') is not None and not isinstance(row['song'], str)):
+                raise ValueError('歌名或confidence格式无效')
+            merged[seq] = {k: row[k] for k in ('seq', 'fingerprint', 'label', 'music_source', 'investigation_version')}
+            merged[seq].update(song=row.get('song'), confidence=row.get('confidence', 'low'))
+    path = root.parent / 'annotations.json'
+    annotations = json.loads(path.read_text())
+    old = {r['seq']: r for r in annotations.get('reviews', [])}
+    old.update(merged)
+    annotations['reviews'] = list(old.values())
+    atomic_json(path, annotations)
+    return {'merged': len(merged), 'plan_id': plan['id']}
+
+
+def finish(config):
+    root = Path(config['workspace']) / 'finalize'
+    plan = json.loads((root / 'plan.json').read_text())
+    assert_frozen(config, plan)
+    annotations = json.loads((root.parent / 'annotations.json').read_text())
+    reviews = {r.get('seq'): r for r in annotations.get('reviews', [])}
+    remaining = [s['seq'] for s in source_at_cutoff(config)[2]['segments']
+                 if s.get('is_final') and s.get('text') and not reviewed(reviews.get(s['seq']), s)]
+    export_snapshot(config)
+    report = verify_snapshot(config)
+    if remaining or not report['valid'] or report['unpublished_songs']:
+        raise ValueError(json.dumps({'remaining': remaining, 'verification': report}, ensure_ascii=False))
+    result = {'plan_id': plan['id'], 'status': 'completed'}
+    atomic_json(root / 'completed.json', result)
+    return result
+
+
+def complete(config):
+    root = Path(config['workspace']) / 'finalize'
+    marker = root / 'completed.json'
+    if not marker.exists():
+        return False
+    plan = json.loads((root / 'plan.json').read_text())
+    result = json.loads(marker.read_text())
+    return result.get('status') == 'completed' and result.get('plan_id') == plan['id']
+
+
+def progress(config):
+    path = Path(config['workspace']) / 'finalize/plan.json'
+    if not path.exists():
+        return {'shards': 0, 'results_received': 0}
+    plan = json.loads(path.read_text())
+    return {'shards': len(plan['shards']),
+            'results_received': sum(Path(s['result']).exists() for s in plan['shards']),
+            'completed': complete(config)}
+
+
+class SubmissionNotSent(RuntimeError):
+    pass
+
+
+def submit(config, session, on_handoff=lambda: None):
+    plan = prepare(config)
+    root = Path(config['workspace']) / 'finalize'
+    command = shlex.join([sys.executable, '-m', 'bilibili_live_monitor.session_finalize'])
+    flag = '--config ' + shlex.quote(config['_config_path'])
+    prompt = f'''FINALIZE_PLAN:{plan['id']}
+你负责本场离线finalize总任务，从头到尾完成，不等待外部逐批提示。
+这是总协调会话，先创建可见任务清单，随分片完成更新进度，最后汇总成功/失败分片和未决问题。子会话必须由本会话task创建，让用户能在当前knowledge_working项目下追踪父子关系。
+只处理本场工作区{config['workspace']}；计划{root / 'plan.json'}已冻结，不修改计划或输入。
+读取计划，将其中每片交给{plan['subagent']} subagent，最多同时{plan['concurrency']}片，使用task并行派发。
+每片只写对应result路径：{{"plan_id":"{plan['id']}","reviews":[...]}}。
+每个target_seq恰好一条，包含seq、原样fingerprint、label(singing/speaking)、music_source(probable_live/recording/uncertain/none)、song(歌名或null)、confidence(high/medium/low字符串)和investigation_version=2。
+上下文窗口只读，不能重复输出。每10–20条保存进度，失败只续跑未完成分片。保留明确的不确定判断，歌词出现不等于现场演唱；考虑前后文放原唱、试听、对口型等反证。不能听音，不认证唱功。
+需要跨片上下文时只读{root / 'context.json'}。子任务不能改annotations、来源登记、配置或代码，不发布，不创建下一级子任务。
+全部子任务完成后运行：{command} merge {flag}。只有你统一合并，不能让子任务同时覆盖annotations.json。
+之后由你统一检查点歌归属与已唱阶段，保留既有人工修正；唱完直接performed，不需要额外完成确认。沿用已有annotations其他字段。
+读取{Path(__file__).resolve().parents[2] / 'skills/bilibili-live-monitor/live-share.md'}的歌名来源登记规则。
+新歌名复用已有来源，不足时查公开歌名或短歌词，每次最多6条搜索结果；不向搜索引擎发送昵称、UID、完整转写。用live-share register-song命令登记来源，不改白名单。
+最后运行：{command} finish {flag}。若报缺失或未登记歌曲，在本会话解决后重试finish，成功后报告“AI复核完成，等待程序发布最终页”，不把AI完成说成页面已经发布。
+后台子任务尚未结束时不能finish，也不能把等待回执时的idle当作总任务结束。不要创建定时任务，不发直播消息，不访问凭据或控制API。
+'''
+    path = root / 'prompt.md'
+    path.write_text(prompt)
+    on_handoff()
+    try:
+        result = subprocess.run([config['opencode_python'], '-m', 'opencode_skill', 'append',
+            '--session-id', session, '--prompt-file', str(path), '--model', config['model'],
+            '--agent', 'build', '--send-timeout', '10', '--json'], cwd=config['opencode_cwd'],
+            capture_output=True, text=True, timeout=35)
+    except OSError as error:
+        raise SubmissionNotSent(str(error)) from error
+    (root / 'handoff.log').write_text(result.stdout + result.stderr)
+    result.check_returncode()
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('action', choices=['merge', 'finish'])
+    parser.add_argument('--config', required=True, type=Path)
+    args = parser.parse_args()
+    print(json.dumps({'merge': merge, 'finish': finish}[args.action](load_config(args.config)), ensure_ascii=False))
+
+
+if __name__ == '__main__':
+    main()

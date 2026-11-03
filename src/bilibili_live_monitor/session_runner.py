@@ -52,13 +52,17 @@ def verify_remote(config):
             raise RuntimeError('远端看板内容与本次本地产物不一致')
 
 
-def stop_ai(config, session):
+def stop_ai(config, session, *, children=False):
     if not session:
         return True
+    children_stopped = True
+    if children:
+        for child in ai_control(config, 'children', session=session):
+            children_stopped = stop_ai(config, child, children=True) and children_stopped
     if ai_control(config, 'status', session=session).get('type') in ('busy', 'retry'):
         ai_control(config, 'abort', session=session)
         return False
-    return True
+    return children_stopped
 
 
 def ensure_ai(config, purpose):
@@ -144,6 +148,30 @@ def advance(config, state, now):
         if not state.get('final_session'):
             state['final_session'] = ensure_ai(config, 'finalize')
             return
+        if config.get('finalize_parallel'):
+            from . import session_finalize
+            if not state.get('finalize_submitted'):
+                plan = session_finalize.prepare(config)
+                if state.get('finalize_sending'):
+                    if not ai_control(config, 'submitted', session=state['final_session'], marker='FINALIZE_PLAN:' + plan['id']):
+                        raise RuntimeError('总任务发送回执未确认，保留现场且不重复提交')
+                else:
+                    def handoff():
+                        state['finalize_sending'] = True
+                        atomic_json(workspace / 'workflow.json', state)
+                    try:
+                        session_finalize.submit(config, state['final_session'], on_handoff=handoff)
+                    except session_finalize.SubmissionNotSent:
+                        state.pop('finalize_sending', None)
+                        atomic_json(workspace / 'workflow.json', state)
+                        raise
+                state.update(finalize_submitted=True, finalize_sending=False)
+                atomic_json(workspace / 'workflow.json', state)
+            state['finalize_progress'] = session_finalize.progress(config)
+            if session_finalize.complete(config):
+                session_finalize.finish(config)
+                state['stage'] = 'finalizing'
+            return
         if ai_control(config, 'status', session=state['final_session']).get('type') in ('busy', 'retry'):
             return
         export_snapshot(config)
@@ -168,8 +196,11 @@ def advance(config, state, now):
         watch.ai_once(final_config, {'cutoff': state['cutoff']}, source, now, final=True)
         return
     if phase == 'finalizing':
-        if not stop_ai(config, state.get('final_session')):
+        if not stop_ai(config, state.get('final_session'), children=config.get('finalize_parallel', False)):
             return
+        if config.get('finalize_parallel'):
+            from .session_finalize import finish
+            finish(config)  # 所有写入者停止后，重验实际待发布内容。
         export_snapshot(config)
         verify_local(config)
         watch.publish(config, workspace / 'public')
@@ -203,7 +234,7 @@ def run(path):
                     for session in (config.get('ai_session'), state.get('final_session')):
                         if session:
                             try:
-                                stopped = stop_ai(config, session) and stopped
+                                stopped = stop_ai(config, session, children=config.get('finalize_parallel', False)) and stopped
                             except Exception:
                                 stopped = False
                     if stopped:
