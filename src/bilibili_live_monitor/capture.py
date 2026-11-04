@@ -90,7 +90,7 @@ READ_PCM = '''async (seconds) => {
         const timer=setTimeout(()=>{m.flushes.delete(id);reject(new Error('音频线程输出超时'))},3000);
         m.flushes.set(id,()=>{clearTimeout(timer);resolve()});m.tap.port.postMessage({flush:true,id});
     });
-    if(document.querySelector('video')!==m.video)throw new Error('播放器元素已更换，需要重建采集');
+    const sourceChanged=document.querySelector('video')!==m.video;
     const samples=m.samples, floats=new Float32Array(samples);
     let offset=0;for(const part of m.parts){floats.set(part,offset);offset+=part.length}
     const pcm=new Int16Array(samples);
@@ -104,7 +104,7 @@ READ_PCM = '''async (seconds) => {
         context_state:m.context.state,missing_samples:m.missing,dropped_samples:m.dropped,
         media_advanced:media-m.lastMedia,pauses:m.pauses,play_error:m.playError,
         track_muted:m.tracks.some(t=>t.muted),track_enabled:m.tracks.every(t=>t.enabled),
-        track_muted_ms:mutedMs};
+        track_muted_ms:mutedMs,source_changed:sourceChanged};
     m.parts=[];m.samples=0;m.missing=0;m.dropped=0;m.last=ended;m.lastMedia=media;m.pauses=0;
     m.mutedMs=0;if(m.mutedAt!=null)m.mutedAt=perf;
     return result;

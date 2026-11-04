@@ -1,10 +1,14 @@
 import asyncio
+import base64
+import json
+import subprocess
 import wave
 from types import SimpleNamespace
 
 import pytest
 
 from bilibili_live_monitor import monitor as module
+from bilibili_live_monitor.capture import READ_PCM
 from bilibili_live_monitor.config import Settings
 from bilibili_live_monitor.monitor import Monitor
 from bilibili_live_monitor.pcm_recording import PCMRecording
@@ -118,3 +122,64 @@ async def test_mixed_session_statistics_and_close_failure_release_file(tmp_path)
         await rec.close()
     writer.close = original_close
     assert file.closed and rec.closed and rec.writer is None
+
+
+@pytest.mark.parametrize('asr', [False, True])
+async def test_replaced_player_returns_buffer_before_reconnect(tmp_path, monkeypatch, asr):
+    script = 'const read = ' + READ_PCM + ''';
+const video={currentTime:5,muted:true,paused:false};
+const m={video,samples:80000,parts:[new Float32Array(80000).fill(0.25)],
+  flushes:new Map(),context:{sampleRate:16000,state:'running'},last:Date.now()-5000,
+  lastMedia:0,tracks:[{readyState:'live',enabled:true,muted:false}],
+  mutedMs:0,mutedAt:null,missing:0,dropped:0,pauses:0,playError:null};
+m.tap={port:{postMessage:({id})=>m.flushes.get(id)()}};
+global.window={__pcmMonitor:m};
+global.document={querySelector:()=>({currentTime:0})};
+read(0).then(result=>console.log(JSON.stringify({result,remaining:m.samples})));
+'''
+    result = subprocess.run(['node', '-e', script], capture_output=True, text=True, check=True, timeout=10)
+    output = json.loads(result.stdout)
+    payload = output['result']
+    pcm = base64.b64decode(payload.pop('data'))
+    assert len(pcm) == 160000 and output['remaining'] == 0 and payload['source_changed']
+    store = Store(tmp_path / 'source.sqlite3')
+    monitor = Monitor(Settings(data_dir=tmp_path), store)
+    recorder = PCMRecording(monitor.settings, {'room_id': '123456'})
+    async def noop(*args):
+        pass
+    async def read(page, seconds):
+        return (pcm, payload) if seconds else (b'', {})
+    monkeypatch.setattr(module, 'start_pcm', noop)
+    monkeypatch.setattr(module, 'close_pcm', noop)
+    monkeypatch.setattr(module, 'read_pcm', read)
+    with pytest.raises(RuntimeError, match='播放器元素已更换'):
+        await monitor.capture_cycles({'room_id': '123456', 'record_mode': 'audio', 'asr_enabled': asr},
+                                     SimpleNamespace(is_closed=lambda: False), 'synthetic', recorder)
+    await recorder.close()
+    with wave.open(str(next(recorder.directory.glob('*.wav')))) as audio:
+        assert audio.getnframes() == 80000
+        assert audio.readframes(80000) == pcm
+    assert monitor.queue.empty()
+    store.close()
+
+
+async def test_failed_read_still_drains_tail(tmp_path, monkeypatch):
+    store = Store(tmp_path / 'source.sqlite3')
+    monitor = Monitor(Settings(data_dir=tmp_path), store)
+    recorder = PCMRecording(monitor.settings, {'room_id': '123456'})
+    async def noop(*args):
+        pass
+    async def read(page, seconds):
+        if seconds:
+            raise RuntimeError('synthetic flush failure')
+        return b'\x01\x02' * 16000, {}
+    monkeypatch.setattr(module, 'start_pcm', noop)
+    monkeypatch.setattr(module, 'close_pcm', noop)
+    monkeypatch.setattr(module, 'read_pcm', read)
+    with pytest.raises(RuntimeError, match='synthetic flush failure'):
+        await monitor.capture_cycles({'room_id': '123456', 'record_mode': 'audio', 'asr_enabled': False},
+                                     SimpleNamespace(is_closed=lambda: False), 'synthetic', recorder)
+    await recorder.close()
+    with wave.open(str(next(recorder.directory.glob('*.wav')))) as audio:
+        assert audio.getnframes() == 16000
+    store.close()

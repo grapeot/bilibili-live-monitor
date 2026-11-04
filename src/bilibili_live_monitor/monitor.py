@@ -65,6 +65,8 @@ def window_metadata(pcm, start_ms, end_ms):
 
 
 def validate_source(payload):
+    if payload.get('source_changed'):
+        raise RuntimeError('播放器元素已更换，需要重建采集')
     if (not payload['muted'] or payload['paused'] or not payload['track_live']
             or payload['context_state'] != 'running' or not payload['track_enabled']
             or payload['track_muted'] or payload['track_muted_ms'] > 100):
@@ -519,10 +521,13 @@ class Monitor:
                         self.store.room(room)
         finally:
             if recorder and not page.is_closed():
-                try:
-                    if pending_read is not None:
+                if pending_read is not None:
+                    try:
                         pcm, _ = await pending_read
                         recorder.write(pcm)
+                    except Exception as error:
+                        self.store.event('recording_read_error', {'room_id': room_id, 'error': str(error)})
+                try:
                     pcm, _ = await asyncio.wait_for(read_pcm(page, 0), 4)
                     recorder.write(pcm)
                 except Exception as error:
