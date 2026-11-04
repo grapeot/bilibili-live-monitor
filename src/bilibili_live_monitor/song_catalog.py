@@ -160,6 +160,8 @@ main{max-width:1080px;margin:auto;padding:28px 20px}a{color:#1d4ed8}h1{margin:12
 .card{display:block;padding:22px;background:white;border:1px solid #dbe4ef;border-radius:14px;text-decoration:none;color:inherit}
 .card:hover,.card:focus-visible{border-color:#2563eb;outline:2px solid #bfdbfe}li{padding:20px;background:white;border-radius:12px;margin:14px 0;list-style:none}ul{padding:0}
 .button{display:inline-block;background:#1d4ed8;color:white;padding:8px 16px;border-radius:8px;text-decoration:none}
+.sort-options{display:flex;flex-wrap:wrap;gap:8px;margin:18px 0 8px}.sort-options button{font:inherit;font-size:14px;border:1px solid #b9c9dc;border-radius:8px;padding:9px 12px;background:white;color:#16324f;cursor:pointer}
+.sort-options button[aria-pressed="true"]{background:#1d4ed8;color:white;border-color:#1d4ed8}.sort-options button:focus-visible{outline:3px solid #93c5fd;outline-offset:2px}
 [hidden]{display:none!important}small{display:block}.empty{padding:28px;text-align:center}'''
 
 
@@ -179,7 +181,12 @@ def render(data):
     esc = html.escape
     cards, pages = [], {}
     for song in data['songs']:
-        cards.append(f'<a class="card" href="{song["id"]}/" data-title="{esc(key(song["title"]), quote=True)}">'
+        stats = song.get('gifts')
+        metrics = {'latest': song['latest'], 'count': song['count'],
+                   **{key: stats[field] if stats else '' for key, field in
+                      [('gifts', 'gift_count'), ('users', 'gift_users'), ('amount', 'gift_amount_yuan')]}}
+        attributes = ' '.join(f'data-sort-{name}="{value}"' for name, value in metrics.items())
+        cards.append(f'<a class="card" href="{song["id"]}/" data-title="{esc(key(song["title"]), quote=True)}" {attributes}>'
                      f'<h2>{esc(song["title"])}</h2><span>{song["count"]} 次出现</span>'
                      f'<small class="muted">最近 {clock(song["latest"])[:10]}</small>{render_gifts(song.get("gifts"))}</a>')
         rows = []
@@ -197,12 +204,30 @@ def render(data):
             + render_gifts(song.get('gifts')) + '<p class="muted">每次歌曲片段开始前30秒至结束后2分钟；同歌重叠窗口按礼物事件去重，人数跨次去重。金额为平台标价，非主播实收；“+”表示另有未知记录。</p>'
             + f'<ul>{"".join(rows)}</ul>')
     script = '''<script>const q=document.querySelector('#search'),cards=[...document.querySelectorAll('.card')];
+const grid=document.querySelector('.cards'),buttons=[...document.querySelectorAll('[data-sort-key]')];
+let sortKey='count',descending=true;
+function value(card){const raw=card.getAttribute('data-sort-'+sortKey);return raw===null||raw===''?null:Number(raw);}
+function sort(){const ordered=cards.map((card,index)=>({card,index,value:value(card)}));
+ordered.sort((a,b)=>{const av=a.value,bv=b.value;if(av===null||bv===null)return av===bv?a.index-b.index:av===null?1:-1;
+return (descending?bv-av:av-bv)||a.index-b.index;});
+grid.append(...ordered.map(row=>row.card));
+for(const button of buttons){const active=button.dataset.sortKey===sortKey;button.setAttribute('aria-pressed',String(active));
+button.textContent=button.dataset.label+(active?(descending?' ↓':' ↑'):'');}
+const label=buttons.find(b=>b.dataset.sortKey===sortKey).dataset.label;
+document.querySelector('#sort-status').textContent=label+'：'+(descending?'从高到低':'从低到高');}
+for(const button of buttons)button.addEventListener('click',()=>{if(sortKey===button.dataset.sortKey)descending=!descending;
+else{sortKey=button.dataset.sortKey;descending=true;}sort();});
 function filter(){const s=q.value.normalize('NFKC').trim().toLowerCase();let n=0;for(const c of cards){c.hidden=!c.dataset.title.includes(s);if(!c.hidden)n++;}
 document.querySelector('#count').textContent=`${n} 首歌曲`;document.querySelector('#empty').hidden=n!==0;}
  q.value=new URLSearchParams(location.search).get('q')||'';
- q.addEventListener('input',filter);filter();</script>'''
+ q.addEventListener('input',filter);sort();filter();</script>'''
     body = f'<a href="{esc(data["home_url"], quote=True)}">← 返回场次主页</a><h1>{esc(data["label"])} · 歌曲</h1>'
     body += '<p class="muted">从已完成场次查找歌曲片段。片段可能是主播演唱，也可能是播放的音乐，目前尚未具备可靠区分两者的功能。</p><label for="search">搜索歌名</label><input id="search" type="search" placeholder="输入歌名" autocomplete="off">'
+    body += '<div class="sort-options" role="group" aria-label="歌曲排序">' + ''.join(
+        f'<button type="button" data-sort-key="{key}" data-label="{label}" aria-pressed="false">{label}</button>'
+        for key, label in [('latest', '最近时间'), ('count', '出现次数'), ('gifts', '礼物件数'),
+                           ('users', '送礼人数'), ('amount', '礼物金额')]) + '</div>'
+    body += '<small class="muted">再点同一项切换升序／降序；暂无统计的歌曲排在最后。</small><small id="sort-status" class="muted" aria-live="polite"></small>'
     body += f'<p id="count" aria-live="polite"></p><div class="cards">{"".join(cards)}</div><p id="empty" class="empty" hidden>没有找到匹配歌曲</p>'
     pages['index.html'] = page(data['label'] + ' · 歌曲搜索', body, script)
     return pages
