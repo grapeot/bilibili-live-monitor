@@ -150,6 +150,8 @@ def catalog(config, previous=None):
     data = {'schema_version': 1, 'scope': scope, 'label': config['label'], 'home_url': home, 'songs': songs}
     from .song_gifts import add_gift_stats
     add_gift_stats(data, config['sessions'])
+    from .song_followers import add_follower_stats
+    add_follower_stats(data, config['sessions'])
     return data
 
 
@@ -177,18 +179,21 @@ def clock(at):
 
 
 def render(data):
+    from .song_followers import render_followers
     from .song_gifts import render_gifts
     esc = html.escape
     cards, pages = [], {}
     for song in data['songs']:
         stats = song.get('gifts')
         metrics = {'latest': song['latest'], 'count': song['count'],
+                   'followers': song.get('followers_change') if song.get('followers_change') is not None else '',
                    **{key: stats[field] if stats else '' for key, field in
                       [('gifts', 'gift_count'), ('users', 'gift_users'), ('amount', 'gift_amount_yuan')]}}
         attributes = ' '.join(f'data-sort-{name}="{value}"' for name, value in metrics.items())
         cards.append(f'<a class="card" href="{song["id"]}/" data-title="{esc(key(song["title"]), quote=True)}" {attributes}>'
                      f'<h2>{esc(song["title"])}</h2><span>{song["count"]} 次出现</span>'
-                     f'<small class="muted">最近 {clock(song["latest"])[:10]}</small>{render_gifts(song.get("gifts"))}</a>')
+                     f'<small class="muted">最近 {clock(song["latest"])[:10]}</small>{render_gifts(song.get("gifts"))}'
+                     + render_followers(song.get('followers_change')) + '</a>')
         rows = []
         for item in song['performances']:
             anchors = ''.join(f'<span id="performance-{alias}"></span>' for alias in item['aliases'])
@@ -196,12 +201,14 @@ def render(data):
             rows.append(f'<li id="performance-{item["id"]}">{anchors}<strong>{esc(item["session"])}</strong>'
                         f'<div>{clock(item["start"])}–{clock(item["end"])[11:]}（北京时间）</div>'
                          f'<p class="muted">已识别歌曲片段 {round(duration)} 秒</p>'
-                         + render_gifts(item.get('gifts')) +
+                          + render_gifts(item.get('gifts')) +
+                          render_followers(item.get('followers_change')) +
                          f'<a class="button" href="{esc(item["url"], quote=True)}">打开该次片段</a></li>')
         pages[song['id'] + '/index.html'] = page(song['title'], '<a href="../">← 返回歌曲搜索</a>'
             f'<h1>{esc(song["title"])}</h1><p>{esc(data["label"])} · {song["count"]} 次出现</p>'
             + '<p class="muted">歌曲片段可能是主播演唱，也可能是播放的音乐，目前尚未具备可靠区分两者的功能。</p>'
-            + render_gifts(song.get('gifts')) + '<p class="muted">每次歌曲片段开始前30秒至结束后2分钟；同歌重叠窗口按礼物事件去重，人数跨次去重。金额为平台标价，非主播实收；“+”表示另有未知记录。</p>'
+            + render_gifts(song.get('gifts')) + render_followers(song.get('followers_change'))
+            + '<p class="muted">每次歌曲片段开始前30秒至结束后2分钟；同歌重叠窗口按礼物事件去重，人数跨次去重。金额为平台标价，非主播实收；“+”表示另有未知记录。净增关注为窗口内关注总数之差，可能为负，同歌重叠窗口只计一次；观测不足时不记作0，不代表歌曲带来的新增人数。</p>'
             + f'<ul>{"".join(rows)}</ul>')
     script = '''<script>const q=document.querySelector('#search'),cards=[...document.querySelectorAll('.card')];
 const grid=document.querySelector('.cards'),buttons=[...document.querySelectorAll('[data-sort-key]')];
@@ -222,11 +229,11 @@ document.querySelector('#count').textContent=`${n} 首歌曲`;document.querySele
  q.value=new URLSearchParams(location.search).get('q')||'';
  q.addEventListener('input',filter);sort();filter();</script>'''
     body = f'<a href="{esc(data["home_url"], quote=True)}">← 返回场次主页</a><h1>{esc(data["label"])} · 歌曲</h1>'
-    body += '<p class="muted">从已完成场次查找歌曲片段。片段可能是主播演唱，也可能是播放的音乐，目前尚未具备可靠区分两者的功能。</p><label for="search">搜索歌名</label><input id="search" type="search" placeholder="输入歌名" autocomplete="off">'
+    body += '<p class="muted">从已完成场次查找歌曲片段。片段可能是主播演唱，也可能是播放的音乐，目前尚未具备可靠区分两者的功能。净增关注按片段前30秒至结束后2分钟的关注总数变化统计，包含取关，不代表歌曲带来的新增人数。</p><label for="search">搜索歌名</label><input id="search" type="search" placeholder="输入歌名" autocomplete="off">'
     body += '<div class="sort-options" role="group" aria-label="歌曲排序">' + ''.join(
         f'<button type="button" data-sort-key="{key}" data-label="{label}" aria-pressed="false">{label}</button>'
         for key, label in [('latest', '最近时间'), ('count', '出现次数'), ('gifts', '礼物件数'),
-                           ('users', '送礼人数'), ('amount', '礼物金额')]) + '</div>'
+                            ('users', '送礼人数'), ('amount', '礼物金额'), ('followers', '净增关注')]) + '</div>'
     body += '<small class="muted">再点同一项切换升序／降序；暂无统计的歌曲排在最后。</small><small id="sort-status" class="muted" aria-live="polite"></small>'
     body += f'<p id="count" aria-live="polite"></p><div class="cards">{"".join(cards)}</div><p id="empty" class="empty" hidden>没有找到匹配歌曲</p>'
     pages['index.html'] = page(data['label'] + ' · 歌曲搜索', body, script)
