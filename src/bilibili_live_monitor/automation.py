@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 from .likes import trigger_likes
 from .room_config import capture_overrides, reload_plan, validate_rooms
 from .welcome import WelcomeDecision, correct_page, message_limit, observations, send_chat, welcome_messages
+from .welcome_variants import choose_variant, load_variants, variant_messages
 
 
 def confirmed_state(candidate, now=None):
@@ -36,6 +37,7 @@ class Automation:
         self.platform, self.accounts = platform, accounts
         self.store, self.browser = platform.store, platform.monitor.browser
         self.rooms = deepcopy(config.get('rooms', {}))
+        self.variants = {rid: load_variants(cfg) for rid, cfg in self.rooms.items()}
         self.notification_command = config.get('notification_command', [])
         self.state = self.store.control('automation', {'rooms': {}, 'notifications': {}, 'likes': {}})
         self.tasks = {}
@@ -54,6 +56,10 @@ class Automation:
         for row in self.state['rooms'].values():
             if row.get('delivery') == 'sending':
                 row['delivery'] = 'ambiguous'
+        for rid, variants in self.variants.items():
+            if not variants:
+                self.row(rid).pop('copy_rotation', None)
+                self.row(rid).pop('variant_id', None)
         self.save()
 
     def save(self):
@@ -82,6 +88,7 @@ class Automation:
     def summary(self):
         return {'account': self.accounts.summary(), 'rooms': [
             {'room_id': rid, 'label': cfg['label'], 'intro': cfg['intro'],
+             'variant_count': len(self.variants[rid]),
              **{k: v for k, v in self.row(rid).items() if k not in ('seen', 'pending')},
              'welcome_running': 'welcome:'+rid in self.tasks}
             for rid, cfg in self.rooms.items()],
@@ -262,14 +269,28 @@ class Automation:
 
     async def deliver_welcome(self, rid):
         row, cfg = self.row(rid), self.rooms[rid]
+        rotation_before, variant_before = deepcopy(row.get('copy_rotation')), row.get('variant_id')
+        selected = None
+        reserved_rotation = None
         epoch, revision = self.accounts.epoch, row['revision']
         def valid():
             return (self.row(rid) is row and self.allowed(rid, epoch)
                     and row['enabled'] and row['revision'] == revision)
         try:
             page = await self.page(rid)
-            texts = welcome_messages([e[2] for e in row['pending']], await message_limit(page),
-                                     intro=cfg['intro'], greeting_template=cfg.get('greeting', '欢迎 {names} {suffix}'))
+            names, limit = [e[2] for e in row['pending']], await message_limit(page)
+            greeting = cfg.get('greeting', '欢迎 {names} {suffix}')
+            variants = self.variants[rid]
+            if variants:
+                prepared = {v['id']: variant_messages(names, limit, v, greeting) for v in variants}
+                if not valid():
+                    return
+                selected = choose_variant(variants, row.setdefault('copy_rotation', {}))
+                reserved_rotation = row['copy_rotation']
+                texts = prepared[selected['id']]
+                row['variant_id'] = selected['id']
+            else:
+                texts = welcome_messages(names, limit, intro=cfg['intro'], greeting_template=greeting)
             if not valid():
                 return
             row.update(delivery='sending', pending=[], acknowledgments=[], messages=texts)
@@ -285,6 +306,21 @@ class Automation:
                 self.save()
             row.update(delivery='idle', error=None)
         except (Exception, asyncio.CancelledError) as error:
+            if selected and not row.get('acknowledgments') and not getattr(error, 'send_attempted', False):
+                # 确定任何一段都未发出时，不把该组算作已使用。
+                targets = [row]
+                current = self.row(rid)
+                if current is not row and current.get('copy_rotation') is reserved_rotation:
+                    targets.append(current)  # 跨场会复制房间对象，但仍共享本次预留队列。
+                for target in targets:
+                    if rotation_before is None:
+                        target.pop('copy_rotation', None)
+                    else:
+                        target['copy_rotation'] = deepcopy(rotation_before)
+                    if variant_before is None:
+                        target.pop('variant_id', None)
+                    else:
+                        target['variant_id'] = variant_before
             row.update(delivery='ambiguous' if getattr(error, 'send_attempted', False) else 'paused',
                        error=type(error).__name__)
         finally:
