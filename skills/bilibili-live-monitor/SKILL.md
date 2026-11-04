@@ -62,7 +62,7 @@ python -m bilibili_live_monitor run --until 2030-01-01T22:00:00-08:00
 
 ## 采集、存储与接口
 
-默认RECORD_MODE=audio、ASR_ENABLED=0、PREVIEW_ENABLED=0，新增房间可覆盖record_mode/asr_enabled/preview_enabled三个独立字段。ASR关闭时不加载模型、不创建识别PCM窗口或队列；看板显示禁用。ffmpeg复制原始压缩包分段写入DATA_DIR/recordings/<room_id>/，音频.mka、音视频.mkv。默认300秒分段，RECORDING_SEGMENT_SECONDS可配置。
+默认RECORD_MODE=audio、ASR_ENABLED=0、PREVIEW_ENABLED=0，新增房间可覆盖record_mode/asr_enabled/preview_enabled三个独立字段。ASR关闭时不加载模型、不提交识别队列；看板显示禁用。audio复用网页16kHz、16bit单声道PCM，保存到DATA_DIR/recordings/<room_id>/的.wav，即使ASR关闭也保持网页播放；不额外请求媒体下载地址。video继续由ffmpeg复制原始音视频压缩包到.mkv。默认300秒分段，RECORDING_SEGMENT_SECONDS可配置。所有活动场次固定每300秒纯程序健康巡检，无房间关闭开关，规则见session-workflow.md。
 
 实时ASR只使用千问流式：每5秒送入新PCM，每房间保留独立的最长30秒音频上下文。当前窗口以同一条时间线记录持续修订，`transcript_version=realtime`、`stable_text`与`is_final`区分实时稿状态；窗结束不代表识别准确性已经核验。音频缺口或worker重启必须重建上下文，不拼接成无缝录音。原始录制不依赖这些实时稿；`offline-asr`继续独立从媒体转写并写入自己的输出目录，不覆盖实时记录。旧30路独立切片验收不代表流式容量。
 

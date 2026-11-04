@@ -59,7 +59,7 @@ Tailscale内访问可使用 `tailscale serve --bg --https=8447 http://127.0.0.1:
 - `preview_enabled`：默认 `false`；仅在启用、卡片可见且页面前台时请求缩略图。
 
 环境默认是 `RECORD_MODE=audio`、`ASR_ENABLED=0`、`PREVIEW_ENABLED=0`、`RECORDING_SEGMENT_SECONDS=300`。
-默认保存并渲染弹幕。录制位于 `DATA_DIR/recordings/<room_id>/`，音频为 `.mka`、音视频为 `.mkv`，均复制原始压缩包，不转码。每次监控会话独立统计，正常停止会收尾文件。ASR和缩略图关闭时，网页视频暂停，弹幕WebSocket保留，ffmpeg独立拉流录制。
+默认保存并渲染弹幕。录制位于 `DATA_DIR/recordings/<room_id>/`：`audio` 将网页实际播放的16kHz、16bit单声道 PCM 分段保存为 `.wav`，与实时 ASR 共享采集，不额外请求媒体下载地址；关闭 ASR 仍会播放并采集音频。`video` 由 FFmpeg 复制原始音视频压缩包到 `.mkv`；仅此模式在 ASR 和缩略图关闭时暂停网页视频。每次监控会话独立统计，正常停止会保留在途音频、排空缓冲并收尾文件。
 
 当ASR与缩略图均关闭时，原始录制不再等待HTML `video`就绪或调用 `play`。初次导航和重连均以网页成功响应捕获的媒体地址为录制输入，媒体发现阶段名义等待上限30秒，保留弹幕监听。启用ASR或缩略图时仍要求网页播放器就绪；导航或重载收到403/412/429则立即停止该源。
 

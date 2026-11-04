@@ -11,6 +11,7 @@ from .asr import StreamingASR
 from .audio_queue import AudioQueue
 from .browser import Browser, close_page, ensure_playing, room_url
 from .capture import close_pcm, read_pcm, start_pcm
+from .pcm_recording import PCMRecording
 from .preview import Previews
 from .recording import Recording
 from .retry import backoff_delay, remaining_delay
@@ -197,7 +198,7 @@ class Monitor:
             if delay := remaining_delay(saved.get('next_retry_utc')):
                 await asyncio.sleep(delay)
             page = await self.browser.page(url, on_danmaku=on_danmaku, on_resolved=on_resolved,
-                                           require_playback=options['asr_enabled'] or options['preview_enabled'])
+                                           require_playback=options['asr_enabled'] or options['preview_enabled'] or options['record_mode'] == 'audio')
             canonical = room_url(page.url)
             room_id = canonical.rsplit('/', 1)[1]
             async with self.lock:
@@ -282,7 +283,7 @@ class Monitor:
                                     else:
                                         dropped += 1
                             replacement = await self.browser.page(room['url'], on_danmaku=on_message,
-                                require_playback=room.get('asr_enabled', True) or room.get('preview_enabled'))
+                                require_playback=room.get('asr_enabled', True) or room.get('preview_enabled') or room.get('record_mode') == 'audio')
                             try:
                                 if room_url(replacement.url).rsplit('/', 1)[-1] != room_id:
                                     raise RuntimeError('恢复页面跳转到其他房间')
@@ -303,7 +304,7 @@ class Monitor:
                             response = await page.reload(wait_until='domcontentloaded', timeout=30000)
                             if response and response.status in (403, 412, 429):
                                 raise RuntimeError(f'recording_refused: HTTP {response.status}')
-                            if room.get('asr_enabled', True) or room.get('preview_enabled'):
+                            if room.get('asr_enabled', True) or room.get('preview_enabled') or room.get('record_mode') == 'audio':
                                 await page.wait_for_function(
                                     'document.querySelector("video")?.readyState >= 2', timeout=30000)
                                 await ensure_playing(page)
@@ -352,11 +353,14 @@ class Monitor:
         healthy_started = time.monotonic()
         reset_budget = False
         last_store = 0
-        if room.get('asr_enabled', True):
+        if room.get('record_mode') == 'audio':
+            recorder = PCMRecording(self.settings, room)
+            audio_task = asyncio.create_task(self.capture_cycles(room, page, generation, recorder))
+        elif room.get('asr_enabled', True):
             audio_task = asyncio.create_task(self.capture_cycles(room, page, generation))
         try:
             await self.inspect_page(room, page)
-            if room.get('record_mode', 'none') != 'none':
+            if room.get('record_mode', 'none') == 'video':
                 for _ in range(60):
                     if getattr(page, 'recording_url', None):
                         break
@@ -384,7 +388,7 @@ class Monitor:
                     room.update(reconnect_attempts=0, next_retry_utc=None)
                     self.store.room(room)
                     reset_budget = True
-                if not room.get('asr_enabled', True) and not room.get('preview_enabled'):
+                if not room.get('asr_enabled', True) and not room.get('preview_enabled') and room.get('record_mode') != 'audio':
                     # 保留网页弹幕WebSocket，暂停本地视频解码；录制由ffmpeg独立拉流。
                     await self.inspect_page(room, page, pause=True)
                 if audio_task:
@@ -430,16 +434,26 @@ class Monitor:
             self.store.event('platform_action', {'at_utc': iso_ms(time.time()*1000),
                              'action': 'human_attention', 'room_id': room['room_id'], 'attention': attention})
 
-    async def capture_cycles(self, room, page, generation):
+    async def capture_cycles(self, room, page, generation, recorder=None):
         room_id = room['room_id']
         seconds = 5
         stream_id = uuid.uuid4().hex
         offset = 0
         origin_ms = None
+        pending_read = None
         await start_pcm(page)
         try:
             while True:
-                pcm, payload = await read_pcm(page, seconds)
+                if recorder:
+                    # 取消Python等待不能取消浏览器evaluate；保留在途结果，避免丢掉已取走的PCM。
+                    pending_read = asyncio.create_task(read_pcm(page, seconds))
+                    pcm, payload = await asyncio.shield(pending_read)
+                    pending_read = None
+                else:
+                    pcm, payload = await read_pcm(page, seconds)
+                if recorder:
+                    # 保存实际收到的音频；质量检查控制ASR/重连，不删除暂停或断流前的这一窗。
+                    recorder.write(pcm)
                 if origin_ms is None:
                     origin_ms = payload['started']
                 timing = {'start_utc': iso_ms(payload['started']), 'end_utc': iso_ms(payload['ended']),
@@ -469,7 +483,8 @@ class Monitor:
                     segment.update(status='error', error=f'{type(error).__name__}: {error}')
                     self.stream_error(segment, segment['error'])
                     raise
-                self.submit(segment, pcm, generation)
+                if room.get('asr_enabled', True):
+                    self.submit(segment, pcm, generation)
                 offset += len(pcm)//2
                 if room.get('record_mode', 'none') == 'none':
                     # 短暂恢复不清零，连续有效采集60秒才重置失败预算。
@@ -478,6 +493,15 @@ class Monitor:
                         room.update(reconnect_attempts=0, next_retry_utc=None)
                         self.store.room(room)
         finally:
+            if recorder and not page.is_closed():
+                try:
+                    if pending_read is not None:
+                        pcm, _ = await pending_read
+                        recorder.write(pcm)
+                    pcm, _ = await asyncio.wait_for(read_pcm(page, 0), 4)
+                    recorder.write(pcm)
+                except Exception as error:
+                    self.store.event('recording_tail_error', {'room_id': room_id, 'error': str(error)})
             self.finish_stream(stream_id, generation)
             if not page.is_closed():
                 try:

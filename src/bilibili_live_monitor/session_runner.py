@@ -230,9 +230,18 @@ def run(path):
         fcntl.flock(publisher, fcntl.LOCK_EX | fcntl.LOCK_NB)
         status_path = workspace / 'workflow.json'
         state = json.loads(status_path.read_text()) if status_path.exists() else {'stage': 'created'}
+        next_health_check = 0
         while state['stage'] not in ('completed', 'attention'):
             started = time.time()
             config = load_config(path)
+            if started >= next_health_check:
+                from .session_health import ensure_scheduled
+                try:
+                    ensure_scheduled(config, delay=1)
+                    state.pop('health_schedule_error', None)
+                except Exception as error:
+                    state['health_schedule_error'] = f'{type(error).__name__}: {error}'[:500]
+                next_health_check = started + 300
             try:
                 if started > state.get('finish_deadline', float('inf')):
                     raise ValueError('离线收尾超过本场预算')

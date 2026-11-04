@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from . import offline_asr
 from .live_share import atomic_json, epoch, iso
 
-NAME = re.compile(r'^[a-f0-9]+-(\d{8}T\d{6}Z)-([a-f0-9]+)-(\d{5})\.(?:mkv|mka)$')
+NAME = re.compile(r'^[a-f0-9]+-(\d{8}T\d{6}Z)-([a-f0-9]+)-(\d{5})\.(?:mkv|mka|wav)$')
 
 
 def recording_files(config, cutoff):
