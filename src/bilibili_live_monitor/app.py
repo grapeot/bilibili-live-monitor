@@ -17,6 +17,7 @@ from .config import load_settings
 from .models import CandidateResponse, HealthResponse, RoomResponse, StateResponse
 from .monitor import Monitor
 from .platform import Candidate, Decision, Platform, Policy
+from .room_config import validate_rooms
 from .store import Store
 
 
@@ -64,13 +65,7 @@ def sse(kind, data, event_id=None):
 def create_app(settings=None):
     settings = settings or load_settings()
     config = json.loads(Path(settings.automation_config).read_text()) if settings.automation_config else {}
-    for rid, room in config.get('rooms', {}).items():
-        if room_url(rid).rsplit('/', 1)[-1] != rid or not room.get('label') or not room.get('intro'):
-            raise ValueError('自动化房间配置不合法')
-        greeting = room.get('greeting', '欢迎 {names} {suffix}')
-        if '{names}' not in greeting:
-            raise ValueError('欢迎模板必须包含{names}')
-        greeting.format(names='测试', suffix='来到直播间～')
+    validate_rooms(config.get('rooms', {}))
     paths = [Path(p['path']).expanduser().resolve() for p in config.get('profiles', {}).values()]
     if len(paths) != len(set(paths)):
         raise ValueError('不同账号必须使用不同profile目录')
@@ -118,6 +113,16 @@ def create_app(settings=None):
     @app.get('/api/automation', summary='自动欢迎、账号和点赞任务状态')
     async def automation_state():
         return app.state.automation.summary()
+
+    @app.post('/api/automation/reload', summary='从启动指定的本地文件热加载房间配置')
+    async def automation_reload():
+        if not settings.automation_config:
+            raise HTTPException(409, '未指定AUTOMATION_CONFIG')
+        try:
+            config = json.loads(Path(settings.automation_config).read_text())
+            return await app.state.automation.reload_rooms(config)
+        except (ValueError, OSError) as error:
+            raise HTTPException(422, str(error)) from error
 
     @app.put('/api/automation/rooms/{room_id}', summary='动态开关本房间自动欢迎')
     async def automation_control(room_id: str, body: RobotControl):
