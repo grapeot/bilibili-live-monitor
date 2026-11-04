@@ -93,4 +93,31 @@ def run_offline(config, state):
         raise RuntimeError('离线ASR没有本场范围内的可用窗口')
     destination = workspace / 'offline_segments.json'
     atomic_json(destination, sorted(segments, key=lambda s: s['start_utc']))
+    atomic_json(out / 'completed.json', {
+        'room_id': config['room_id'], 'start_utc': config['start_utc'], 'cutoff': cutoff,
+        'files': len(rows), 'segments': len(segments),
+        'manifest_sha256': hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+        'segments_sha256': hashlib.sha256(destination.read_bytes()).hexdigest()})
     return str(destination)
+
+
+def verify_offline(config, cutoff):
+    workspace = Path(config['workspace'])
+    manifest_path, marker_path = workspace / 'offline/manifest.json', workspace / 'offline/completed.json'
+    destination = workspace / 'offline_segments.json'
+    if Path(config.get('offline_segments', '')).resolve() != destination.resolve():
+        raise ValueError('离线转写尚未接入本场')
+    marker = json.loads(marker_path.read_text())
+    manifest = json.loads(manifest_path.read_text())
+    segments = json.loads(destination.read_text())
+    status = json.loads((workspace / 'offline/status.json').read_text())
+    if (marker.get('room_id') != config['room_id'] or marker.get('start_utc') != config['start_utc']
+            or marker.get('cutoff') != cutoff or manifest.get('cutoff') != cutoff
+            or not manifest.get('rows') or marker.get('files') != len(manifest['rows'])
+            or not segments or marker.get('segments') != len(segments)
+            or status.get('counts', {}).get('done') != len(manifest['rows'])
+            or any(value for key, value in status.get('counts', {}).items() if key != 'done')
+            or marker.get('manifest_sha256') != hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+            or marker.get('segments_sha256') != hashlib.sha256(destination.read_bytes()).hexdigest()):
+        raise ValueError('离线转写完成凭证不匹配')
+    return marker
