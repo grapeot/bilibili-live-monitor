@@ -17,7 +17,7 @@ def no_ai(*args, **kwargs):
 
 def test_talk_created_and_live_never_preflight_create_or_dispatch(tmp_path, monkeypatch):
     config = {'workspace': str(tmp_path), 'content_mode': 'talk', 'remote': 'host:/share/',
-              'ai_enabled': False}
+              'ai_enabled': False, 'talk_finalize': True}
     state = {'stage': 'created', 'remote_prepared': True}
     monkeypatch.setattr(runner, 'ai_control', no_ai)
     monkeypatch.setattr(runner.watch, 'ai_once', no_ai)
@@ -73,6 +73,52 @@ def test_talk_cannot_publish_without_offline_completion(tmp_path, monkeypatch):
     monkeypatch.setattr(runner.watch,'publish',no_ai)
     with pytest.raises(ValueError, match='离线转写尚未接入'):
         runner.advance(config, {'stage':'finalizing','cutoff':90}, 100)
+
+
+def test_new_talk_waits_for_committed_refinement_and_stops_writers_before_publish(tmp_path, monkeypatch):
+    from bilibili_live_monitor import session_offline, session_timeline, talk_finalize
+    config = {'workspace': str(tmp_path), 'content_mode': 'talk', 'talk_finalize': True, 'final_timeline': True}
+    state = {'stage': 'offline_asr', 'cutoff': 90}
+    monkeypatch.setattr(runner, 'run_offline', lambda *a: str(tmp_path / 'offline_segments.json'))
+    monkeypatch.setattr(runner, 'ensure_ai', lambda c, p: 'offline-only' if p == 'talk_finalize' else no_ai())
+    monkeypatch.setattr(runner.watch, 'ai_once', no_ai)
+    monkeypatch.setattr(talk_finalize, 'prepare', lambda *a: {'id': 'synthetic'})
+    sends = []
+    def submit(config, session, on_handoff):
+        on_handoff()
+        sends.append(session)
+    monkeypatch.setattr(talk_finalize, 'submit', submit)
+    monkeypatch.setattr(talk_finalize, 'progress', lambda *a: {})
+    committed = False
+    monkeypatch.setattr(talk_finalize, 'complete', lambda *a: committed)
+    runner.advance(config, state, 100)
+    assert state['stage'] == 'offline_review'
+    runner.advance(config, state, 101)
+    assert state['final_session'] == 'offline-only'
+    runner.advance(config, state, 102)
+    runner.advance(config, state, 103)
+    assert state['stage'] == 'offline_review' and sends == ['offline-only']
+    committed = True
+    runner.advance(config, state, 104)
+    assert state['stage'] == 'finalizing'
+    monkeypatch.setattr(session_offline, 'verify_offline', lambda *a: {})
+    monkeypatch.setattr(runner, 'stop_ai', Mock(side_effect=[False, True, True]))
+    published = []
+    archived = []
+    monkeypatch.setattr(session_timeline, 'commit', lambda *a: archived.append(True) or {})
+    monkeypatch.setattr(session_timeline, 'verify', lambda *a: None)
+    monkeypatch.setattr(runner.watch, 'publish', lambda *a: published.append(True))
+    for name in ('export_snapshot', 'verify_local', 'verify_remote'):
+        monkeypatch.setattr(runner, name, lambda *a: None)
+    runner.advance(config, state, 105)
+    assert state['stage'] == 'finalizing' and not published
+    committed = False
+    with pytest.raises(ValueError, match='尚未完整入库'):
+        runner.advance(config, state, 106)
+    assert not published
+    committed = True
+    runner.advance(config, state, 107)
+    assert state['stage'] == 'completed' and len(published) == len(archived) == 1
 
 
 def test_talk_renderer_hides_song_features_without_labeling_asr_as_reviewed():
@@ -136,3 +182,23 @@ def test_live_room_mode_propagates_to_existing_session(tmp_path):
     assert current['content_mode']=='talk' and not current['ai_enabled']
     assert current['url']==original['url'] and current['ai_session']=='old'
     assert 'health_enabled' not in current
+
+
+def test_new_talk_gets_refinement_and_timeline_but_old_completed_config_is_untouched(tmp_path):
+    from test_session_workflow import automation, settings
+
+    from bilibili_live_monitor.session_workflow import SessionWorkflows
+    service, candidate = automation(tmp_path)
+    service.rooms['123456']['content_mode'] = 'talk'
+    manager = SessionWorkflows(service, settings(tmp_path))
+    record = manager.prepare('123456', candidate)
+    path = manager.initialize(record)
+    current = json.loads(path.read_text())
+    assert current['talk_finalize'] is True and current['final_timeline'] is True and current['ai_enabled'] is False
+    current.pop('talk_finalize')
+    current.pop('final_timeline')
+    path.write_text(json.dumps(current))
+    before = path.read_bytes()
+    record['stage'] = 'completed'
+    manager.initialize(record)
+    assert path.read_bytes() == before

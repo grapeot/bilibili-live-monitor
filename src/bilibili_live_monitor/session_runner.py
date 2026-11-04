@@ -83,14 +83,16 @@ def advance(config, state, now):
     config_path = workspace / 'config.json'
     phase = state.setdefault('stage', 'created')
     uses_ai = content_ai_enabled(config)
+    talk_final = config.get('content_mode') == 'talk' and config.get('talk_finalize') is True
     if not uses_ai and (config.get('ai_session') or state.get('final_session')):
-        for session in (config.get('ai_session'), state.get('final_session')):
+        for session in (config.get('ai_session'), None if talk_final else state.get('final_session')):
             if session and not stop_ai(config, session, children=True):
                 return
         config.update(ai_enabled=False, ai_session=None)
-        state.pop('final_session', None)
+        if not talk_final:
+            state.pop('final_session', None)
         atomic_json(config_path, {k: v for k, v in config.items() if not k.startswith('_')})
-    if not uses_ai and phase == 'offline_review':
+    if not uses_ai and not talk_final and phase == 'offline_review':
         state['stage'] = phase = 'finalizing'
     if phase == 'created':
         if uses_ai and not state.get('ai_preflight'):
@@ -153,9 +155,36 @@ def advance(config, state, now):
     if phase == 'offline_asr':
         config['offline_segments'] = run_offline(config, state)
         atomic_json(config_path, {k: v for k, v in config.items() if not k.startswith('_')})
-        state['stage'] = 'offline_review' if uses_ai else 'finalizing'
+        state['stage'] = 'offline_review' if uses_ai or talk_final else 'finalizing'
         return
     if phase == 'offline_review':
+        if talk_final:
+            from . import talk_finalize
+            if not state.get('final_session'):
+                state['final_session'] = ensure_ai(config, 'talk_finalize')
+                return
+            if not state.get('finalize_submitted'):
+                plan = talk_finalize.prepare(config)
+                if state.get('finalize_sending'):
+                    if not ai_control(config, 'submitted', session=state['final_session'], marker='FINALIZE_PLAN:' + plan['id']):
+                        raise RuntimeError('杂谈终审发送回执未确认，不重复提交')
+                else:
+                    def handoff():
+                        state['finalize_sending'] = True
+                        atomic_json(workspace / 'workflow.json', state)
+                    from .session_finalize import SubmissionNotSent
+                    try:
+                        talk_finalize.submit(config, state['final_session'], on_handoff=handoff)
+                    except SubmissionNotSent:
+                        state.pop('finalize_sending', None)
+                        atomic_json(workspace / 'workflow.json', state)
+                        raise
+                state.update(finalize_submitted=True, finalize_sending=False)
+                atomic_json(workspace / 'workflow.json', state)
+            state['finalize_progress'] = talk_finalize.progress(config)
+            if talk_finalize.complete(config):
+                state['stage'] = 'finalizing'
+            return
         if not state.get('final_session'):
             state['final_session'] = ensure_ai(config, 'finalize')
             return
@@ -211,6 +240,12 @@ def advance(config, state, now):
         if config.get('content_mode') == 'talk':
             from .session_offline import verify_offline
             verify_offline(config, state['cutoff'])
+        if talk_final:
+            from . import talk_finalize
+            if not stop_ai(config, state.get('final_session'), children=True):
+                return
+            if not talk_finalize.complete(config):
+                raise ValueError('杂谈精修尚未完整入库，不能发布')
         if uses_ai and not stop_ai(config, state.get('final_session'), children=config.get('finalize_parallel', False)):
             return
         if uses_ai and config.get('finalize_parallel'):
@@ -222,6 +257,10 @@ def advance(config, state, now):
                 raise ValueError('转写校正尚未完成复核，不能发布最终版')
         export_snapshot(config)
         verify_local(config)
+        if config.get('final_timeline'):
+            from .session_timeline import commit, verify
+            state['final_timeline'] = commit(config, state['cutoff'])
+            verify(config, state['cutoff'])
         watch.publish(config, workspace / 'public')
         verify_remote(config)
         state.update(stage='completed', completed_at=iso(now), last_error=None)
@@ -262,7 +301,8 @@ def run(path):
                     for session in (config.get('ai_session'), state.get('final_session')):
                         if session:
                             try:
-                                stopped = stop_ai(config, session, children=config.get('finalize_parallel', False)) and stopped
+                                stopped = stop_ai(config, session, children=(config.get('finalize_parallel', False)
+                                                  or config.get('talk_finalize') is True)) and stopped
                             except Exception:
                                 stopped = False
                     if stopped:

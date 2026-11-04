@@ -16,7 +16,8 @@ def _read(path, default):
 
 def correction_context(workspace, source):
     workspace = Path(workspace)
-    witnesses = {row['id']: row['text'] for row in followup_evidence(source)}
+    witnesses = {row['id']: ((row.get('name') or '') + '\n' + row['text']
+                            if row['kind'] == 'danmaku' else row['text']) for row in followup_evidence(source)}
     catalog = []
     root = (workspace / 'song_sources').resolve()
     entries = _read(workspace / 'verified_songs.json', [])

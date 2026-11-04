@@ -122,3 +122,33 @@ def test_room_and_cutoff_scope(setup):
     config['completion_notifications']['not_before'] = '2030-01-02T00:00:00+00:00'
     assert module.notify(config) == []
     assert calls == []
+
+
+def test_new_talk_requires_database_refinement_before_notification(setup, monkeypatch):
+    from bilibili_live_monitor import talk_finalize
+    config, _, folder, calls = setup
+    path = folder / 'config.json'
+    local = json.loads(path.read_text())
+    local['talk_finalize'] = True
+    path.write_text(json.dumps(local))
+    monkeypatch.setattr(talk_finalize, 'complete', lambda c: False)
+    assert module.notify(config)[0]['status'] == 'waiting' and not calls
+    monkeypatch.setattr(talk_finalize, 'complete', lambda c: True)
+    assert module.notify(config)[0]['status'] == 'accepted'
+    sent = [p for p, extra in calls if not extra]
+    assert len(sent) == 1 and 'AI转写精修' in sent[0]['html']
+
+
+def test_final_timeline_commit_is_required_before_new_notification(setup, monkeypatch):
+    from bilibili_live_monitor import session_timeline
+    config, _, folder, calls = setup
+    path = folder / 'config.json'
+    local = json.loads(path.read_text())
+    local['final_timeline'] = True
+    path.write_text(json.dumps(local))
+    def fail(*args):
+        raise ValueError('最终时间线尚未入库')
+    monkeypatch.setattr(session_timeline, 'verify', fail)
+    assert module.notify(config)[0]['status'] == 'waiting' and not calls
+    monkeypatch.setattr(session_timeline, 'verify', lambda *a: {})
+    assert module.notify(config)[0]['status'] == 'accepted'

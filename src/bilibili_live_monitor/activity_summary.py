@@ -3,53 +3,29 @@ from bisect import bisect_left, bisect_right
 
 from .live_share import epoch, iso
 
-CONTENT_GAP_SECONDS = 15
-TALK_GAP_SECONDS = 60
-
 
 def content_blocks(activity, *, include_segments=False):
     blocks = []
-    can_merge = False
     for item in sorted(activity, key=lambda row: epoch(row['start'])):
         if item.get('music_source') == 'recording':
-            can_merge = False
             continue
         if item['label'] == 'singing' and item.get('music_source') == 'probable_live':
             kind, title = 'song', item.get('song')
         elif item['label'] in ('speaking', 'mixed'):
             kind, title = 'talk', None
         else:
-            can_merge = False
             continue
         start, end = epoch(item['start']), epoch(item['end'])
         if end <= start:
             continue
-        # 音频重试可产生约35秒缺口，不把短缺录机械解释为一次新的杂谈。
-        # 仅放宽杂谈分组；原始区间与图表覆盖证据保持不变。
-        gap_limit = TALK_GAP_SECONDS if kind == 'talk' else CONTENT_GAP_SECONDS
-        if (can_merge and blocks and blocks[-1]['kind'] == kind and blocks[-1]['title'] == title
-                and start - blocks[-1]['end'] <= gap_limit):
+        # 按展示行相邻关系分组；segments仍保留缺录/隐藏内容，不能据外包络涂满覆盖。
+        if blocks and blocks[-1]['kind'] == kind and blocks[-1]['title'] == title:
             blocks[-1]['end'] = max(blocks[-1]['end'], end)
             blocks[-1]['segments'].append({'start': start, 'end': end})
         else:
             blocks.append({'kind': kind, 'title': title, 'start': start, 'end': end,
-                           'segments': [{'start': start, 'end': end}], '_barrier': not can_merge})
-        can_merge = True
-    # Brief acknowledgements inside the same identified song belong to that performance.
-    index = 0
-    while index + 2 < len(blocks):
-        left, middle, right = blocks[index:index + 3]
-        if (left['kind'] == right['kind'] == 'song' and left['title']
-                and left['title'] == right['title'] and middle['kind'] == 'talk'
-                and not middle['_barrier'] and not right['_barrier']
-                and middle['end'] - middle['start'] <= 60
-                and 0 <= middle['start'] - left['end'] <= CONTENT_GAP_SECONDS
-                and 0 <= right['start'] - middle['end'] <= CONTENT_GAP_SECONDS):
-            blocks[index:index + 3] = [{**left, 'end': max(left['end'], right['end']),
-                                      'segments': left['segments'] + right['segments']}]
-        else:
-            index += 1
-    return [{k: v for k, v in block.items() if k != '_barrier' and (include_segments or k != 'segments')}
+                           'segments': [{'start': start, 'end': end}]})
+    return [{k: v for k, v in block.items() if include_segments or k != 'segments'}
             for block in blocks]
 
 
