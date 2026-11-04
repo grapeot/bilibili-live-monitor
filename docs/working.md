@@ -430,3 +430,8 @@
 - none/video：保留原模式；WAV 纳入既有按场次文件发现，累计录制统计兼容同 session 的旧媒体文件。
 - 每个活动场次固定300秒程序巡检，不提供 health_enabled 开关，talk 不调用内容 AI。调度失败保留巡检证据，终态停链，明确平台拒绝不 resume。
 - 验证：636 passed / 1 skipped；ruff 通过；前端22项及 build 通过；独立复审 approve。回归包含尾音、质量校验失败不丢音频、关闭失败、双向同场混合文件、禁止拒绝后恢复、调度失败留证、ASR 关闭录音及 talk 固定巡检。
+# 终审分片并行上限上调至10
+
+- finalize总任务prompt改为"最多同时{final_concurrency}片"，字段默认值由4上调至10，允许范围1–10；分片本身仍按30分钟桶划分，本场共10片可全量并行。
+- session-workflow skill示例同步更新为10；final_concurrency保留为可配置项。
+- 628项Python测试与ruff通过；改动镜像到 deployed_20261103 运行快照。

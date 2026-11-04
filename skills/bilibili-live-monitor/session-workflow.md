@@ -33,7 +33,7 @@
     "finish_timeout": 21600,
     "final_review_batches": 40,
     "finalize_parallel": true,
-    "final_concurrency": 4,
+    "final_concurrency": 10,
     "final_subagent": "general",
     "publish": {
       "default": {"remote": "HOST:/share/", "url": "https://example.org/share/"},

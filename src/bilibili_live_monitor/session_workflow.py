@@ -28,8 +28,8 @@ def validate_settings(config, rooms):
         return
     if type(config.get('finalize_parallel', True)) is not bool:
         raise ValueError('finalize_parallel须为布尔值')
-    if type(config.get('final_concurrency', 4)) is not int or not 1 <= config.get('final_concurrency', 4) <= 8:
-        raise ValueError('final_concurrency须为1到8的整数')
+    if type(config.get('final_concurrency', 10)) is not int or not 1 <= config.get('final_concurrency', 10) <= 10:
+        raise ValueError('final_concurrency须为1到10的整数')
     if not isinstance(config.get('final_subagent', 'general'), str) or not config.get('final_subagent', 'general').strip():
         raise ValueError('final_subagent须为非空agent名称')
     for key, default in (('max_hours', 12), ('seal_seconds', 300), ('finish_timeout', 21600)):
@@ -122,7 +122,7 @@ class SessionWorkflows:
             final_review_batches=cfg.get('final_review_batches', 40),
             finish_timeout=cfg.get('finish_timeout', 21600), workflow_key=record['key'])
         config.update(finalize_parallel=cfg.get('finalize_parallel', True),
-                      final_concurrency=cfg.get('final_concurrency', 4),
+                      final_concurrency=cfg.get('final_concurrency', 10),
                       final_subagent=cfg.get('final_subagent', 'general'))
         config['followup_rules'].update(self.automation.rooms[rid].get('followup_rules', {}))
         atomic_json(path, config)
