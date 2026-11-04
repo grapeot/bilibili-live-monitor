@@ -1,7 +1,8 @@
-"""每场独立的五分钟健康巡检；与内容复核分开，终态自动停链。"""
+"""所有活动场次固定五分钟程序巡检；终态停止，不调用内容AI。"""
 import argparse
 import fcntl
 import json
+import re
 import sqlite3
 import sys
 import time
@@ -70,16 +71,17 @@ def inspect(config, previous, now):
     if workflow.get('stage') != 'live':
         return result
     elapsed = now - previous.get('checked_epoch', now)
-    stalled = elapsed >= 240 and result['recording_bytes'] <= previous.get('recording_bytes', -1)
-    capture_bad = room.get('status') in ('error', 'stopped') or stalled
-    if capture_bad:
+    stalled = (room.get('record_mode', 'video') != 'none' and elapsed >= 240
+               and result['recording_bytes'] <= previous.get('recording_bytes', -1))
+    if room.get('status') in ('error', 'stopped') or stalled:
         result['issues'].append('capture_stalled')
     elif room.get('status') == 'reconnecting' or room.get('error'):
         result['issues'].append('capture_reconnecting')
-    if not latest_success or now - epoch(latest_success) > 180:
-        result['issues'].append('asr_stale')
-    if state.get('asr_error') or room.get('audio_error') or not state.get('asr_ready'):
-        result['issues'].append('asr_unhealthy')
+    if room.get('asr_enabled', True):
+        if not latest_success or now - epoch(latest_success) > 180:
+            result['issues'].append('asr_stale')
+        if state.get('asr_error') or room.get('audio_error') or not state.get('asr_ready'):
+            result['issues'].append('asr_unhealthy')
     if result['snapshot_age'] is None or result['snapshot_age'] > 180:
         result['issues'].append('publisher_stale')
     if config.get('ai_enabled') and (result['review_age'] is None or result['review_age'] > 900):
@@ -88,8 +90,12 @@ def inspect(config, previous, now):
     same_live = (candidate.get('live_status') == 1 and candidate.get('live_start') == config['live_start']
                  and checked and 0 <= now - epoch(checked) <= 180
                  and not candidate.get('blocked') and not candidate.get('blocked_alias'))
-    if room.get('status') in ('error', 'stopped') and same_live and len(result['recoveries']) < 2:
-        # 仅重置已耗尽的原生重试，不写入持久operator-stop意图。
+    refusal = any(re.search(r'refused|\b(?:403|412|429)\b', str(value), re.I)
+                  for value in (room.get('error'), candidate.get('last_error'), candidate.get('status_error'),
+                                candidate.get('guard_refused'), platform.get('status_refused')))
+    if refusal:
+        result['issues'].append('platform_refused')
+    if room.get('status') in ('error', 'stopped') and same_live and not refusal and len(result['recoveries']) < 2:
         result['recoveries'].append(now)
         atomic_json(workspace / 'health.json', result)
         try:
@@ -107,7 +113,7 @@ def run(config, *, reschedule=False, dry_run=False):
         path = workspace / 'health.json'
         previous = json.loads(path.read_text()) if path.exists() else {}
         stage = json.loads((workspace / 'workflow.json').read_text()).get('stage')
-        if stage in ('completed', 'attention') or not config.get('health_enabled', True):
+        if stage in ('completed', 'attention'):
             result = {'checked_at': iso(time.time()), 'workflow_stage': stage, 'stopped': True}
         elif dry_run:
             result = {'dry_run': True, 'workflow_stage': stage, 'interval_seconds': INTERVAL}
@@ -117,8 +123,12 @@ def run(config, *, reschedule=False, dry_run=False):
             except Exception as error:
                 result = {**previous, 'checked_at': iso(time.time()),
                           'inspection_error': f'{type(error).__name__}: {error}'[:500]}
+            atomic_json(path, result)
             if reschedule:
-                result['next_job'] = schedule(config)
+                try:
+                    result['next_job'] = schedule(config)
+                except Exception as error:
+                    result['schedule_error'] = f'{type(error).__name__}: {error}'[:500]
             with (workspace / 'health_history.jsonl').open('a') as log:
                 log.write(json.dumps(result, ensure_ascii=False) + '\n')
         if not dry_run:

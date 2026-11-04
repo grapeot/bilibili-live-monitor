@@ -90,7 +90,7 @@ def advance(config, state, now):
         config.update(ai_enabled=False, ai_session=None)
         state.pop('final_session', None)
         atomic_json(config_path, {k: v for k, v in config.items() if not k.startswith('_')})
-    if not uses_ai and phase in ('sealing', 'offline_asr', 'offline_review'):
+    if not uses_ai and phase == 'offline_review':
         state['stage'] = phase = 'finalizing'
     if phase == 'created':
         if uses_ai and not state.get('ai_preflight'):
@@ -128,10 +128,7 @@ def advance(config, state, now):
             watch.ai_once(config, live_state, source, now)
         return
     if phase == 'stopping':
-        if not uses_ai:
-            state['stage'] = 'finalizing'
-            return
-        if not stop_ai(config, config.get('ai_session')):
+        if uses_ai and not stop_ai(config, config.get('ai_session')):
             return
         state.update(stage='sealing', stable_since=now)
         return
@@ -156,7 +153,7 @@ def advance(config, state, now):
     if phase == 'offline_asr':
         config['offline_segments'] = run_offline(config, state)
         atomic_json(config_path, {k: v for k, v in config.items() if not k.startswith('_')})
-        state['stage'] = 'offline_review'
+        state['stage'] = 'offline_review' if uses_ai else 'finalizing'
         return
     if phase == 'offline_review':
         if not state.get('final_session'):
@@ -211,6 +208,9 @@ def advance(config, state, now):
         watch.ai_once(final_config, {'cutoff': state['cutoff']}, source, now, final=True)
         return
     if phase == 'finalizing':
+        if config.get('content_mode') == 'talk':
+            from .session_offline import verify_offline
+            verify_offline(config, state['cutoff'])
         if uses_ai and not stop_ai(config, state.get('final_session'), children=config.get('finalize_parallel', False)):
             return
         if uses_ai and config.get('finalize_parallel'):
@@ -239,7 +239,7 @@ def run(path):
         while state['stage'] not in ('completed', 'attention'):
             started = time.time()
             config = load_config(path)
-            if config.get('health_enabled', True) and started >= next_health_check:
+            if started >= next_health_check:
                 from .session_health import ensure_scheduled
                 try:
                     ensure_scheduled(config, delay=1)

@@ -132,7 +132,8 @@ def read_session_source(config):
         path = Path(config['offline_segments']).resolve()
         if not path.is_relative_to(Path(config['workspace']).resolve()) or 'public' in path.parts:
             raise ValueError('离线转写须保存在本场私有工作区')
-        source['segments'] = json.loads(path.read_text())
+        offline = json.loads(path.read_text())
+        source['segments'] = prefer_offline(source['segments'], offline) if config.get('content_mode') == 'talk' else offline
     else:
         path = Path(config['workspace']) / 'live_backfill_segments.json'
         if path.exists():

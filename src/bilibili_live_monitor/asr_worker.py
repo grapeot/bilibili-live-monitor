@@ -29,4 +29,7 @@ def main():
 
 
 if __name__ == '__main__':
+    # 直接执行脚本时，包内platform.py不能遮蔽标准库。
+    script_directory = os.path.realpath(os.path.dirname(__file__))
+    sys.path[:] = [entry for entry in sys.path if os.path.realpath(entry) != script_directory]
     main()

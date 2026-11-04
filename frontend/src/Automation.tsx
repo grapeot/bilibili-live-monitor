@@ -1,4 +1,5 @@
 import React, {useEffect, useState} from 'react';
+import {WelcomeCopy} from './WelcomeCopy';
 
 type Room = {room_id:string;label:string;intro:string;enabled:boolean;confirmed:string|null;delivery:string;error?:string};
 type Like = {id:string;room_id:string;requested:number;triggered:number;status:string};
@@ -49,6 +50,7 @@ export function AutomationControls(){
           {running&&<button disabled={busy} onClick={()=>void act('/likes/'+running.id+'/stop',{})}>停止点赞</button>}
         </div>
         <p>{room.intro}</p>
+        <WelcomeCopy roomId={room.room_id}/>
         <p className="footnote">欢迎：{room.delivery}{room.error?' · '+room.error:''}。{latest&&`点赞：${latest.status}，前端触发 ${latest.triggered}/${latest.requested} 次（非服务器计入数）。`}</p>
       </article>})}
     {state.notifications.length>0&&<p className="footnote">最近通知：{state.notifications.slice(-4).map(n=>`${n.label} ${n.event==='live'?'开播':'下播'} · ${n.status}`).join('；')}</p>}

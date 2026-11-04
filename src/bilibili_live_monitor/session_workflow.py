@@ -3,6 +3,7 @@ import asyncio
 import hashlib
 import json
 import math
+import re
 import secrets
 import sys
 import time
@@ -27,8 +28,8 @@ def validate_settings(config, rooms):
         return
     if type(config.get('finalize_parallel', True)) is not bool:
         raise ValueError('finalize_parallel须为布尔值')
-    if type(config.get('final_concurrency', 4)) is not int or not 1 <= config.get('final_concurrency', 4) <= 8:
-        raise ValueError('final_concurrency须为1到8的整数')
+    if type(config.get('final_concurrency', 10)) is not int or not 1 <= config.get('final_concurrency', 10) <= 10:
+        raise ValueError('final_concurrency须为1到10的整数')
     if not isinstance(config.get('final_subagent', 'general'), str) or not config.get('final_subagent', 'general').strip():
         raise ValueError('final_subagent须为非空agent名称')
     for key, default in (('max_hours', 12), ('seal_seconds', 300), ('finish_timeout', 21600)):
@@ -90,7 +91,7 @@ class SessionWorkflows:
             if (record.get('stage') not in ('completed', 'attention')
                     and self.automation.rooms[record['room_id']].get('content_mode', 'music') == 'talk'
                     and current.get('content_mode', 'music') != 'talk'):
-                current.update(content_mode='talk', ai_enabled=False, health_enabled=False)
+                current.update(content_mode='talk', ai_enabled=False)
                 atomic_json(path, current)
             return path
         cfg = self.config
@@ -111,7 +112,7 @@ class SessionWorkflows:
         config = json.loads(path.read_text())
         config['content_mode'] = self.automation.rooms[rid].get('content_mode', 'music')
         if config['content_mode'] == 'talk':
-            config.update(ai_enabled=False, health_enabled=False)
+            config.update(ai_enabled=False)
         config.update(model=cfg['model'], opencode_python=cfg['opencode_python'],
             opencode_cwd=cfg['opencode_cwd'], opencode_project=cfg['opencode_project'],
             recording_root=str(settings.data_dir / 'recordings' / rid),
@@ -121,11 +122,31 @@ class SessionWorkflows:
             final_review_batches=cfg.get('final_review_batches', 40),
             finish_timeout=cfg.get('finish_timeout', 21600), workflow_key=record['key'])
         config.update(finalize_parallel=cfg.get('finalize_parallel', True),
-                      final_concurrency=cfg.get('final_concurrency', 4),
+                      final_concurrency=cfg.get('final_concurrency', 10),
                       final_subagent=cfg.get('final_subagent', 'general'))
         config['followup_rules'].update(self.automation.rooms[rid].get('followup_rules', {}))
         atomic_json(path, config)
         return path
+
+    async def recover_message_id(self, opening):
+        process = None
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *self.automation.notification_command, '--lookup-receipt', opening['receipt'],
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+            output, _ = await asyncio.wait_for(process.communicate(), 20)
+            if process.returncode == 0:
+                result = json.loads(output)
+                value = result.get('message_id')
+                if result.get('id') == opening['receipt'] and isinstance(value, str) and re.fullmatch(r'<[^\s<>]+@[^\s<>]+>', value):
+                    opening['message_id'] = value
+                    self.automation.save()
+        except (OSError, ValueError, asyncio.TimeoutError):
+            pass
+        finally:
+            if process and process.returncode is None:
+                process.kill()
+                await process.wait()
 
     def notify_url(self, record, state):
         if not state.get('ready'):
@@ -134,7 +155,17 @@ class SessionWorkflows:
         opening = next((n for n in notifications.values() if n.get('event') == 'live'
                         and n.get('room_id') == record['room_id']
                         and n.get('live_start') == record['start']), None)
-        if not opening or opening.get('status') != 'accepted' or not opening.get('message_id'):
+        if not opening or opening.get('status') != 'accepted':
+            return False
+        if not opening.get('message_id'):
+            command = self.automation.notification_command
+            key = 'metadata:' + opening['id']
+            task = self.automation.tasks.get(key)
+            if ('bilibili_live_monitor.broadcast_email' in command and opening.get('receipt')
+                    and (task is None or task.done()) and time.time() >= opening.get('metadata_retry_after', 0)):
+                opening['metadata_retry_after'] = time.time() + 60
+                self.automation.tasks[key] = asyncio.create_task(self.recover_message_id(opening))
+                self.automation.save()
             return False
         ident = record['key'] + '-dashboard'
         notifications.setdefault(ident, {

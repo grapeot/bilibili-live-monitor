@@ -33,7 +33,7 @@
     "finish_timeout": 21600,
     "final_review_batches": 40,
     "finalize_parallel": true,
-    "final_concurrency": 4,
+    "final_concurrency": 10,
     "final_subagent": "general",
     "publish": {
       "default": {"remote": "HOST:/share/", "url": "https://example.org/share/"},
@@ -57,9 +57,13 @@ python -m bilibili_live_monitor.session_runner --config /PRIVATE/sessions/SESSIO
 
 ### 单房内容模式与录制策略
 
-`rooms.<id>.content_mode` 支持 `music`（默认）与 `talk`。`music` 维持原唱歌流程；`talk` 不创建或调度内容 AI，不查歌名、不做离线 ASR 或 AI 终审，保留实时 ASR 与程序每分钟统计发布，下播转最终静态页。未分析的 ASR 不强行标成已复核杂谈，页面隐藏点歌跟进和唱歌杂谈分段。
+`rooms.<id>.content_mode` 支持 `music`（默认）与 `talk`。`music` 维持原唱歌流程；`talk` 不创建或调度内容 AI、不查歌名、不做歌曲 AI 终审，保留实时 ASR 与程序每分钟统计发布。下播后封口已保存录音，执行离线 ASR，再转最终静态页。未分析的 ASR 不强行标成已复核杂谈，页面隐藏点歌跟进和唱歌杂谈分段。
 
-`rooms.<id>.record_mode` 支持 `none`、`audio`、`video`。未指定时继承平台 policy；显式配置只覆盖当前房间。`talk` 可配置 `record_mode: none`，仅做网页实时采音，不下载录像。欢迎开关保持独立。
+`rooms.<id>.record_mode` 支持 `none`、`audio`、`video`。未指定时继承平台 policy；显式配置只覆盖当前房间。`audio` 将网页播放的16kHz、16bit单声道音频分段保存为 WAV，与实时 ASR 共享采集，不另请求媒体下载地址；关闭 ASR 仍保存音频。`video` 沿用独立 FFmpeg 压缩流录制，`none` 不保存媒体。`talk` 可以选择任一录制模式，欢迎开关保持独立。
+
+所有活动场次固定每300秒运行一次 `session_health` 程序巡检，没有可关闭的房间开关。巡检检查录音/录像增长、已启用的 ASR、页面更新及已启用的内容复核，结果保存在私有 `health.json` 与 `health_history.jsonl`。仅对状态新鲜、同一场、未受平台拒绝的错误或停止采集执行有限恢复，30分钟最多两次；不重启共享服务。调度失败保留本轮结果，runner 后续补链；completed/attention 停止本场巡检。程序巡检不调用内容 AI。
+
+需要完成离线收尾的`talk`房间应至少保存`audio`；`none`只能实时采音，没有素材时离线收尾将保留错误而非伪装完成。
 
 新场次从房间配置读取 `content_mode`。运行中将房间改成 `talk` 并 reload 后，场次管理器同步本场配置，runner 停止旧内容 AI 后继续发布；恢复 `music` 从下一新场生效。已完成场次不回写模式。
 

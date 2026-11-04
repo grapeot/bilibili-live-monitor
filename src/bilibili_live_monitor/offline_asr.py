@@ -268,10 +268,17 @@ def transcribe_file(session, out, row, chunk_seconds):
     width = chunk_seconds * SAMPLE_RATE * 4
     total = max(1, math.ceil(len(pcm) / width)) if pcm else 1
     pieces = [pcm[index * int(width):(index + 1) * int(width)] for index in range(total)] if pcm else [b'']
+    # STFT不能处理极短尾片；均分最后两片，不丢尾音且不超过原切片上限。
+    if len(pieces) >= 2 and len(pieces[-1]) < int(0.1 * SAMPLE_RATE) * 4:
+        tail = pieces[-2] + pieces[-1]
+        split = (len(tail) // 8) * 4
+        pieces[-2:] = [tail[:split], tail[split:]]
+    offset = 0.0
     try:
         for index, piece in enumerate(pieces):
-            start = index * chunk_seconds
+            start = offset
             end = start + (len(piece) / 4 / SAMPLE_RATE if piece else 0)
+            offset = end
             rms = rms_dbfs(piece)
             wav = work / f'{index:05d}.wav'
             _write_wav(wav, piece)

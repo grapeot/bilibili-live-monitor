@@ -254,10 +254,143 @@ def test_room_specific_copy_splits_without_losing_text():
     assert messages[0] == '欢迎访客～'
 
 
+@pytest.mark.asyncio
+async def test_variant_delivery_preserves_pair_and_rotation_on_restart(tmp_path, monkeypatch):
+    service, _ = make(tmp_path)
+    service.rooms['123456']['welcome_variants'] = [
+        {'id': str(i), 'info': f'信息{i}。', 'cta': f'关注{i}哦。'} for i in range(5)]
+    service = Automation(service.platform, service.accounts, {'rooms': service.rooms})
+    service.observe_state('123456')
+    monkeypatch.setattr('bilibili_live_monitor.automation.message_limit', AsyncMock(return_value=80))
+    sender = AsyncMock(return_value={'code': 0})
+    monkeypatch.setattr('bilibili_live_monitor.automation.send_chat', sender)
+    monkeypatch.setattr('bilibili_live_monitor.automation.asyncio.sleep', AsyncMock())
+    service.page = AsyncMock(return_value=object())
+    service.row('123456')['pending'] = [(time.time(), '1', '甲'), (time.time(), '2', '乙')]
+    await service.deliver_welcome('123456')
+    row = service.row('123456')
+    key, session, last_sent = row['variant_id'], row['session'], row['last_sent']
+    assert [c.args[1] for c in sender.await_args_list] == ['欢迎 甲、乙 来到直播间～', f'信息{key}。', f'关注{key}哦。']
+    assert row['delivery'] == 'idle' and len(row['copy_rotation']['remaining']) == 4
+    restarted = Automation(service.platform, service.accounts, {'rooms': service.rooms})
+    assert restarted.row('123456')['copy_rotation'] == row['copy_rotation']
+    assert restarted.row('123456')['session'] == session
+    assert restarted.row('123456')['last_sent'] == last_sent
+    restarted.row('123456')['pending'] = [(time.time(), '3', '丙'), (time.time(), '4', '丁')]
+    restarted.schedule_welcome('123456')
+    assert restarted.tasks == {}  # 新文案不能绕过五分钟冷却。
+
+
+@pytest.mark.asyncio
+async def test_variants_unknown_send_keeps_selected_and_blocks_new_draw(tmp_path, monkeypatch):
+    service, _ = make(tmp_path)
+    service.rooms['123456']['welcome_variants'] = [{'id': 'one', 'info': '信息', 'cta': '关注'}]
+    service = Automation(service.platform, service.accounts, {'rooms': service.rooms})
+    service.observe_state('123456')
+    service.page = AsyncMock(return_value=object())
+    monkeypatch.setattr('bilibili_live_monitor.automation.message_limit', AsyncMock(return_value=80))
+    error = RuntimeError('unknown')
+    error.send_attempted = True
+    monkeypatch.setattr('bilibili_live_monitor.automation.send_chat', AsyncMock(side_effect=error))
+    service.row('123456')['pending'] = [(time.time(), '1', '甲'), (time.time(), '2', '乙')]
+    await service.deliver_welcome('123456')
+    restarted = Automation(service.platform, service.accounts, {'rooms': service.rooms})
+    row = restarted.row('123456')
+    assert row['delivery'] == 'ambiguous' and row['variant_id'] == 'one'
+    row['pending'] = [(time.time(), '3', '丙'), (time.time(), '4', '丁')]
+    restarted.schedule_welcome('123456')
+    assert restarted.tasks == {}
+
+
 @pytest.mark.parametrize('count', [0, 1001, True, 1.5, '2'])
 def test_likes_count_is_explicit_bounded_integer(count):
     with pytest.raises(ValueError):
         LikeRequest(count=count, request_id='abc')
+
+
+@pytest.mark.asyncio
+async def test_unsent_attempts_do_not_skip_variants(tmp_path, monkeypatch):
+    service, _ = make(tmp_path)
+    service.rooms['123456']['welcome_variants'] = [
+        {'id': str(i), 'info': f'信息{i}', 'cta': f'关注{i}'} for i in range(5)]
+    service = Automation(service.platform, service.accounts, {'rooms': service.rooms})
+    service.observe_state('123456')
+    service.page = AsyncMock(return_value=object())
+    monkeypatch.setattr('bilibili_live_monitor.automation.message_limit', AsyncMock(return_value=80))
+    monkeypatch.setattr('bilibili_live_monitor.welcome_variants.random.shuffle', lambda xs: None)
+    monkeypatch.setattr('bilibili_live_monitor.automation.asyncio.sleep', AsyncMock())
+    delivered = []
+    for attempt in range(10):
+        sender = (AsyncMock(side_effect=RuntimeError('existing draft')) if attempt in (1, 2, 3, 4)
+                  else AsyncMock(return_value={'code': 0}))
+        monkeypatch.setattr('bilibili_live_monitor.automation.send_chat', sender)
+        service.row('123456')['pending'] = [(time.time(), '1', '甲'), (time.time(), '2', '乙')]
+        await service.deliver_welcome('123456')
+        if service.row('123456')['delivery'] == 'idle':
+            delivered.append(service.row('123456')['variant_id'])
+    assert delivered == ['0', '1', '2', '3', '4', '0']
+
+
+def test_turning_rotation_off_then_on_resets_queue(tmp_path):
+    from copy import deepcopy
+
+    from bilibili_live_monitor.welcome_variants import choose_variant
+    service, _ = make(tmp_path)
+    service.rooms['123456']['welcome_variants'] = [
+        {'id': str(i), 'info': f'信息{i}', 'cta': f'关注{i}'} for i in range(3)]
+    service = Automation(service.platform, service.accounts, {'rooms': service.rooms})
+    choose_variant(service.variants['123456'], service.row('123456').setdefault('copy_rotation', {}))
+    service.save()
+    cfg = deepcopy(service.rooms)
+    cfg['123456'].pop('welcome_variants')
+    disabled = Automation(service.platform, service.accounts, {'rooms': cfg})
+    assert 'copy_rotation' not in disabled.row('123456')
+    restored = Automation(service.platform, service.accounts, {'rooms': service.rooms})
+    assert 'copy_rotation' not in restored.row('123456')
+
+
+@pytest.mark.asyncio
+async def test_partial_confirmed_variant_is_consumed(tmp_path, monkeypatch):
+    service, _ = make(tmp_path)
+    service.rooms['123456']['welcome_variants'] = [{'id': 'one', 'info': '信息', 'cta': '关注'}]
+    service = Automation(service.platform, service.accounts, {'rooms': service.rooms})
+    service.observe_state('123456')
+    service.page = AsyncMock(return_value=object())
+    monkeypatch.setattr('bilibili_live_monitor.automation.message_limit', AsyncMock(return_value=80))
+    monkeypatch.setattr('bilibili_live_monitor.automation.asyncio.sleep', AsyncMock())
+    monkeypatch.setattr('bilibili_live_monitor.automation.send_chat', AsyncMock(side_effect=[{'code': 0}, RuntimeError('pre-send')]))
+    service.row('123456')['pending'] = [(time.time(), '1', '甲'), (time.time(), '2', '乙')]
+    await service.deliver_welcome('123456')
+    row = service.row('123456')
+    assert row['copy_rotation']['last'] == 'one' and row['last_sent'] is not None
+    assert row['delivery'] == 'paused' and len(row['acknowledgments']) == 1
+
+
+@pytest.mark.asyncio
+async def test_pre_send_new_session_rolls_back_current_rooms_rotation(tmp_path, monkeypatch):
+    service, candidate = make(tmp_path)
+    service.rooms['123456']['welcome_variants'] = [
+        {'id': str(i), 'info': f'信息{i}', 'cta': f'关注{i}'} for i in range(3)]
+    service = Automation(service.platform, service.accounts, {'rooms': service.rooms})
+    candidate['live_start'] = 'old'
+    service.observe_state('123456')
+    service.page = AsyncMock(return_value=object())
+    monkeypatch.setattr('bilibili_live_monitor.automation.message_limit', AsyncMock(return_value=80))
+    async def new_session_before_send(*args, **kwargs):
+        candidate['live_start'] = 'new'
+        service.observe_state('123456')
+        assert not kwargs['allowed']()
+        raise RuntimeError('new session before send')
+    monkeypatch.setattr('bilibili_live_monitor.automation.send_chat', new_session_before_send)
+    old = service.row('123456')
+    old['pending'] = [(time.time(), '1', '甲'), (time.time(), '2', '乙')]
+    await service.deliver_welcome('123456')
+    current = service.row('123456')
+    assert current is not old and current['session'] != old['session']
+    assert 'copy_rotation' not in current and 'variant_id' not in current
+    assert current['delivery'] == 'idle'
+    restarted = Automation(service.platform, service.accounts, {'rooms': service.rooms})
+    assert 'copy_rotation' not in restarted.row('123456')
 
 
 def test_http_controls_and_disabled_state_survive_restart(tmp_path, monkeypatch):

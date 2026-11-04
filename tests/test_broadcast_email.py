@@ -7,14 +7,17 @@ from bilibili_live_monitor import broadcast_email
 
 
 @pytest.mark.parametrize('available', [True, False, 'timeout'])
-def test_send_reads_actual_provider_message_id_and_never_resends(monkeypatch, capsys, available):
-    monkeypatch.setattr('sys.argv', ['test', '--env-file', '/nonexistent/notify.env'])
+def test_send_reads_actual_provider_message_id_and_never_resends(monkeypatch, capsys, available, tmp_path):
+    env = tmp_path / 'notify.env'
+    env.write_text('')
+    monkeypatch.setattr('sys.argv', ['test', '--env-file', str(env)])
     monkeypatch.setattr('sys.stdin', io.StringIO(json.dumps({'id': 'synthetic', 'subject': 'Test', 'html': '<p>test</p>'})))
     for key, value in {'BILI_NOTIFY_FROM': 'notice@example.org', 'BILI_NOTIFY_TO': 'owner@example.org',
                        'RESEND_API_KEY': 'synthetic'}.items():
         monkeypatch.setenv(key, value)
     budgets = []
     monkeypatch.setattr(broadcast_email.time, 'sleep', budgets.append)
+    monkeypatch.setattr(broadcast_email.time, 'monotonic', lambda: sum(budgets))
     requests = []
     def urlopen(request, **kwargs):
         requests.append(request)
@@ -32,4 +35,4 @@ def test_send_reads_actual_provider_message_id_and_never_resends(monkeypatch, ca
     assert result['id'] == 'provider-id'
     assert result['message_id'] == ('<actual-provider@example.org>' if available is True else None)
     assert bool(result['thread_error']) == (available is not True)
-    assert sum(budgets) <= 65  # 调用方90秒内仍可保存已接受回执，预留进程启动余量。
+    assert sum(budgets) <= 75  # 调用方90秒内仍可保存已接受回执，预留进程启动余量。

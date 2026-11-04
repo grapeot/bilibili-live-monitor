@@ -2,6 +2,7 @@
 import argparse
 import json
 import uuid
+from pathlib import Path
 from urllib.request import Request, urlopen
 
 
@@ -10,6 +11,11 @@ def main():
     parser.add_argument('--url', default='http://127.0.0.1:8765')
     commands = parser.add_subparsers(dest='command', required=True)
     commands.add_parser('status')
+    copy = commands.add_parser('copy', help='读取当前欢迎文案，含修订号')
+    copy.add_argument('room')
+    update = commands.add_parser('set-copy', help='从JSON保存文案，无需重启；保留读取时的revision')
+    update.add_argument('room')
+    update.add_argument('--file', type=Path, required=True)
     welcome = commands.add_parser('welcome')
     welcome.add_argument('room')
     welcome.add_argument('state', choices=['on', 'off'])
@@ -24,7 +30,11 @@ def main():
     commands.add_parser('login')
     args = parser.parse_args()
     path, body, method = '', None, 'GET'
-    if args.command == 'welcome':
+    if args.command in ('copy', 'set-copy'):
+        path = f'/rooms/{args.room}/copy'
+        if args.command == 'set-copy':
+            body, method = json.loads(args.file.read_text()), 'PUT'
+    elif args.command == 'welcome':
         path, body, method = f'/rooms/{args.room}', {'enabled': args.state == 'on'}, 'PUT'
     elif args.command == 'like':
         path, body, method = f'/rooms/{args.room}/likes', {

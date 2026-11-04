@@ -25,10 +25,7 @@ def text_length(text):
     return sum(1 if ord(char) < 128 else 2 if ord(char) <= 0xffff else 4 for char in text)
 
 
-def welcome_messages(names, limit, *, intro=INTRO, greeting_template='欢迎 {names} {suffix}'):
-    """优先一条；平台字数不足才拆两条，昵称仅用于展示。"""
-    if limit < 1 or not intro:
-        raise ValueError('介绍文案超出页面字数限制，需要人工调整')
+def welcome_greeting(names, limit, greeting_template='欢迎 {names} {suffix}'):
     selected = [re.sub(r'[\r\n\t]', ' ', name).strip() for name in names[:3]]
     while selected:
         joined = '、'.join(selected)
@@ -39,6 +36,14 @@ def welcome_messages(names, limit, *, intro=INTRO, greeting_template='欢迎 {na
         selected.pop()
     if not selected:
         raise ValueError('昵称超出页面字数限制')
+    return greeting
+
+
+def welcome_messages(names, limit, *, intro=INTRO, greeting_template='欢迎 {names} {suffix}'):
+    """优先一条；平台字数不足才拆两条，昵称仅用于展示。"""
+    if limit < 1 or not intro:
+        raise ValueError('介绍文案超出页面字数限制，需要人工调整')
+    greeting = welcome_greeting(names, limit, greeting_template)
     combined = greeting+intro
     if text_length(combined) <= limit:
         return [combined]

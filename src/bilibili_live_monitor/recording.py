@@ -72,7 +72,8 @@ class Recording:
             self.error_lines = (self.error_lines + [text])[-12:]
 
     def snapshot(self):
-        files = list(self.directory.glob(f'{self.session}-*.mk*'))
+        files = [p for p in self.directory.glob(f'{self.session}-*')
+                 if p.suffix in ('.wav', '.mkv', '.mka') and p.is_file()]
         return {'recording_status': 'recording' if self.progress_seconds > 0 else 'starting',
                 'recorded_seconds': round(self.base_seconds + self.progress_seconds, 3),
                 'recording_files': len(files), 'recording_bytes': sum(p.stat().st_size for p in files)}
