@@ -27,7 +27,7 @@ def make(tmp_path):
         candidates={candidate['url']: candidate}, fixed_urls=lambda: {candidate['url']})
     accounts = SimpleNamespace(epoch=1, switching=False, active='first', identity={'logged_in': True},
                                summary=lambda: {})
-    service = Automation(platform, accounts, {'rooms': {'123456': {'label': '合成主播', 'intro': '欢迎听歌。'}},
+    service = Automation(platform, accounts, {'rooms': {'123456': {'label': '合成主播', 'intro': '欢迎听歌。', 'welcome_enabled': True}},
                                              'notification_command': ['synthetic-mail']})
     return service, candidate
 
@@ -262,7 +262,7 @@ def test_likes_count_is_explicit_bounded_integer(count):
 
 def test_http_controls_and_disabled_state_survive_restart(tmp_path, monkeypatch):
     config = tmp_path/'automation.json'
-    config.write_text(json.dumps({'rooms': {'123456': {'label': '合成主播', 'intro': '合成欢迎'}}}))
+    config.write_text(json.dumps({'rooms': {'123456': {'label': '合成主播', 'intro': '合成欢迎', 'welcome_enabled': True}}}))
     monkeypatch.setattr('bilibili_live_monitor.accounts.Accounts.refresh', AsyncMock())
     settings = Settings(data_dir=tmp_path, automation_config=str(config))
     with TestClient(create_app(settings)) as client:

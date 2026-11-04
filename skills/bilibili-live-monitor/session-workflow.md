@@ -55,6 +55,24 @@ python -m bilibili_live_monitor.session_runner --config /PRIVATE/sessions/SESSIO
 
 ## 通知适配器
 
+### 单房内容模式与录制策略
+
+`rooms.<id>.content_mode` 支持 `music`（默认）与 `talk`。`music` 维持原唱歌流程；`talk` 不创建或调度内容 AI，不查歌名、不做离线 ASR 或 AI 终审，保留实时 ASR 与程序每分钟统计发布，下播转最终静态页。未分析的 ASR 不强行标成已复核杂谈，页面隐藏点歌跟进和唱歌杂谈分段。
+
+`rooms.<id>.record_mode` 支持 `none`、`audio`、`video`。未指定时继承平台 policy；显式配置只覆盖当前房间。`talk` 可配置 `record_mode: none`，仅做网页实时采音，不下载录像。欢迎开关保持独立。
+
+新场次从房间配置读取 `content_mode`。运行中将房间改成 `talk` 并 reload 后，场次管理器同步本场配置，runner 停止旧内容 AI 后继续发布；恢复 `music` 从下一新场生效。已完成场次不回写模式。
+
+### 自动化配置热加载与动态加房
+
+新增房间的欢迎弹幕默认关闭，`rooms.<id>.welcome_enabled` 为严格布尔值，默认 `false`；已有持久化界面开关在重启时保留。
+
+`POST /api/automation/reload` 无请求体，从启动时指定的 `AUTOMATION_CONFIG` 文件读取配置，校验全部成功后执行热加载。支持追加或更新 `rooms` 与 `session_workflow.publish`；拒绝删除已有房间，拒绝其他启动参数变化。显式配置 `welcome_enabled` 会在 reload 时更新运行开关，设为关闭会撤销待发送欢迎；未指定时不改变已有运行开关。
+
+热加载保留已有场次目录、URL、通知、已见观众和冷却状态；更新 `publish` 仅用于之后新建的场次。空房间启动后，首次热加载可以启动自动化循环。
+
+动态加房顺序：更新并原子保存配置文件后，调用 `POST /api/automation/reload`；再导入 candidate；最后 `PUT` 完整 fixed policy 加入新房间并提高 `target_rooms`。单独导入 candidate 不加入固定名单。`target_rooms` 不能超过 `MAX_ROOMS`；容量硬上限是启动参数，超过该上限才需要调整并重启。真实容量和房间名单只放本机私有配置。
+
 私有环境文件提供 `RESEND_API_KEY`、`BILI_NOTIFY_FROM`、`BILI_NOTIFY_TO`、`BILI_NOTIFY_CC`。本人通知将 To 设为本人邮箱，CC 设为本人 Pushover 地址；收件人固定从该环境读取，不能由 stdin 或模型添加。
 
 ```bash

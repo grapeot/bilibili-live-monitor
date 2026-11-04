@@ -347,6 +347,8 @@ def render_snapshot(snapshot: dict) -> str:
                '<thead><tr><th>时间段</th><th>内容</th><th>涨粉</th><th>礼物数</th><th>金额（元）</th><th>状态</th></tr></thead>'
                '<tbody>' + (''.join(rows) or '<tr><td colspan="6">暂无已识别的内容片段</td></tr>') +
                '</tbody></table></div></section>')
+    if snapshot.get('content_mode') == 'talk':
+        footer = ''
     totals = snapshot.get('session_summary', {})
     change = totals.get('followers_change')
     fans = '—' if change is None else f'{change:+d}' if change else '0'
