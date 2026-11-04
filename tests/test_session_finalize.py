@@ -94,8 +94,11 @@ def test_finalization_automatically_groups_content_and_builds_linkable_catalog(t
     assert 'id="song-catalog-links"' in page and '歌曲搜索</a>' in page
     data = catalog({'scope': 'test', 'label': '测试', 'home_url': 'https://example.test/archive/',
                     'sessions': [{'id': 'final', 'label': '完成场次', 'url': 'https://example.test/session/',
+                                  'gift_source': {'database': config['database'], 'room_id': config['room_id']},
                                   'snapshot': str(workspace / 'public/snapshot.json')}]})
     assert len(data['songs']) == 1 and data['songs'][0]['count'] == 2
+    assert data['songs'][0]['gifts']['gift_count'] == 0
+    assert not data['songs'][0]['gifts']['window_complete']
 
 
 @pytest.mark.parametrize('bad', ['identity', 'fingerprint', 'duplicate', 'context'])

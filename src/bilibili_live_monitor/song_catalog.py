@@ -147,7 +147,10 @@ def catalog(config, previous=None):
         song['count'] = len(song['performances'])
         song['latest'] = song['performances'][0]['start']
     songs.sort(key=lambda s: (-s['count'], -s['latest'], s['title']))
-    return {'schema_version': 1, 'scope': scope, 'label': config['label'], 'home_url': home, 'songs': songs}
+    data = {'schema_version': 1, 'scope': scope, 'label': config['label'], 'home_url': home, 'songs': songs}
+    from .song_gifts import add_gift_stats
+    add_gift_stats(data, config['sessions'])
+    return data
 
 
 STYLE = '''body{margin:0;background:#f1f5f9;color:#16324f;font:16px/1.65 system-ui,sans-serif}
@@ -172,29 +175,34 @@ def clock(at):
 
 
 def render(data):
+    from .song_gifts import render_gifts
     esc = html.escape
     cards, pages = [], {}
     for song in data['songs']:
         cards.append(f'<a class="card" href="{song["id"]}/" data-title="{esc(key(song["title"]), quote=True)}">'
-                     f'<h2>{esc(song["title"])}</h2><span>{song["count"]} 次演唱</span>'
-                     f'<small class="muted">最近 {clock(song["latest"])[:10]}</small></a>')
+                     f'<h2>{esc(song["title"])}</h2><span>{song["count"]} 次出现</span>'
+                     f'<small class="muted">最近 {clock(song["latest"])[:10]}</small>{render_gifts(song.get("gifts"))}</a>')
         rows = []
         for item in song['performances']:
             anchors = ''.join(f'<span id="performance-{alias}"></span>' for alias in item['aliases'])
             duration = sum(s['end'] - s['start'] for s in item['segments'])
             rows.append(f'<li id="performance-{item["id"]}">{anchors}<strong>{esc(item["session"])}</strong>'
                         f'<div>{clock(item["start"])}–{clock(item["end"])[11:]}（北京时间）</div>'
-                        f'<p class="muted">已识别唱段 {round(duration)} 秒</p>'
-                        f'<a class="button" href="{esc(item["url"], quote=True)}">打开该次演唱</a></li>')
+                         f'<p class="muted">已识别歌曲片段 {round(duration)} 秒</p>'
+                         + render_gifts(item.get('gifts')) +
+                         f'<a class="button" href="{esc(item["url"], quote=True)}">打开该次片段</a></li>')
         pages[song['id'] + '/index.html'] = page(song['title'], '<a href="../">← 返回歌曲搜索</a>'
-            f'<h1>{esc(song["title"])}</h1><p>{esc(data["label"])} · {song["count"]} 次演唱</p><ul>{"".join(rows)}</ul>')
+            f'<h1>{esc(song["title"])}</h1><p>{esc(data["label"])} · {song["count"]} 次出现</p>'
+            + '<p class="muted">歌曲片段可能是主播演唱，也可能是播放的音乐，目前尚未具备可靠区分两者的功能。</p>'
+            + render_gifts(song.get('gifts')) + '<p class="muted">每次歌曲片段开始前30秒至结束后2分钟；同歌重叠窗口按礼物事件去重，人数跨次去重。金额为平台标价，非主播实收；“+”表示另有未知记录。</p>'
+            + f'<ul>{"".join(rows)}</ul>')
     script = '''<script>const q=document.querySelector('#search'),cards=[...document.querySelectorAll('.card')];
 function filter(){const s=q.value.normalize('NFKC').trim().toLowerCase();let n=0;for(const c of cards){c.hidden=!c.dataset.title.includes(s);if(!c.hidden)n++;}
 document.querySelector('#count').textContent=`${n} 首歌曲`;document.querySelector('#empty').hidden=n!==0;}
  q.value=new URLSearchParams(location.search).get('q')||'';
  q.addEventListener('input',filter);filter();</script>'''
     body = f'<a href="{esc(data["home_url"], quote=True)}">← 返回场次主页</a><h1>{esc(data["label"])} · 歌曲</h1>'
-    body += '<p class="muted">从已完成场次查找演唱记录</p><label for="search">搜索歌名</label><input id="search" type="search" placeholder="输入歌名" autocomplete="off">'
+    body += '<p class="muted">从已完成场次查找歌曲片段。片段可能是主播演唱，也可能是播放的音乐，目前尚未具备可靠区分两者的功能。</p><label for="search">搜索歌名</label><input id="search" type="search" placeholder="输入歌名" autocomplete="off">'
     body += f'<p id="count" aria-live="polite"></p><div class="cards">{"".join(cards)}</div><p id="empty" class="empty" hidden>没有找到匹配歌曲</p>'
     pages['index.html'] = page(data['label'] + ' · 歌曲搜索', body, script)
     return pages
@@ -208,8 +216,8 @@ def build(config):
     active = {s['id'] for s in data['songs']}
     for old in (previous or {}).get('performances', []):
         if old['song_id'] not in active:
-            pages[old['song_id'] + '/index.html'] = page('演唱记录已更新',
-                '<a href="../">← 返回歌曲搜索</a><h1>演唱记录已更新</h1><p>当前没有已确认的演唱记录。</p>')
+            pages[old['song_id'] + '/index.html'] = page('歌曲记录已更新',
+                '<a href="../">← 返回歌曲搜索</a><h1>歌曲记录已更新</h1><p>当前没有可用的歌曲片段。</p>')
     output.mkdir(parents=True, exist_ok=True)
     for name, text in pages.items():
         path = output / name

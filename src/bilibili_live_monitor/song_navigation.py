@@ -1,5 +1,6 @@
 """静态场次页的按歌名、时间定位；兼容历史图表。"""
 import json
+import re
 from urllib.parse import urlsplit
 
 SONG_NAVIGATION = r'''<script id="song-navigation">
@@ -21,6 +22,7 @@ tip.hidden=false;tip.style.left=Math.max(12,Math.min(innerWidth-220,r.left))+'px
 
 
 def with_song_navigation(page):
+    page = neutral_song_labels(page)
     if 'id="song-navigation"' in page:
         return page
     closing = '</body>' if '</body>' in page else '</html>'
@@ -34,7 +36,7 @@ CATALOG_LINKS = r'''<script id="song-catalog-links">
 const normalize=s=>s.normalize('NFKC').trim().replace(/\s+/g,' ').toLowerCase();
 function fill(){for(const row of document.querySelectorAll('#activity-summary tbody tr,#segments tr')){
 const cell=row.children[1];if(!cell)continue;const raw=cell.textContent.trim();
-if(!raw.startsWith('唱歌 · ')&&!row.closest('#segments'))continue;
+if(!raw.startsWith('唱歌 · ')&&!cell.dataset.songCatalogTitle&&!cell.querySelector('[data-song-catalog-link]')&&!row.closest('#segments'))continue;
 const title=raw.replace(/^唱歌\s*·\s*/,'').trim();
 if(!title||['杂谈','唱歌','其他','歌名待确认'].includes(title))continue;
 let link=cell.querySelector('[data-song-catalog-link]');
@@ -51,7 +53,7 @@ fetch(new URL('index.json',base),{cache:'no-cache'}).then(r=>{if(!r.ok)throw new
 
 def with_song_catalog_links(page, catalog_url=None):
     """已收录歌曲直达歌曲页，新歌暂时进入预填歌名的搜索页。"""
-    if not catalog_url or 'id="song-catalog-links"' in page:
+    if not catalog_url:
         return page
     parsed = urlsplit(catalog_url)
     if (parsed.scheme != 'https' or not parsed.hostname or parsed.username or parsed.password
@@ -61,4 +63,17 @@ def with_song_catalog_links(page, catalog_url=None):
     if closing not in page:
         raise ValueError('场次HTML缺少结束标签')
     value = json.dumps(catalog_url.rstrip('/') + '/', ensure_ascii=False).replace('<', '\\u003c')
-    return page.replace(closing, CATALOG_LINKS.replace('__CATALOG_URL__', value) + closing)
+    script = CATALOG_LINKS.replace('__CATALOG_URL__', value)
+    if 'id="song-catalog-links"' in page:
+        return re.sub(r'<script id="song-catalog-links">.*?</script>', lambda _: script, page, flags=re.S)
+    return page.replace(closing, script + closing)
+
+
+def neutral_song_labels(page):
+    """旧静态模板去掉声源断言；不改变底层分类或片段边界。"""
+    page = page.replace('唱歌与杂谈', '歌曲与杂谈').replace('绿色：唱歌；', '绿色：歌曲相关片段；')
+    page = page.replace('主播现场演唱候选', '歌曲相关片段').replace('现场演唱候选', '歌曲相关片段')
+    page = page.replace('可以看见唱的是什么歌', '可以查看歌曲名称')
+    page = re.sub(r'<td>唱歌 · ([^<]*)</td>',
+                  lambda m: '<td data-song-catalog-title="' + m[1].replace('"', '&quot;') + '">' + m[1] + '</td>', page)
+    return page

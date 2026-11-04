@@ -350,20 +350,21 @@ def render_snapshot(snapshot: dict, *, navigation=None) -> str:
                 raise ValueError('场次导航必须为有效HTTPS地址')
             links.append(f'<a href="{esc(target)}">{label}</a>')
         header = '<nav class="archive-nav">' + ' · '.join(links) + '</nav>' + header
-    footer = ('绿色：唱歌；其他内容不着色；灰色：暂无内容记录。'
+    footer = ('绿色：歌曲相关片段；其他内容不着色；灰色：暂无内容记录。'
               '<section id="followups"><h2>灯牌与盲盒点歌跟进</h2><ul>' +
               (followups or '<li>暂无灯牌或盲盒点歌记录</li>') + '</ul></section>')
     rows = []
     for item in snapshot.get('activity_summary', []):
-        title = ('唱歌 · ' + (item['title'] or '歌名待确认')) if item['kind'] == 'song' else '杂谈'
+        title = (item['title'] or '歌名待确认') if item['kind'] == 'song' else '杂谈'
+        song_attr = f' data-song-catalog-title="{esc(title)}"' if item['kind'] == 'song' else ''
         change = item['followers_change']
         fans = '—' if change is None else f'{change:+d}' if change else '0'
         count = str(item['gift_count']) + ('+' if item['gift_count_unknown'] else '')
         amount = f'{item["gift_amount_yuan"]:.2f}' + ('+' if item['gift_amount_unknown'] else '')
         state = {'complete': '', 'collecting': '统计中', 'partial': '尾窗未满'}[item['status']]
         rows.append(f'<tr><td>{clock(epoch(item["start"]))}–{clock(epoch(item["end"]))}</td>'
-                    f'<td>{esc(title)}</td><td>{fans}</td><td>{count}</td><td>{amount}</td><td>{state}</td></tr>')
-    footer += ('<section id="activity-summary"><h2>唱歌与杂谈</h2>'
+                    f'<td{song_attr}>{esc(title)}</td><td>{fans}</td><td>{count}</td><td>{amount}</td><td>{state}</td></tr>')
+    footer += ('<section id="activity-summary"><h2>歌曲与杂谈</h2>'
                '<p>统计至每段结束后30秒；相邻段可能重叠。涨粉为净变化，金额为平台报告金额，非主播实收。'
                '“+”表示另有金额或数量未知的礼物。</p><div class="activity-table"><table>'
                '<thead><tr><th>时间段</th><th>内容</th><th>涨粉</th><th>礼物数</th><th>金额（元）</th><th>状态</th></tr></thead>'
