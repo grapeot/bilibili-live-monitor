@@ -118,4 +118,4 @@ def test_live_room_mode_propagates_to_existing_session(tmp_path):
     current=json.loads(path.read_text())
     assert current['content_mode']=='talk' and not current['ai_enabled']
     assert current['url']==original['url'] and current['ai_session']=='old'
-    assert not current['health_enabled']
+    assert 'health_enabled' not in current

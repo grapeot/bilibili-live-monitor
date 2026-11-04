@@ -60,18 +60,19 @@ async def test_raw_page_accepts_media_response_without_html_video(navigation_sta
 
 
 @pytest.mark.parametrize('asr,preview,expected', [(False, False, False), (True, False, True), (False, True, True)])
-async def test_monitor_requests_playback_only_for_decoded_consumers(tmp_path, asr, preview, expected):
+@pytest.mark.parametrize('mode', ['none', 'audio', 'video'])
+async def test_monitor_requests_playback_only_for_decoded_consumers(tmp_path, asr, preview, expected, mode):
     store = Store(tmp_path/'monitor.db')
     monitor = Monitor(Settings(data_dir=tmp_path), store)
 
     async def page(*args, **kwargs):
-        assert kwargs['require_playback'] is expected
+        assert kwargs['require_playback'] is (expected or mode == 'audio')
         raise ValueError('synthetic_stop_before_navigation')
 
     monitor.browser.page = page
     try:
         with pytest.raises(ValueError, match='synthetic_stop'):
-            await monitor.add('123456', 20, asr_enabled=asr, preview_enabled=preview)
+            await monitor.add('123456', 20, record_mode=mode, asr_enabled=asr, preview_enabled=preview)
     finally:
         await monitor.close()
         store.close()
@@ -80,7 +81,7 @@ async def test_monitor_requests_playback_only_for_decoded_consumers(tmp_path, as
 async def test_recording_reconnect_does_not_need_html_video(tmp_path):
     store = Store(tmp_path/'monitor.db')
     monitor = Monitor(Settings(data_dir=tmp_path, retry_delay=0, max_reconnects=2), store)
-    room = {'room_id':'123456','record_mode':'audio','asr_enabled':False,'preview_enabled':False}
+    room = {'room_id':'123456','record_mode':'video','asr_enabled':False,'preview_enabled':False}
     generation = 'synthetic'
     monitor.generations['123456'] = generation
     ready = asyncio.Event()

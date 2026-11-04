@@ -90,7 +90,7 @@ class SessionWorkflows:
             if (record.get('stage') not in ('completed', 'attention')
                     and self.automation.rooms[record['room_id']].get('content_mode', 'music') == 'talk'
                     and current.get('content_mode', 'music') != 'talk'):
-                current.update(content_mode='talk', ai_enabled=False, health_enabled=False)
+                current.update(content_mode='talk', ai_enabled=False)
                 atomic_json(path, current)
             return path
         cfg = self.config
@@ -111,7 +111,7 @@ class SessionWorkflows:
         config = json.loads(path.read_text())
         config['content_mode'] = self.automation.rooms[rid].get('content_mode', 'music')
         if config['content_mode'] == 'talk':
-            config.update(ai_enabled=False, health_enabled=False)
+            config.update(ai_enabled=False)
         config.update(model=cfg['model'], opencode_python=cfg['opencode_python'],
             opencode_cwd=cfg['opencode_cwd'], opencode_project=cfg['opencode_project'],
             recording_root=str(settings.data_dir / 'recordings' / rid),

@@ -239,7 +239,7 @@ def run(path):
         while state['stage'] not in ('completed', 'attention'):
             started = time.time()
             config = load_config(path)
-            if config.get('health_enabled', True) and started >= next_health_check:
+            if started >= next_health_check:
                 from .session_health import ensure_scheduled
                 try:
                     ensure_scheduled(config, delay=1)
