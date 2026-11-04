@@ -299,6 +299,11 @@ def test_navigation_and_live_pill_survive_both_page_phases(tmp_path):
     final = render_snapshot(result, navigation=navigation)
     assert 'href="https://example.com/archive/"' in final
     assert '<span class="live-pill">直播中</span>' not in final
+    navigation.write_text('{"home_url":"https://example.com/archive/","songs_url":"https://example.com/archive/songs/"}')
+    assert 'href="https://example.com/archive/songs/">歌曲搜索</a>' in render_snapshot(result, navigation=navigation)
+    navigation.write_text('{"home_url":"https://example.com/archive/","songs_url":"javascript:alert(1)"}')
+    with pytest.raises(ValueError, match='HTTPS'):
+        render_snapshot(result, navigation=navigation)
     navigation.write_text('{"home_url":"javascript:alert(1)"}')
     with pytest.raises(ValueError, match='HTTPS'):
         render_snapshot(result, navigation=navigation)

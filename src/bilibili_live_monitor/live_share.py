@@ -338,11 +338,17 @@ def render_snapshot(snapshot: dict, *, navigation=None) -> str:
     header = (f'<p>{clock(lo)}—{clock(hi)}（北京时间） · {status}<br>'
                f'更新于 {clock(hi)}</p>')
     if navigation and Path(navigation).is_file():
-        home = json.loads(Path(navigation).read_text()).get('home_url', '')
-        parsed = urlsplit(home)
-        if parsed.scheme != 'https' or not parsed.hostname or parsed.username or parsed.password:
-            raise ValueError('场次主页必须为有效HTTPS地址')
-        header = f'<nav class="archive-nav"><a href="{esc(home)}">← 返回主页</a></nav>' + header
+        destinations = json.loads(Path(navigation).read_text())
+        links = []
+        for key, label in [('home_url', '← 返回主页'), ('songs_url', '歌曲搜索')]:
+            target = destinations.get(key, '')
+            if key == 'songs_url' and not target:
+                continue
+            parsed = urlsplit(target)
+            if parsed.scheme != 'https' or not parsed.hostname or parsed.username or parsed.password:
+                raise ValueError('场次导航必须为有效HTTPS地址')
+            links.append(f'<a href="{esc(target)}">{label}</a>')
+        header = '<nav class="archive-nav">' + ' · '.join(links) + '</nav>' + header
     footer = ('绿色：唱歌；其他内容不着色；灰色：暂无内容记录。'
               '<section id="followups"><h2>灯牌与盲盒点歌跟进</h2><ul>' +
               (followups or '<li>暂无灯牌或盲盒点歌记录</li>') + '</ul></section>')
