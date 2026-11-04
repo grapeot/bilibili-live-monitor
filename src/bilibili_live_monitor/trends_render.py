@@ -4,6 +4,8 @@ import math
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+from .chart_titles import right_title, with_chart_titles
+
 STYLE = '''body{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif;
 background:#f3f6fb;color:#16243b;margin:0;padding:26px}main{max-width:1120px;margin:auto}
 h1{font-size:27px;margin:0 0 8px}p{color:#53637a;font-size:14px;line-height:1.7}
@@ -105,7 +107,7 @@ def render(data, activities=None, songs=None, *, charts=None, header=None, foote
 
         def y(v):
             return bottom - (v-low)/(high-low)*(bottom-top)
-        parts = [f'<svg viewBox="0 0 1110 252" role="img" aria-label="{esc(name)}">']
+        parts = [f'<svg viewBox="0 -26 1110 278" role="img" aria-label="{esc(name)}">', right_title(name)]
         if activities is not None:
             parts.append('<g data-activity-layer="true">')
             for band in activities:
@@ -230,7 +232,7 @@ def render(data, activities=None, songs=None, *, charts=None, header=None, foote
     default_header = (f'<p>{clock(lo,True)}—{clock(hi,True)} '
              f'（{esc(data["timezone"])}）<br>范围内已观测入场账号 {summary["unique_entry_uids"]:,} · '
              f'送礼事件 {summary["gift_events"]} · <a href="data.json" download>下载冻结数据</a></p>')
-    return ('<!doctype html><html lang="zh-CN"><meta charset="utf-8">'
+    return with_chart_titles('<!doctype html><html lang="zh-CN"><meta charset="utf-8">'
             '<meta name="viewport" content="width=device-width,initial-scale=1">'
             '<meta name="robots" content="noindex,nofollow,noarchive"><meta name="referrer" content="no-referrer">'
             f'<title>{esc(data["title"])} · 直播趋势</title><style>{STYLE}</style>'
