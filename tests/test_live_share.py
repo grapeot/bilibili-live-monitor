@@ -15,6 +15,31 @@ def snapshot(source, annotations=None):
                          approved_songs=('测试歌',))
 
 
+def test_grouped_talk_keeps_capture_gap_visible(monkeypatch):
+    from bilibili_live_monitor import trends_render
+    from bilibili_live_monitor.activity_summary import summarize_activity
+    from bilibili_live_monitor.live_share import epoch, iso, render_snapshot
+
+    source = {'raw': [], 'items': [], 'segments': []}
+    result = snapshot(source)
+    start = epoch(START)
+    result['activity'] = [
+        {'start': iso(start+a), 'end': iso(start+b), 'label': 'speaking',
+         'music_source': 'none', 'song': None} for a, b in [(0, 30), (65, 95)]]
+    result['coverage'] = [(r['start'], r['end']) for r in result['activity']]
+    result['activity_summary'] = summarize_activity(source, result['activity'], start+120)
+    assert len(result['activity_summary']) == 1
+    rendered = {}
+    def render(data, bands, songs, **kwargs):
+        rendered.update(bands=bands, songs=songs)
+        return '<html><body></body></html>'
+    monkeypatch.setattr(trends_render, 'render', render)
+    render_snapshot(result)
+    bands, songs = rendered['bands'], rendered['songs']
+    assert songs == []
+    assert any(b['label'] == 'unknown' and b['start'] == start+30 and b['end'] == start+65 for b in bands)
+
+
 def test_only_requested_metrics_are_exported_and_counts_are_distinct():
     result = snapshot({'raw': [(NOW, 'ONLINE_RANK_COUNT', {'data': {'online_count': 21, 'count': 50}}),
                                (NOW, 'WATCHED_CHANGE', {'data': {'num': 75}})],
