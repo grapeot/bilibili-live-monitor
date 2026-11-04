@@ -295,13 +295,17 @@ def render_snapshot(snapshot: dict, *, navigation=None) -> str:
             continue
         start, end = epoch(item['start']), epoch(item['end'])
         bands.append({'start': start, 'end': end, 'label': 'singing'})
-        if item['song']:
-            # ASR slice timestamps may differ slightly at the same performance boundary.
-            if songs and songs[-1]['title'] == item['song'] and songs[-1]['segments'][-1]['end'] >= start - 2:
-                songs[-1]['segments'][-1]['end'] = max(end, songs[-1]['segments'][-1]['end'])
+    from .activity_summary import content_blocks
+    for block in content_blocks(snapshot['activity'], include_segments=True):
+        if block['kind'] != 'song' or not block['title']:
+            continue
+        spans = []
+        for part in block['segments']:
+            if spans and part['start'] <= spans[-1]['end'] + 2:
+                spans[-1]['end'] = max(spans[-1]['end'], part['end'])
             else:
-                songs.append({'id': f'song-{len(songs)}', 'title': item['song'],
-                              'segments': [{'start': start, 'end': end}]})
+                spans.append(dict(part))
+        songs.append({'id': f'song-{len(songs)}', 'title': block['title'], 'segments': spans})
     charts = []
     for field, name, color, mode in [('entries', '每分钟入场事件', '#2563eb', 'line'),
                                      ('online', '在线人数', '#0891b2', 'stock'),
@@ -373,8 +377,9 @@ def render_snapshot(snapshot: dict, *, navigation=None) -> str:
     data = {'title': snapshot['label'], 'timezone': 'Asia/Shanghai', 'since': iso(lo), 'until': iso(hi),
             'summary': {'gaps': [], 'unique_entry_uids': 0, 'gift_events': snapshot['counts']['gifts']}}
     revision = hashlib.sha256(json.dumps(snapshot, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
-    return render(data, bands, songs, charts=charts, header=header, footer=footer,
-                  show_song_list=False, refresh_revision=revision if snapshot['phase'] != 'completed' else None)
+    from .song_navigation import with_song_navigation
+    return with_song_navigation(render(data, bands, songs, charts=charts, header=header, footer=footer,
+                  show_song_list=False, refresh_revision=revision if snapshot['phase'] != 'completed' else None))
 
 
 def atomic_json(path: Path, value: dict) -> None:

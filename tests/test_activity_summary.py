@@ -47,10 +47,10 @@ def test_song_tail_window_and_overall_do_not_sum_overlapping_rows():
 
 def test_group_brief_talk_inside_song_but_preserve_long_talk_and_gaps():
     blocks = content_blocks([window(0, 30, '测试歌'), window(30, 60), window(60, 90, '测试歌'),
-                             window(90, 180), window(180, 210, '测试歌'), window(220, 250, '测试歌')])
+                             window(90, 180), window(180, 210, '测试歌'), window(230, 260, '测试歌')])
     assert [(b['kind'], b['start'], b['end']) for b in blocks] == [
         ('song', epoch(at(0)), epoch(at(90))), ('talk', epoch(at(90)), epoch(at(180))),
-        ('song', epoch(at(180)), epoch(at(210))), ('song', epoch(at(220)), epoch(at(250)))]
+        ('song', epoch(at(180)), epoch(at(210))), ('song', epoch(at(230)), epoch(at(260)))]
 
 
 def test_reported_currency_units_quantity_and_duplicate_events():

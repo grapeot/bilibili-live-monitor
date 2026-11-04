@@ -3,37 +3,50 @@ from bisect import bisect_left, bisect_right
 
 from .live_share import epoch, iso
 
+CONTENT_GAP_SECONDS = 15
 
-def content_blocks(activity):
+
+def content_blocks(activity, *, include_segments=False):
     blocks = []
+    can_merge = False
     for item in sorted(activity, key=lambda row: epoch(row['start'])):
+        if item.get('music_source') == 'recording':
+            can_merge = False
+            continue
         if item['label'] == 'singing' and item.get('music_source') == 'probable_live':
             kind, title = 'song', item.get('song')
         elif item['label'] in ('speaking', 'mixed'):
             kind, title = 'talk', None
         else:
+            can_merge = False
             continue
         start, end = epoch(item['start']), epoch(item['end'])
         if end <= start:
             continue
-        if (blocks and blocks[-1]['kind'] == kind and blocks[-1]['title'] == title
-                and 0 <= start - blocks[-1]['end'] <= 2):
-            blocks[-1]['end'] = end
+        if (can_merge and blocks and blocks[-1]['kind'] == kind and blocks[-1]['title'] == title
+                and start - blocks[-1]['end'] <= CONTENT_GAP_SECONDS):
+            blocks[-1]['end'] = max(blocks[-1]['end'], end)
+            blocks[-1]['segments'].append({'start': start, 'end': end})
         else:
-            blocks.append({'kind': kind, 'title': title, 'start': start, 'end': end})
+            blocks.append({'kind': kind, 'title': title, 'start': start, 'end': end,
+                           'segments': [{'start': start, 'end': end}], '_barrier': not can_merge})
+        can_merge = True
     # Brief acknowledgements inside the same identified song belong to that performance.
     index = 0
     while index + 2 < len(blocks):
         left, middle, right = blocks[index:index + 3]
         if (left['kind'] == right['kind'] == 'song' and left['title']
                 and left['title'] == right['title'] and middle['kind'] == 'talk'
+                and not middle['_barrier'] and not right['_barrier']
                 and middle['end'] - middle['start'] <= 60
-                and 0 <= middle['start'] - left['end'] <= 2
-                and 0 <= right['start'] - middle['end'] <= 2):
-            blocks[index:index + 3] = [{**left, 'end': right['end']}]
+                and 0 <= middle['start'] - left['end'] <= CONTENT_GAP_SECONDS
+                and 0 <= right['start'] - middle['end'] <= CONTENT_GAP_SECONDS):
+            blocks[index:index + 3] = [{**left, 'end': max(left['end'], right['end']),
+                                      'segments': left['segments'] + right['segments']}]
         else:
             index += 1
-    return blocks
+    return [{k: v for k, v in block.items() if k != '_barrier' and (include_segments or k != 'segments')}
+            for block in blocks]
 
 
 def nonnegative_integer(value):

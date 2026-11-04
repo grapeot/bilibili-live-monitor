@@ -1,0 +1,235 @@
+"""按单个主播生成静态歌曲搜索、歌曲页与跨场演唱链接。"""
+import argparse
+import hashlib
+import html
+import json
+import math
+import unicodedata
+from datetime import datetime
+from html.parser import HTMLParser
+from pathlib import Path
+from urllib.parse import urlencode, urljoin, urlsplit
+from zoneinfo import ZoneInfo
+
+from .activity_summary import content_blocks
+from .live_share import epoch
+
+
+def key(value):
+    return ' '.join(unicodedata.normalize('NFKC', value).split()).casefold()
+
+
+def identifier(*values):
+    return hashlib.sha256(json.dumps(values, ensure_ascii=False).encode()).hexdigest()[:24]
+
+
+def safe_url(value, home):
+    resolved = urljoin(home, value)
+    parsed, origin = urlsplit(resolved), urlsplit(home)
+    if parsed.scheme != 'https' or parsed.netloc != origin.netloc or parsed.username or parsed.password:
+        raise ValueError('场次URL必须位于本主播主页的HTTPS站点')
+    return resolved.split('#')[0]
+
+
+class SongHits(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.hits = set()
+        self.detail_parts = []
+        self.in_detail = False
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        if tag == 'script' and attrs.get('id') == 'detail-data':
+            self.in_detail = True
+        if 'song-hit' not in (attrs.get('class') or '').split():
+            return
+        title = attrs.get('data-song-title', '').strip()
+        start, end = float(attrs['data-start']), float(attrs['data-end'])
+        if title and math.isfinite(start) and math.isfinite(end) and end > start:
+            self.hits.add((start, end, title))
+
+    def handle_data(self, data):
+        if self.in_detail:
+            self.detail_parts.append(data)
+
+    def handle_endtag(self, tag):
+        if tag == 'script':
+            self.in_detail = False
+
+
+def performances(session):
+    """现代页读已发布快照；历史页只读已显示的歌曲命中区，不读私有歌词。"""
+    if session.get('snapshot'):
+        snapshot = json.loads(Path(session['snapshot']).read_text())
+        if snapshot.get('phase') != 'completed':
+            return []
+        if session.get('start') and epoch(snapshot['session_start']) != epoch(session['start']):
+            raise ValueError('场次起始时间与快照不一致')
+        rows = snapshot.get('activity', [])
+    else:
+        parser = SongHits()
+        parser.feed(Path(session['html']).read_text())
+        if parser.detail_parts:
+            detail = json.loads(''.join(parser.detail_parts))
+            for row in detail.get('songs', []):
+                start, end = float(row['start']), float(row['end'])
+                if row.get('title') and math.isfinite(start) and math.isfinite(end) and end > start:
+                    parser.hits.add((start, end, row['title']))
+        rows = [{'start': datetime.fromtimestamp(a, ZoneInfo('UTC')).isoformat(),
+                 'end': datetime.fromtimestamp(b, ZoneInfo('UTC')).isoformat(),
+                 'song': title, 'label': 'singing', 'music_source': 'probable_live'}
+                for a, b, title in sorted(parser.hits)]
+    return [r for r in content_blocks(rows, include_segments=True) if r['kind'] == 'song' and r['title']]
+
+
+def catalog(config, previous=None):
+    home = config['home_url']
+    safe_url(home, home)
+    scope = config['scope']
+    if not isinstance(scope, str) or not scope:
+        raise ValueError('必须指定单主播scope')
+    previous = previous or {'scope': scope, 'performances': []}
+    if previous.get('scope') != scope:
+        raise ValueError('不能复用其他主播的歌曲登记状态')
+    used, result, session_ids = set(), {}, set()
+    old = previous.get('performances', [])
+    for session in config['sessions']:
+        sid = str(session['id'])
+        if sid in session_ids:
+            raise ValueError('重复场次ID')
+        session_ids.add(sid)
+        url = safe_url(session['url'], home)
+        blocks = performances(session)
+        for block_index, block in enumerate(blocks):
+            title = block['title'].strip()
+            normalized = key(title)
+            canonical = config.get('aliases', {}).get(normalized, normalized)
+            song_id = identifier(scope, canonical)
+            start, end = block['start'], block['end']
+            candidates = []
+            for p in old:
+                if p['session_id'] != sid or p['song_id'] != song_id:
+                    continue
+                identities = p.get('identities', [{'id': p['id'], 'start': p['start'], 'end': p['end']}])
+                for identity in identities:
+                    a, b = identity.get('last_start', identity['start']), identity.get('last_end', identity['end'])
+                    matches = [(max(0, min(other['end'], b)-max(other['start'], a)),
+                                -abs(other['start']-a), index)
+                               for index, other in enumerate(blocks)
+                               if identifier(scope, config.get('aliases', {}).get(key(other['title'].strip()), key(other['title'].strip()))) == song_id]
+                    owner = max(matches, default=(0, 0, -1))
+                    if identity['id'] not in used and owner[0] > 0 and owner[2] == block_index:
+                        candidates.append(identity)
+            candidates = list({p['id']: p for p in candidates}.values())
+            match = max(candidates, key=lambda p: (
+                min(end, p.get('last_end', p['end']))-max(start, p.get('last_start', p['start'])),
+                -abs(start-p.get('last_start', p['start']))), default=None)
+            pid = match['id'] if match else identifier(scope, sid, song_id, start)
+            nonce = 0
+            while pid in used:
+                nonce += 1
+                pid = identifier(scope, sid, song_id, start, nonce)
+            aliases = sorted({p['id'] for p in candidates if p['id'] != pid})
+            identities = candidates or [{'id': pid, 'start': start, 'end': end}]
+            identities = [{**identity, 'last_start': start, 'last_end': end} if identity['id'] == pid
+                          else dict(identity) for identity in identities]
+            used.update([pid, *aliases])
+            row = {'id': pid, 'song_id': song_id, 'session_id': sid, 'session': session['label'],
+                   'title': title, 'start': start, 'end': end, 'segments': block['segments'],
+                   'aliases': aliases, 'identities': identities,
+                   'url': url + '#' + urlencode({'song': title, 'at': start})}
+            group = result.setdefault(song_id, {'id': song_id, 'title': title, 'performances': []})
+            group['performances'].append(row)
+    songs = list(result.values())
+    for song in songs:
+        song['performances'].sort(key=lambda p: p['start'], reverse=True)
+        song['count'] = len(song['performances'])
+        song['latest'] = song['performances'][0]['start']
+    songs.sort(key=lambda s: (-s['latest'], s['title']))
+    return {'schema_version': 1, 'scope': scope, 'label': config['label'], 'home_url': home, 'songs': songs}
+
+
+STYLE = '''body{margin:0;background:#f1f5f9;color:#16324f;font:16px/1.65 system-ui,sans-serif}
+main{max-width:1080px;margin:auto;padding:28px 20px}a{color:#1d4ed8}h1{margin:12px 0}h2{font-size:21px}
+.muted{color:#61758a}input{box-sizing:border-box;width:100%;font:inherit;padding:13px;border:1px solid #b9c9dc;border-radius:10px;background:white}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:16px;margin-top:24px}
+.card{display:block;padding:22px;background:white;border:1px solid #dbe4ef;border-radius:14px;text-decoration:none;color:inherit}
+.card:hover,.card:focus-visible{border-color:#2563eb;outline:2px solid #bfdbfe}li{padding:20px;background:white;border-radius:12px;margin:14px 0;list-style:none}ul{padding:0}
+.button{display:inline-block;background:#1d4ed8;color:white;padding:8px 16px;border-radius:8px;text-decoration:none}
+[hidden]{display:none!important}small{display:block}.empty{padding:28px;text-align:center}'''
+
+
+def page(title, body, script=''):
+    return ('<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">'
+            '<meta name="viewport" content="width=device-width,initial-scale=1">'
+            '<meta name="robots" content="noindex,nofollow,noarchive"><meta name="referrer" content="no-referrer">'
+            f'<title>{html.escape(title)}</title><style>{STYLE}</style></head><body><main>{body}</main>{script}</body></html>')
+
+
+def clock(at):
+    return datetime.fromtimestamp(at, ZoneInfo('Asia/Shanghai')).strftime('%Y-%m-%d %H:%M:%S')
+
+
+def render(data):
+    esc = html.escape
+    cards, pages = [], {}
+    for song in data['songs']:
+        cards.append(f'<a class="card" href="{song["id"]}/" data-title="{esc(key(song["title"]), quote=True)}">'
+                     f'<h2>{esc(song["title"])}</h2><span>{song["count"]} 次演唱</span>'
+                     f'<small class="muted">最近 {clock(song["latest"])[:10]}</small></a>')
+        rows = []
+        for item in song['performances']:
+            anchors = ''.join(f'<span id="performance-{alias}"></span>' for alias in item['aliases'])
+            duration = sum(s['end'] - s['start'] for s in item['segments'])
+            rows.append(f'<li id="performance-{item["id"]}">{anchors}<strong>{esc(item["session"])}</strong>'
+                        f'<div>{clock(item["start"])}–{clock(item["end"])[11:]}（北京时间）</div>'
+                        f'<p class="muted">已识别唱段 {round(duration)} 秒</p>'
+                        f'<a class="button" href="{esc(item["url"], quote=True)}">打开该次演唱</a></li>')
+        pages[song['id'] + '/index.html'] = page(song['title'], '<a href="../">← 返回歌曲搜索</a>'
+            f'<h1>{esc(song["title"])}</h1><p>{esc(data["label"])} · {song["count"]} 次演唱</p><ul>{"".join(rows)}</ul>')
+    script = '''<script>const q=document.querySelector('#search'),cards=[...document.querySelectorAll('.card')];
+function filter(){const s=q.value.normalize('NFKC').trim().toLowerCase();let n=0;for(const c of cards){c.hidden=!c.dataset.title.includes(s);if(!c.hidden)n++;}
+document.querySelector('#count').textContent=`${n} 首歌曲`;document.querySelector('#empty').hidden=n!==0;}
+q.addEventListener('input',filter);filter();</script>'''
+    body = f'<a href="{esc(data["home_url"], quote=True)}">← 返回场次主页</a><h1>{esc(data["label"])} · 歌曲</h1>'
+    body += '<p class="muted">从已完成场次查找演唱记录</p><label for="search">搜索歌名</label><input id="search" type="search" placeholder="输入歌名" autocomplete="off">'
+    body += f'<p id="count" aria-live="polite"></p><div class="cards">{"".join(cards)}</div><p id="empty" class="empty" hidden>没有找到匹配歌曲</p>'
+    pages['index.html'] = page(data['label'] + ' · 歌曲搜索', body, script)
+    return pages
+
+
+def build(config):
+    output, state_path = Path(config['output_dir']), Path(config['state_file'])
+    previous = json.loads(state_path.read_text()) if state_path.exists() else None
+    data = catalog(config, previous)
+    pages = render(data)
+    active = {s['id'] for s in data['songs']}
+    for old in (previous or {}).get('performances', []):
+        if old['song_id'] not in active:
+            pages[old['song_id'] + '/index.html'] = page('演唱记录已更新',
+                '<a href="../">← 返回歌曲搜索</a><h1>演唱记录已更新</h1><p>当前没有已确认的演唱记录。</p>')
+    output.mkdir(parents=True, exist_ok=True)
+    for name, text in pages.items():
+        path = output / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temp = path.with_suffix('.tmp')
+        temp.write_text(text)
+        temp.replace(path)
+    public_songs = [{**s, 'performances': [{k: v for k, v in p.items() if k != 'identities'}
+                                          for p in s['performances']]} for s in data['songs']]
+    index = {'schema_version': 1, 'label': data['label'], 'songs': public_songs}
+    (output / 'index.json').write_text(json.dumps(index, ensure_ascii=False, indent=2))
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    temp = state_path.with_suffix('.tmp')
+    temp.write_text(json.dumps({'scope': config['scope'], 'performances': [p for s in data['songs'] for p in s['performances']]}, ensure_ascii=False))
+    temp.replace(state_path)
+    return {'songs': len(data['songs']), 'performances': sum(s['count'] for s in data['songs']),
+            'files': sorted([*pages, 'index.json'])}
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--config', type=Path, required=True)
+    args = parser.parse_args()
+    print(json.dumps(build(json.loads(args.config.read_text())), ensure_ascii=False))
