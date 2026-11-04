@@ -337,6 +337,7 @@ def render_snapshot(snapshot: dict, *, navigation=None) -> str:
         status = '<span class="live-pill">'+status+'</span>'
     header = (f'<p>{clock(lo)}—{clock(hi)}（北京时间） · {status}<br>'
                f'更新于 {clock(hi)}</p>')
+    destinations = {}
     if navigation and Path(navigation).is_file():
         destinations = json.loads(Path(navigation).read_text())
         links = []
@@ -385,9 +386,10 @@ def render_snapshot(snapshot: dict, *, navigation=None) -> str:
     data = {'title': snapshot['label'], 'timezone': 'Asia/Shanghai', 'since': iso(lo), 'until': iso(hi),
             'summary': {'gaps': [], 'unique_entry_uids': 0, 'gift_events': snapshot['counts']['gifts']}}
     revision = hashlib.sha256(json.dumps(snapshot, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
-    from .song_navigation import with_song_navigation
-    return with_song_navigation(render(data, bands, songs, charts=charts, header=header, footer=footer,
+    from .song_navigation import with_song_catalog_links, with_song_navigation
+    page = with_song_navigation(render(data, bands, songs, charts=charts, header=header, footer=footer,
                   show_song_list=False, refresh_revision=revision if snapshot['phase'] != 'completed' else None))
+    return with_song_catalog_links(page, destinations.get('songs_url'))
 
 
 def atomic_json(path: Path, value: dict) -> None:

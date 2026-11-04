@@ -1,4 +1,6 @@
 """静态场次页的按歌名、时间定位；兼容历史图表。"""
+import json
+from urllib.parse import urlsplit
 
 SONG_NAVIGATION = r'''<script id="song-navigation">
 (()=>{function locate(){const p=new URLSearchParams(location.hash.slice(1));
@@ -25,3 +27,38 @@ def with_song_navigation(page):
     if closing not in page:
         raise ValueError('场次HTML缺少结束标签')
     return page.replace(closing, SONG_NAVIGATION + closing)
+
+
+CATALOG_LINKS = r'''<script id="song-catalog-links">
+(()=>{const base=new URL(__CATALOG_URL__),songs=new Map();
+const normalize=s=>s.normalize('NFKC').trim().replace(/\s+/g,' ').toLowerCase();
+function fill(){for(const row of document.querySelectorAll('#activity-summary tbody tr,#segments tr')){
+const cell=row.children[1];if(!cell)continue;const raw=cell.textContent.trim();
+if(!raw.startsWith('唱歌 · ')&&!row.closest('#segments'))continue;
+const title=raw.replace(/^唱歌\s*·\s*/,'').trim();
+if(!title||['杂谈','唱歌','其他','歌名待确认'].includes(title))continue;
+let link=cell.querySelector('[data-song-catalog-link]');
+if(!link){link=document.createElement('a');link.dataset.songCatalogLink='true';link.textContent=title;
+cell.replaceChildren(document.createTextNode(raw.slice(0,raw.indexOf(title))),link);}
+const song=songs.get(normalize(title)),target=new URL(song?song+'/':'',base);
+if(!song)target.searchParams.set('q',title);if(link.href!==target.href)link.href=target.href;
+}}
+fill();new MutationObserver(fill).observe(document.body||document.documentElement,{childList:true,subtree:true});
+fetch(new URL('index.json',base),{cache:'no-cache'}).then(r=>{if(!r.ok)throw new Error('catalog');return r.json();})
+.then(data=>{for(const song of data.songs||[]){if(/^[a-f0-9]{24}$/.test(song.id))songs.set(normalize(song.title),song.id);}fill();}).catch(()=>{});
+})();</script>'''
+
+
+def with_song_catalog_links(page, catalog_url=None):
+    """已收录歌曲直达歌曲页，新歌暂时进入预填歌名的搜索页。"""
+    if not catalog_url or 'id="song-catalog-links"' in page:
+        return page
+    parsed = urlsplit(catalog_url)
+    if (parsed.scheme != 'https' or not parsed.hostname or parsed.username or parsed.password
+            or parsed.query or parsed.fragment):
+        raise ValueError('歌曲目录必须为有效HTTPS地址')
+    closing = '</body>' if '</body>' in page else '</html>'
+    if closing not in page:
+        raise ValueError('场次HTML缺少结束标签')
+    value = json.dumps(catalog_url.rstrip('/') + '/', ensure_ascii=False).replace('<', '\\u003c')
+    return page.replace(closing, CATALOG_LINKS.replace('__CATALOG_URL__', value) + closing)

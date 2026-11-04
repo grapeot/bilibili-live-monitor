@@ -181,6 +181,7 @@ def submit(config, session, on_handoff=lambda: None):
 需要跨片上下文时只读{root / 'context.json'}。子任务不能改annotations、来源登记、配置或代码，不发布，不创建下一级子任务。
 全部子任务完成后运行：{command} merge {flag}。只有你统一合并，不能让子任务同时覆盖annotations.json。
 之后由你统一检查点歌归属与已唱阶段，保留既有人工修正；唱完直接performed，不需要额外完成确认。沿用已有annotations其他字段。
+同时核对相邻分片里同一首歌的名称与声源判断；有证据才统一歌名，保留每个原始窗口与时间，不把录音、未知内容或两次重新演唱强行合并。finish会按统一规则自动合并相邻同歌/杂谈区间并生成最终页面；不手工拼接时间或修改公开HTML。程序发布完成后，既有歌曲目录任务自动更新演唱次数、排序与跨场链接。
 读取{Path(__file__).resolve().parents[2] / 'skills/bilibili-live-monitor/live-share.md'}的歌名来源登记规则。
 新歌名复用已有来源，不足时查公开歌名或短歌词，每次最多6条搜索结果；不向搜索引擎发送昵称、UID、完整转写。用live-share register-song命令登记来源，不改白名单。
 由总会话逐项审核各分片correction_candidates，并结合新查到的来源回看较早窗口。有充分依据的校正原子合并到本场transcript_corrections.json，以当前离线seq+fingerprint为准；保留旧记录，不把实时稿校正按序号直接套用，也不修改冻结输入。

@@ -57,6 +57,47 @@ def test_merge_preserves_followups_and_requires_every_shard(tmp_path):
     assert final.complete(config)
 
 
+def test_finalization_automatically_groups_content_and_builds_linkable_catalog(tmp_path):
+    from test_live_share_control import write_source
+
+    from bilibili_live_monitor.song_catalog import catalog
+    from bilibili_live_monitor.song_sources import register_source
+
+    config, _ = fixture(tmp_path)
+    workspace = Path(config['workspace'])
+    start = epoch(config['start_utc'])
+    rows = [{'seq': i, 'start_utc': iso(start + offset), 'end_utc': iso(start + offset + 10),
+             'text': '合成歌曲' if i in (0, 1, 2, 5) else '合成讲话', 'is_final': True}
+            for i, offset in enumerate((10, 35, 60, 200, 225, 350))]
+    atomic_json(workspace / 'offline_segments.json', rows)
+    register_source(workspace, '测试歌曲', write_source(tmp_path), 0)
+    atomic_json(workspace / 'navigation.json', {'home_url': 'https://example.test/archive/',
+                                                'songs_url': 'https://example.test/archive/songs/'})
+    plan = final.prepare(config)
+    for shard in plan['shards']:
+        data = json.loads(Path(shard['input']).read_text())
+        reviews = [{'seq': w['seq'], 'fingerprint': w['fingerprint'],
+                    'label': 'singing' if w['seq'] in (0, 1, 2, 5) else 'speaking',
+                    'music_source': 'probable_live' if w['seq'] in (0, 1, 2, 5) else 'none',
+                    'song': '测试歌曲' if w['seq'] in (0, 1, 2, 5) else None,
+                    'confidence': 'high', 'investigation_version': 2}
+                   for w in data['windows'] if w['seq'] in data['target_seqs']]
+        atomic_json(Path(shard['result']), {'plan_id': plan['id'], 'reviews': reviews})
+    final.merge(config)
+    final.finish(config)
+    assert final.complete(config)
+    snapshot = json.loads((workspace / 'public/snapshot.json').read_text())
+    assert snapshot['phase'] == 'completed'
+    assert [r['kind'] for r in snapshot['activity_summary']] == ['song', 'talk', 'song']
+    assert snapshot['activity_summary'][0]['end'] == iso(start + 70)
+    page = (workspace / 'public/index.html').read_text()
+    assert 'id="song-catalog-links"' in page and '歌曲搜索</a>' in page
+    data = catalog({'scope': 'test', 'label': '测试', 'home_url': 'https://example.test/archive/',
+                    'sessions': [{'id': 'final', 'label': '完成场次', 'url': 'https://example.test/session/',
+                                  'snapshot': str(workspace / 'public/snapshot.json')}]})
+    assert len(data['songs']) == 1 and data['songs'][0]['count'] == 2
+
+
 @pytest.mark.parametrize('bad', ['identity', 'fingerprint', 'duplicate', 'context'])
 def test_invalid_shard_never_partially_merges(tmp_path, bad):
     config, _ = fixture(tmp_path)

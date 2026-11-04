@@ -3,7 +3,7 @@ import json
 import pytest
 
 from bilibili_live_monitor.song_catalog import build, catalog, performances, render, safe_url
-from bilibili_live_monitor.song_navigation import with_song_navigation
+from bilibili_live_monitor.song_navigation import with_song_catalog_links, with_song_navigation
 
 
 def config(tmp_path, scope='anchor-a', activity=None):
@@ -33,6 +33,25 @@ def test_repeats_and_other_sessions_are_preserved(tmp_path):
     conf['sessions'].append({**conf['sessions'][0], 'id': 's2', 'url': '/session/two/'})
     song = catalog(conf)['songs'][0]
     assert song['count'] == 4 and len({p['id'] for p in song['performances']}) == 4
+
+
+def test_cards_prioritize_performance_count_over_recency(tmp_path):
+    conf = config(tmp_path, activity=[window(0, 20, '常唱'), window(80, 100, '常唱'),
+                                      window(200, 220, '最近单次'), window(150, 170, '较早单次')])
+    data = catalog(conf)
+    assert [(s['title'], s['count']) for s in data['songs']] == [('常唱', 2), ('最近单次', 1), ('较早单次', 1)]
+    page = render(data)['index.html']
+    assert page.index('<h2>常唱</h2>') < page.index('<h2>最近单次</h2>')
+
+
+def test_catalog_links_are_optional_safe_and_idempotent():
+    page = '<html><body><table id="segments"></table></body></html>'
+    assert with_song_catalog_links(page) == page
+    result = with_song_catalog_links(page, 'https://example.test/songs/')
+    assert with_song_catalog_links(result, 'https://example.test/songs/') == result
+    assert result.count('id="song-catalog-links"') == 1
+    with pytest.raises(ValueError, match='HTTPS'):
+        with_song_catalog_links(page, 'javascript:alert(1)')
 
 
 def test_recordings_unknowns_and_unfinished_sessions_not_indexed(tmp_path):

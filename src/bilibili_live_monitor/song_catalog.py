@@ -146,7 +146,7 @@ def catalog(config, previous=None):
         song['performances'].sort(key=lambda p: p['start'], reverse=True)
         song['count'] = len(song['performances'])
         song['latest'] = song['performances'][0]['start']
-    songs.sort(key=lambda s: (-s['latest'], s['title']))
+    songs.sort(key=lambda s: (-s['count'], -s['latest'], s['title']))
     return {'schema_version': 1, 'scope': scope, 'label': config['label'], 'home_url': home, 'songs': songs}
 
 
@@ -191,7 +191,8 @@ def render(data):
     script = '''<script>const q=document.querySelector('#search'),cards=[...document.querySelectorAll('.card')];
 function filter(){const s=q.value.normalize('NFKC').trim().toLowerCase();let n=0;for(const c of cards){c.hidden=!c.dataset.title.includes(s);if(!c.hidden)n++;}
 document.querySelector('#count').textContent=`${n} 首歌曲`;document.querySelector('#empty').hidden=n!==0;}
-q.addEventListener('input',filter);filter();</script>'''
+ q.value=new URLSearchParams(location.search).get('q')||'';
+ q.addEventListener('input',filter);filter();</script>'''
     body = f'<a href="{esc(data["home_url"], quote=True)}">← 返回场次主页</a><h1>{esc(data["label"])} · 歌曲</h1>'
     body += '<p class="muted">从已完成场次查找演唱记录</p><label for="search">搜索歌名</label><input id="search" type="search" placeholder="输入歌名" autocomplete="off">'
     body += f'<p id="count" aria-live="polite"></p><div class="cards">{"".join(cards)}</div><p id="empty" class="empty" hidden>没有找到匹配歌曲</p>'
