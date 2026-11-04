@@ -23,6 +23,8 @@ from .song_sources import register_source, verified_titles
 
 
 def validate_config(config):
+    if config.get('content_mode', 'music') not in ('music', 'talk'):
+        raise ValueError('content_mode必须是music或talk')
     for name in ('workspace', 'database', 'room_id', 'label', 'start_utc', 'live_start'):
         if not isinstance(config.get(name), str) or not config[name]:
             raise ValueError(f'缺少有效配置字段：{name}')
@@ -170,6 +172,8 @@ def export_snapshot(config):
         phase='completed' if completed else 'live', health=health, annotations=annotations,
         approved_songs=tuple(config.get('approved_songs', [])) + verified_titles(workspace),
         followup_overrides=config.get('followup_overrides', {}), followup_rules=config.get('followup_rules'))
+    from .content_mode import apply_content_mode
+    apply_content_mode(snapshot, config)
     destination = workspace / 'public'
     destination.mkdir(exist_ok=True)
     temporary = destination / 'index.html.tmp'

@@ -9,6 +9,7 @@ import time
 import urllib.request
 from pathlib import Path
 
+from bilibili_live_monitor.content_mode import apply_content_mode, content_ai_enabled
 from bilibili_live_monitor.live_share import (
     atomic_json,
     epoch,
@@ -100,7 +101,8 @@ def build(config, state, platform, api_state, now, upload=True):
                               phase=('finalizing' if config.get('workflow_key') else 'completed') if state.get('stop_intent') else 'live', health=health,
                               annotations=annotations, approved_songs=tuple(config.get('approved_songs', [])) + verified_titles(Path(config['workspace'])),
                               followup_overrides=config.get('followup_overrides', {}),
-                              followup_rules=config.get('followup_rules'))
+                               followup_rules=config.get('followup_rules'))
+    apply_content_mode(snapshot, config)
     destination = Path(config['workspace']) / 'public'
     destination.mkdir(exist_ok=True)
     page = destination / 'index.html'
@@ -117,6 +119,8 @@ def build(config, state, platform, api_state, now, upload=True):
 
 
 def ai_once(config, state, source, now, *, final=False):
+    if not content_ai_enabled(config):
+        return
     if ((not final and (state.get('stop_intent') or now >= config['deadline']))
             or not config.get('ai_enabled', bool(config.get('ai_session')))):
         return

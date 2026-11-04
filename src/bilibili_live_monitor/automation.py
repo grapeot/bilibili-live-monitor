@@ -5,10 +5,12 @@ import html
 import json
 import time
 import uuid
+from copy import deepcopy
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 from .likes import trigger_likes
+from .room_config import capture_overrides, reload_plan, validate_rooms
 from .welcome import WelcomeDecision, correct_page, message_limit, observations, send_chat, welcome_messages
 
 
@@ -29,9 +31,11 @@ def confirmed_state(candidate, now=None):
 
 class Automation:
     def __init__(self, platform, accounts, config):
+        validate_rooms(config.get('rooms', {}))
+        self.config = deepcopy(config)
         self.platform, self.accounts = platform, accounts
         self.store, self.browser = platform.store, platform.monitor.browser
-        self.rooms = config.get('rooms', {})
+        self.rooms = deepcopy(config.get('rooms', {}))
         self.notification_command = config.get('notification_command', [])
         self.state = self.store.control('automation', {'rooms': {}, 'notifications': {}, 'likes': {}})
         self.tasks = {}
@@ -40,6 +44,7 @@ class Automation:
         from .session_workflow import SessionWorkflows
         self.workflows = SessionWorkflows(self, config.get('session_workflow', {}))
         self.platform.session_workflow_rooms = set(self.rooms) if self.workflows.enabled else set()
+        self.platform.room_capture_overrides = capture_overrides(self.rooms)
         for row in self.state['likes'].values():
             if row['status'] in ('running', 'queued'):
                 row['status'] = 'interrupted'
@@ -58,7 +63,7 @@ class Automation:
         if room_id not in self.rooms:
             raise KeyError('不在自动化房间配置中')
         return self.state['rooms'].setdefault(room_id, {
-            'enabled': True, 'revision': 0, 'confirmed': None, 'session': None,
+            'enabled': self.rooms[room_id].get('welcome_enabled', False), 'revision': 0, 'confirmed': None, 'session': None,
             'seen': [], 'cursor': 0, 'last_sent': None, 'pending': [], 'delivery': 'idle'})
 
     def candidate(self, room_id):
@@ -95,8 +100,39 @@ class Automation:
             await asyncio.gather(task, return_exceptions=True)
         return self.summary()
 
+    def prepare_room_configs(self, rooms):
+        """校验后返回独立配置；扩展文案模块可在此应用已持久化文案。"""
+        return deepcopy(rooms)
+
+    async def reload_rooms(self, config):
+        config = reload_plan(self.config, config)
+        rooms = self.prepare_room_configs(config.get('rooms', {}))
+        added = sorted(set(rooms) - set(self.rooms))
+        cancelled = []
+        # No await before replacing all references and revoking changed sends.
+        # Existing session records retain their frozen URL and workspace.
+        self.rooms = rooms
+        self.workflows.config = deepcopy(config.get('session_workflow', {}))
+        self.platform.session_workflow_rooms = set(rooms) if self.workflows.enabled else set()
+        self.platform.room_capture_overrides = capture_overrides(rooms)
+        for rid, cfg in rooms.items():
+            row = self.row(rid)
+            desired = cfg.get('welcome_enabled')
+            if desired is not None and desired != row['enabled']:
+                row.update(enabled=desired, revision=row['revision']+1, pending=[])
+                task = self.tasks.get('welcome:'+rid)
+                if task:
+                    task.cancel()
+                    cancelled.append(task)
+        self.config = config
+        self.save()
+        if cancelled:
+            await asyncio.gather(*cancelled, return_exceptions=True)
+        await self.start()
+        return {'accepted': True, 'added': added, 'rooms': sorted(rooms)}
+
     async def start(self):
-        if self.rooms:
+        if self.rooms and (self.loop is None or self.loop.done()):
             self.loop = asyncio.create_task(self.run())
 
     async def run(self):
