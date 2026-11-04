@@ -246,26 +246,7 @@ def render(data, activities=None, songs=None, *, charts=None, header=None, foote
 
 REFRESH_SCRIPT = '''<script>
 (()=>{let busy=false;
- const synchronized=new WeakMap();
- document.addEventListener('scroll',event=>{
-  const source=event.target;
-  if(!source.matches?.('section[data-chart]'))return;
-  const expected=synchronized.get(source);synchronized.delete(source);
-  if(expected!==undefined&&Math.abs(source.scrollLeft-expected)<=1)return;
-  const range=source.scrollWidth-source.clientWidth;
-  if(range<=0)return;
-  const position=Math.max(0,Math.min(1,source.scrollLeft/range));
-  document.querySelectorAll('section[data-chart]').forEach(target=>{
-   if(target===source)return;
-   const left=position*(target.scrollWidth-target.clientWidth);
-   if(Math.abs(target.scrollLeft-left)>1){target.scrollLeft=left;synchronized.set(target,target.scrollLeft);}
-  });
- },true);
- function latest(){requestAnimationFrame(()=>{
-  document.querySelectorAll('section[data-chart]').forEach(n=>{
-   n.scrollLeft=n.scrollWidth-n.clientWidth;synchronized.set(n,n.scrollLeft);
-  });
- });}
+ function latest(){window.__linkedChartScroll?.latest();}
  async function refresh(){
   if(document.hidden||busy)return;busy=true;
   try{

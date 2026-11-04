@@ -1,6 +1,23 @@
 """直播静态页的右侧图名：新模板与历史页面共用。"""
 import html
 
+CHART_SCROLL_SCRIPT = r'''<script id="linked-chart-scroll">
+(()=>{if(window.__linkedChartScroll)return;
+const selector='section[data-chart],.detail-chart',synchronized=new WeakMap();
+function charts(){return [...document.querySelectorAll(selector)];}
+document.addEventListener('scroll',event=>{const source=event.target;if(!source.isConnected||!source.matches?.(selector))return;
+const expected=synchronized.get(source);synchronized.delete(source);
+if(expected!==undefined&&Math.abs(source.scrollLeft-expected)<=1)return;
+const range=source.scrollWidth-source.clientWidth;if(range<=0)return;
+const position=Math.max(0,Math.min(1,source.scrollLeft/range));
+for(const target of charts()){if(target===source)continue;
+const left=position*(target.scrollWidth-target.clientWidth);
+if(Math.abs(target.scrollLeft-left)>1){target.scrollLeft=left;synchronized.set(target,target.scrollLeft);}}
+},true);
+window.__linkedChartScroll={latest(){requestAnimationFrame(()=>{for(const target of charts()){
+target.scrollLeft=target.scrollWidth-target.clientWidth;synchronized.set(target,target.scrollLeft);}});}};
+})();</script>'''
+
 
 def right_title(name, width=1110):
     return (f'<text data-chart-title-side="right" x="{width - 12}" y="-10" '
@@ -25,9 +42,11 @@ fill();new MutationObserver(fill).observe(document.body||document.documentElemen
 
 
 def with_chart_titles(page):
-    if 'id="right-chart-titles"' in page:
-        return page
     closing = '</main>' if '</main>' in page else '</body>' if '</body>' in page else '</html>'
     if closing not in page:
         raise ValueError('静态页面缺少结束标签')
-    return page.replace(closing, CHART_TITLE_SCRIPT + closing)
+    if 'id="right-chart-titles"' not in page:
+        page = page.replace(closing, CHART_TITLE_SCRIPT + closing)
+    if 'id="linked-chart-scroll"' not in page:
+        page = page.replace(closing, CHART_SCROLL_SCRIPT + closing)
+    return page
