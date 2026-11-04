@@ -42,20 +42,37 @@ def test_talk_stops_legacy_agent_before_any_work(tmp_path, monkeypatch):
     assert config['ai_session'] is None and config['ai_enabled'] is False
 
 
-@pytest.mark.parametrize('phase',['stopping','sealing','offline_asr','offline_review','finalizing'])
-def test_talk_finishes_without_offline_asr_or_final_agent(tmp_path, monkeypatch, phase):
-    config = {'workspace':str(tmp_path),'content_mode':'talk','finalize_parallel':True}
-    state = {'stage':phase}
+def test_talk_seals_and_transcribes_before_finalizing_without_agent(tmp_path, monkeypatch):
+    from bilibili_live_monitor import session_offline
+    config = {'workspace':str(tmp_path),'content_mode':'talk','finalize_parallel':True,
+              'api':'https://example.org','room_id':'1','live_start':'synthetic','seal_seconds':0}
+    state = {'stage':'stopping','cutoff':90}
     monkeypatch.setattr(runner, 'ai_control', no_ai)
-    monkeypatch.setattr(runner, 'run_offline', no_ai)
-    monkeypatch.setattr(runner, 'recording_files', no_ai)
+    offline = Mock(return_value=str(tmp_path/'offline_segments.json'))
+    monkeypatch.setattr(runner, 'run_offline', offline)
+    monkeypatch.setattr(runner, 'recording_files', lambda *a: {})
+    monkeypatch.setattr(runner.watch, 'request', lambda *a: {'candidates':[], 'sources':[]})
+    monkeypatch.setattr(session_offline, 'verify_offline', lambda *a: {})
     for name in ('export_snapshot','verify_local','verify_remote'):
         monkeypatch.setattr(runner,name,lambda *a: None)
     monkeypatch.setattr(runner.watch,'publish',lambda *a: None)
     runner.advance(config,state,100)
-    if state['stage']=='finalizing':
-        runner.advance(config,state,101)
+    assert state['stage']=='sealing'
+    runner.advance(config,state,101)
+    runner.advance(config,state,102)
+    assert state['stage']=='offline_asr'
+    runner.advance(config,state,103)
+    assert state['stage']=='finalizing'
+    offline.assert_called_once()
+    runner.advance(config,state,104)
     assert state['stage']=='completed'
+
+
+def test_talk_cannot_publish_without_offline_completion(tmp_path, monkeypatch):
+    config={'workspace':str(tmp_path),'content_mode':'talk'}
+    monkeypatch.setattr(runner.watch,'publish',no_ai)
+    with pytest.raises(ValueError, match='离线转写尚未接入'):
+        runner.advance(config, {'stage':'finalizing','cutoff':90}, 100)
 
 
 def test_talk_renderer_hides_song_features_without_labeling_asr_as_reviewed():

@@ -59,8 +59,10 @@ def final_report(config, record):
         raise ValueError('report_url_mismatch')
     if not verify_snapshot(local)['valid']:
         raise ValueError('invalid_final_snapshot')
+    from .session_offline import verify_offline
+    offline = verify_offline(local, state['cutoff'])
     verify_remote(local)
-    return {'url': url, 'completed_at': state['completed_at'], 'mode': 'talk',
+    return {'url': url, 'completed_at': state['completed_at'], 'mode': 'talk', 'offline_files': offline['files'],
             'hashes': {name: hashlib.sha256((directory / 'public' / name).read_bytes()).hexdigest()
                        for name in ('index.html', 'snapshot.json')}}
 
@@ -110,7 +112,7 @@ def notify(config, dry_run=False):
                 name = html.escape(settings['display_name'])
                 payload = {'id': ident, 'subject': 'Re: ' + parent['subject'], 'in_reply_to': message_id,
                            'html': f'<p>{name}本场直播已收尾，最终统计页面已发布。</p>'
-                                   '<p>本场为杂谈模式，不进行离线转写或歌曲AI终审。</p>'
+                                   '<p>本场已完成已保存录音的离线转写；杂谈模式不进行歌曲AI终审。</p>'
                                    f'<p><a href="{html.escape(proof["url"], quote=True)}">打开最终看板</a></p>'}
                 if call_adapter(command, payload, ('--dry-run',)).get('valid') is not True:
                     raise ValueError('mail_preflight_failed')

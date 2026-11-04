@@ -57,9 +57,9 @@ python -m bilibili_live_monitor.session_runner --config /PRIVATE/sessions/SESSIO
 
 ### 单房内容模式与录制策略
 
-`rooms.<id>.content_mode` 支持 `music`（默认）与 `talk`。`music` 维持原唱歌流程；`talk` 不创建或调度内容 AI，不查歌名、不做离线 ASR 或 AI 终审，保留实时 ASR 与程序每分钟统计发布，下播转最终静态页。未分析的 ASR 不强行标成已复核杂谈，页面隐藏点歌跟进和唱歌杂谈分段。
+`rooms.<id>.content_mode` 支持 `music`（默认）与 `talk`。`music` 维持原唱歌流程；`talk` 不创建或调度内容 AI、不查歌名、不做歌曲 AI 终审，保留实时 ASR 与程序每分钟统计发布。下播后封口已保存录音，执行离线 ASR，再转最终静态页。未分析的 ASR 不强行标成已复核杂谈，页面隐藏点歌跟进和唱歌杂谈分段。
 
-`rooms.<id>.record_mode` 支持 `none`、`audio`、`video`。未指定时继承平台 policy；显式配置只覆盖当前房间。`talk` 可配置 `record_mode: none`，仅做网页实时采音，不下载录像。欢迎开关保持独立。
+`rooms.<id>.record_mode` 支持 `none`、`audio`、`video`。未指定时继承平台 policy；显式配置只覆盖当前房间。需要完成离线收尾的`talk`房间应至少保存`audio`；`none`只能实时采音，没有素材时离线收尾将保留错误而非伪装完成。欢迎开关保持独立。
 
 新场次从房间配置读取 `content_mode`。运行中将房间改成 `talk` 并 reload 后，场次管理器同步本场配置，runner 停止旧内容 AI 后继续发布；恢复 `music` 从下一新场生效。已完成场次不回写模式。
 

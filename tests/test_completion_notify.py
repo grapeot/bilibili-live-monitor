@@ -1,3 +1,4 @@
+import hashlib
 import json
 import sqlite3
 
@@ -23,6 +24,16 @@ def setup(tmp_path, monkeypatch):
     for name, value in [('config.json', local), ('workflow.json', workflow), ('public/snapshot.json', snapshot)]:
         (folder / name).write_text(json.dumps(value))
     (folder / 'public/index.html').write_text('<html>final</html>')
+    (folder/'offline').mkdir()
+    (folder/'offline/manifest.json').write_text(json.dumps({'cutoff':epoch(end),'rows':[{'path':'synthetic'}]}))
+    (folder/'offline_segments.json').write_text('[{"seq":-1}]')
+    (folder/'offline/status.json').write_text('{"counts":{"done":1}}')
+    marker={'room_id':'1','start_utc':start,'cutoff':epoch(end),'files':1,'segments':1,
+            'manifest_sha256':hashlib.sha256((folder/'offline/manifest.json').read_bytes()).hexdigest(),
+            'segments_sha256':hashlib.sha256((folder/'offline_segments.json').read_bytes()).hexdigest()}
+    (folder/'offline/completed.json').write_text(json.dumps(marker))
+    local['offline_segments']=str(folder/'offline_segments.json')
+    (folder/'config.json').write_text(json.dumps(local))
     parent = {'event': 'offline', 'room_id': '1', 'live_start': start, 'status': 'accepted',
               'message_id': '<offline@example.org>', 'receipt': 'parent', 'subject': 'offline'}
     database = tmp_path / 'monitor.db'
@@ -45,17 +56,17 @@ def setup(tmp_path, monkeypatch):
     return config, record, folder, calls
 
 
-def test_talk_without_offline_ai_artifacts_sends_once_and_threads(setup):
+def test_talk_with_offline_asr_without_ai_artifacts_sends_once_and_threads(setup):
     config, record, folder, calls = setup
     assert module.notify(config, dry_run=True)[0]['status'] == 'ready'
-    assert not (folder / 'offline').exists()
+    assert (folder / 'offline/completed.json').exists()
     assert not (folder / 'finalize').exists()
     assert not module.Path(config['completion_notifications']['ledger']).exists()
     assert module.notify(config)[0]['status'] == 'accepted'
     assert module.notify(config)[0]['skipped']
     sent = [p for p, extra in calls if not extra]
     assert len(sent) == 1 and sent[0]['in_reply_to'] == '<offline@example.org>'
-    assert '不进行离线转写' in sent[0]['html']
+    assert '离线转写' in sent[0]['html'] and '不进行歌曲AI终审' in sent[0]['html']
 
 
 @pytest.mark.parametrize('name,field,value', [
@@ -79,6 +90,13 @@ def test_remote_mismatch_blocks_mail(setup, monkeypatch):
     def mismatch(_):
         raise ValueError('remote mismatch')
     monkeypatch.setattr(module, 'verify_remote', mismatch)
+    assert module.notify(config)[0]['status'] == 'waiting'
+    assert calls == []
+
+
+def test_offline_incomplete_or_modified_cannot_notify(setup):
+    config, _, folder, calls = setup
+    (folder/'offline_segments.json').write_text('[]')
     assert module.notify(config)[0]['status'] == 'waiting'
     assert calls == []
 
