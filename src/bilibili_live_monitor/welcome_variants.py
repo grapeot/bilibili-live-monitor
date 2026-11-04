@@ -3,7 +3,31 @@ import hashlib
 import json
 import random
 
-from .welcome import text_length, welcome_greeting
+from .welcome import text_length, welcome_greeting, welcome_messages
+
+COPY_FIELDS = ('greeting', 'intro', 'welcome_variants', 'copy_values')
+
+
+def validate_copy(config):
+    greeting = config.get('greeting', '欢迎 {names} {suffix}')
+    intro = config.get('intro')
+    if not isinstance(greeting, str) or '{names}' not in greeting:
+        raise ValueError('欢迎模板必须包含{names}')
+    if not isinstance(intro, str) or not intro.strip():
+        raise ValueError('介绍文案不能为空')
+    try:
+        greeting.format(names='访客', suffix='来到直播间～')
+    except (KeyError, ValueError, IndexError, AttributeError) as error:
+        raise ValueError('欢迎模板只支持{names}和{suffix}') from error
+    variants = load_variants(config)
+    if len(variants) > 20:
+        raise ValueError('随机文案最多20组')
+    if variants:
+        for variant in variants:
+            variant_messages(['访客'], 80, variant, greeting)
+    else:
+        welcome_messages(['访客'], 80, intro=intro, greeting_template=greeting)
+    return variants
 
 
 def load_variants(config):

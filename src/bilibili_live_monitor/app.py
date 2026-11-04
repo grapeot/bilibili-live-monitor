@@ -8,7 +8,7 @@ from typing import Literal
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field, StrictBool, StrictInt, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr, field_validator
 
 from .accounts import Accounts
 from .automation import Automation
@@ -23,6 +23,22 @@ from .store import Store
 
 class RobotControl(BaseModel):
     enabled: StrictBool
+
+
+class WelcomeVariant(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    id: StrictStr = Field(min_length=1, max_length=100)
+    info: StrictStr = Field(min_length=1, max_length=500)
+    cta: StrictStr = Field(min_length=1, max_length=500)
+
+
+class WelcomeCopy(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    revision: StrictInt = Field(ge=0)
+    greeting: StrictStr = Field(min_length=1, max_length=500)
+    intro: StrictStr = Field(min_length=1, max_length=1000)
+    welcome_variants: list[WelcomeVariant] = Field(max_length=20)
+    copy_values: dict[str, StrictStr] = Field(default_factory=dict, max_length=50)
 
 
 class LikeRequest(BaseModel):
@@ -130,6 +146,24 @@ def create_app(settings=None):
             return await app.state.automation.set_enabled(room_id, body.enabled)
         except KeyError as error:
             raise HTTPException(404, '未配置此房间') from error
+
+    @app.get('/api/automation/rooms/{room_id}/copy', summary='读取本房间当前欢迎文案')
+    async def welcome_copy(room_id: str):
+        try:
+            return app.state.automation.welcome_copy(room_id)
+        except KeyError as error:
+            raise HTTPException(404, '未配置此房间') from error
+
+    @app.put('/api/automation/rooms/{room_id}/copy', summary='保存欢迎文案，从下一轮欢迎生效')
+    async def update_welcome_copy(room_id: str, body: WelcomeCopy):
+        try:
+            return await app.state.automation.update_welcome_copy(room_id, body.model_dump())
+        except KeyError as error:
+            raise HTTPException(404, '未配置此房间') from error
+        except ValueError as error:
+            raise HTTPException(422, str(error)) from error
+        except RuntimeError as error:
+            raise HTTPException(409, str(error)) from error
 
     @app.post('/api/automation/rooms/{room_id}/likes', status_code=202, summary='明确次数的一次性点赞任务')
     async def likes(room_id: str, body: LikeRequest):

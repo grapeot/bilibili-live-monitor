@@ -87,6 +87,32 @@ async def test_invalid_reload_changes_nothing(tmp_path):
         assert service.rooms == before['rooms']
 
 
+@pytest.mark.asyncio
+async def test_reload_updates_variants_and_preserves_saved_copy(tmp_path):
+    service = make(tmp_path, {'123456': {'label': '旧', 'intro': '欢迎'}})
+    service.accounts.summary = lambda: {}
+    service.start = AsyncMock()
+    incoming = deepcopy(service.config)
+    incoming['rooms']['654321'] = {
+        'label': '新', 'intro': '介绍',
+        'welcome_variants': [{'id': 'first', 'info': '新介绍', 'cta': '新引导'}]}
+    await service.reload_rooms(incoming)
+    assert service.summary()['rooms'][1]['variant_count'] == 1
+    assert service.variants['654321'][0]['id'] == 'first'
+    await service.update_welcome_copy('654321', {
+        **service.welcome_copy('654321'), 'intro': '界面保存', 'welcome_variants': []})
+    await service.reload_rooms(incoming)
+    assert service.welcome_copy('654321')['intro'] == '界面保存'
+    assert service.variants['654321'] == []
+    before = deepcopy(service.rooms)
+    broken = deepcopy(incoming)
+    broken['rooms']['123456']['welcome_variants'] = [{'id': 'bad'}]
+    with pytest.raises(ValueError):
+        await service.reload_rooms(broken)
+    assert service.rooms == before
+    service.store.close()
+
+
 def test_only_future_publish_mapping_can_change():
     config = {'rooms': {}, 'session_workflow': {'enabled': False, 'publish': {'default': {}}}}
     incoming = deepcopy(config)

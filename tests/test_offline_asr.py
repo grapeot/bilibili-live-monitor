@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from bilibili_live_monitor import offline_asr
 from bilibili_live_monitor.offline_asr import (
     QUIET_RMS_DBFS,
     _acquire_lock,
@@ -53,6 +54,33 @@ def test_decode_command_fills_timeline_gaps():
     command = decode_command('clip.mka')
     assert 'aresample=async=1:first_pts=0' in command
     assert command[0] == 'ffmpeg'
+
+
+def test_tiny_tail_is_redistributed_without_losing_samples(tmp_path, monkeypatch):
+    source = tmp_path / 'tiny_tail.mkv'
+    source.touch()
+    samples = 30 * 16000 + 171
+    pcm = struct.pack('<f', 0.01) * samples
+    monkeypatch.setattr(offline_asr, '_verify_identity', lambda row: None)
+    monkeypatch.setattr(offline_asr, 'decode_pcm', lambda path: pcm)
+    lengths = []
+
+    class Session:
+        model = 'synthetic'
+
+        def request(self, path, req_id):
+            with wave.open(str(path)) as audio:
+                lengths.append(audio.getnframes())
+            return {'text': '', 'infer_ms': 1, 'truncated': False}
+
+    result = offline_asr.transcribe_file(Session(), tmp_path, {
+        'path': str(source), 'sha256': 'synthetic', 'room_id': '123456',
+        'size': 0, 'mtime_ns': source.stat().st_mtime_ns}, 30)
+    assert len(lengths) == 2
+    assert sum(lengths) == samples
+    assert all(200 < n <= 30 * 16000 for n in lengths)
+    assert result['chunks'][0]['end'] == result['chunks'][1]['start']
+    assert result['chunks'][-1]['end'] == round(samples / 16000, 3)
 
 
 def test_energy_and_text_are_observations_not_speech_truth():
