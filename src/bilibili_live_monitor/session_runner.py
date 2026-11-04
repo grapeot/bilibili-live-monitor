@@ -13,7 +13,7 @@ from pathlib import Path
 
 from . import live_share_watch as watch
 from .content_mode import content_ai_enabled
-from .live_share import atomic_json, fingerprint, iso
+from .live_share import atomic_json, iso
 from .live_share_control import (
     export_snapshot,
     load_config,
@@ -191,13 +191,14 @@ def advance(config, state, now):
         export_snapshot(config)
         report = verify_local(config)
         source = read_session_source(config)
+        from .session_finalize import reviewed as is_reviewed
+        from .transcript_corrections import correction_context
+        corrections, _ = correction_context(workspace, source)
         reviews = json.loads((workspace / 'annotations.json').read_text()).get('reviews', [])
-        reviewed = {r.get('seq'): r.get('fingerprint') for r in reviews
-                    if isinstance(r, dict) and r.get('investigation_version') == 2
-                    and r.get('label') in ('singing', 'speaking')
-                    and r.get('music_source') in ('probable_live', 'recording', 'uncertain', 'none')}
-        remaining = sum(s.get('is_final') and bool(s.get('text')) and reviewed.get(s['seq']) != fingerprint(s)
-                        for s in source['segments'])
+        reviewed = {r.get('seq'): r for r in reviews if isinstance(r, dict)}
+        remaining = sum(s.get('is_final') and bool(s.get('text')) and not is_reviewed(
+                         reviewed.get(s['seq']), {**s, **corrections.get(s['seq'], {})})
+                         for s in source['segments'])
         state.update(unreviewed_windows=remaining, unpublished_songs=report['unpublished_songs'])
         if not remaining and not report['unpublished_songs']:
             state['stage'] = 'finalizing'
@@ -215,6 +216,10 @@ def advance(config, state, now):
         if uses_ai and config.get('finalize_parallel'):
             from .session_finalize import finish
             finish(config)  # 所有写入者停止后，重验实际待发布内容。
+        elif uses_ai:
+            from .session_finalize import corrections
+            if corrections(config)['needs_review']:
+                raise ValueError('转写校正尚未完成复核，不能发布最终版')
         export_snapshot(config)
         verify_local(config)
         watch.publish(config, workspace / 'public')
@@ -230,9 +235,18 @@ def run(path):
         fcntl.flock(publisher, fcntl.LOCK_EX | fcntl.LOCK_NB)
         status_path = workspace / 'workflow.json'
         state = json.loads(status_path.read_text()) if status_path.exists() else {'stage': 'created'}
+        next_health_check = 0
         while state['stage'] not in ('completed', 'attention'):
             started = time.time()
             config = load_config(path)
+            if config.get('health_enabled', True) and started >= next_health_check:
+                from .session_health import ensure_scheduled
+                try:
+                    ensure_scheduled(config, delay=1)
+                    state.pop('health_schedule_error', None)
+                except Exception as error:
+                    state['health_schedule_error'] = f'{type(error).__name__}: {error}'[:500]
+                next_health_check = started + 300
             try:
                 if started > state.get('finish_deadline', float('inf')):
                     raise ValueError('离线收尾超过本场预算')

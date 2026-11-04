@@ -4,6 +4,8 @@ import math
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+from .chart_titles import right_title, with_chart_titles
+
 STYLE = '''body{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif;
 background:#f3f6fb;color:#16243b;margin:0;padding:26px}main{max-width:1120px;margin:auto}
 h1{font-size:27px;margin:0 0 8px}p{color:#53637a;font-size:14px;line-height:1.7}
@@ -12,6 +14,9 @@ margin:16px 0;box-shadow:0 4px 16px #18243b05}h2{font-size:18px;margin:0 0 12px}
 small{font-size:12px;color:#69788d;font-weight:400;margin-left:16px}svg{width:100%;display:block}
 svg text{fill:#748094;font-size:12px}.grid{stroke:#e7edf4;stroke-width:1}a{color:#2563eb}
 footer{margin:20px 0;font-size:13px;color:#617089;line-height:1.8}
+.archive-nav{margin:0 0 12px}.archive-nav a{text-decoration:none;font-weight:600}
+.live-pill{display:inline-flex;align-items:center;gap:7px;padding:4px 12px;border-radius:999px;background:#dbeafe;border:1px solid #93c5fd;color:#1d4ed8;font-weight:700;line-height:1.4}
+.live-pill::before{content:"";width:7px;height:7px;border-radius:50%;background:#2563eb;box-shadow:0 0 0 3px #2563eb18}
 .song-hit{fill:transparent;stroke:transparent;pointer-events:all}
 .song-hit.song-active{fill:#16a34a;fill-opacity:.22;stroke:#15803d;stroke-width:1.5}
 .song-list{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px}
@@ -102,7 +107,7 @@ def render(data, activities=None, songs=None, *, charts=None, header=None, foote
 
         def y(v):
             return bottom - (v-low)/(high-low)*(bottom-top)
-        parts = [f'<svg viewBox="0 0 1110 252" role="img" aria-label="{esc(name)}">']
+        parts = [f'<svg viewBox="0 -26 1110 278" role="img" aria-label="{esc(name)}">', right_title(name)]
         if activities is not None:
             parts.append('<g data-activity-layer="true">')
             for band in activities:
@@ -227,7 +232,7 @@ def render(data, activities=None, songs=None, *, charts=None, header=None, foote
     default_header = (f'<p>{clock(lo,True)}—{clock(hi,True)} '
              f'（{esc(data["timezone"])}）<br>范围内已观测入场账号 {summary["unique_entry_uids"]:,} · '
              f'送礼事件 {summary["gift_events"]} · <a href="data.json" download>下载冻结数据</a></p>')
-    return ('<!doctype html><html lang="zh-CN"><meta charset="utf-8">'
+    return with_chart_titles('<!doctype html><html lang="zh-CN"><meta charset="utf-8">'
             '<meta name="viewport" content="width=device-width,initial-scale=1">'
             '<meta name="robots" content="noindex,nofollow,noarchive"><meta name="referrer" content="no-referrer">'
             f'<title>{esc(data["title"])} · 直播趋势</title><style>{STYLE}</style>'
@@ -241,26 +246,7 @@ def render(data, activities=None, songs=None, *, charts=None, header=None, foote
 
 REFRESH_SCRIPT = '''<script>
 (()=>{let busy=false;
- const synchronized=new WeakMap();
- document.addEventListener('scroll',event=>{
-  const source=event.target;
-  if(!source.matches?.('section[data-chart]'))return;
-  const expected=synchronized.get(source);synchronized.delete(source);
-  if(expected!==undefined&&Math.abs(source.scrollLeft-expected)<=1)return;
-  const range=source.scrollWidth-source.clientWidth;
-  if(range<=0)return;
-  const position=Math.max(0,Math.min(1,source.scrollLeft/range));
-  document.querySelectorAll('section[data-chart]').forEach(target=>{
-   if(target===source)return;
-   const left=position*(target.scrollWidth-target.clientWidth);
-   if(Math.abs(target.scrollLeft-left)>1){target.scrollLeft=left;synchronized.set(target,target.scrollLeft);}
-  });
- },true);
- function latest(){requestAnimationFrame(()=>{
-  document.querySelectorAll('section[data-chart]').forEach(n=>{
-   n.scrollLeft=n.scrollWidth-n.clientWidth;synchronized.set(n,n.scrollLeft);
-  });
- });}
+ function latest(){window.__linkedChartScroll?.latest();}
  async function refresh(){
   if(document.hidden||busy)return;busy=true;
   try{

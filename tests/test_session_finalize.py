@@ -6,7 +6,7 @@ from test_live_share_control import initialized
 
 from bilibili_live_monitor import session_finalize as final
 from bilibili_live_monitor import session_runner as runner
-from bilibili_live_monitor.live_share import atomic_json, epoch, iso
+from bilibili_live_monitor.live_share import atomic_json, epoch, fingerprint, iso
 
 
 def fixture(tmp_path):
@@ -25,7 +25,8 @@ def results(config, plan):
     for shard in plan['shards']:
         inputs = json.loads(Path(shard['input']).read_text())
         rows = [{'seq': w['seq'], 'fingerprint': w['fingerprint'], 'label': 'speaking',
-                 'music_source': 'none', 'song': None, 'investigation_version': 2}
+                  'music_source': 'none', 'song': None, 'investigation_version': 2,
+                  **({'correction_id': w['correction_id']} if w.get('correction_id') else {})}
                 for w in inputs['windows'] if w['seq'] in inputs['target_seqs']]
         atomic_json(Path(shard['result']), {'plan_id': plan['id'], 'reviews': rows})
 
@@ -54,6 +55,50 @@ def test_merge_preserves_followups_and_requires_every_shard(tmp_path):
     assert json.loads(path.read_text())['song_requests'] == [{'id': 'existing'}]
     assert final.finish(config)['status'] == 'completed'
     assert final.complete(config)
+
+
+def test_finalization_automatically_groups_content_and_builds_linkable_catalog(tmp_path):
+    from test_live_share_control import write_source
+
+    from bilibili_live_monitor.song_catalog import catalog
+    from bilibili_live_monitor.song_sources import register_source
+
+    config, _ = fixture(tmp_path)
+    workspace = Path(config['workspace'])
+    start = epoch(config['start_utc'])
+    rows = [{'seq': i, 'start_utc': iso(start + offset), 'end_utc': iso(start + offset + 10),
+             'text': '合成歌曲' if i in (0, 1, 2, 5) else '合成讲话', 'is_final': True}
+            for i, offset in enumerate((10, 35, 60, 200, 225, 350))]
+    atomic_json(workspace / 'offline_segments.json', rows)
+    register_source(workspace, '测试歌曲', write_source(tmp_path), 0)
+    atomic_json(workspace / 'navigation.json', {'home_url': 'https://example.test/archive/',
+                                                'songs_url': 'https://example.test/archive/songs/'})
+    plan = final.prepare(config)
+    for shard in plan['shards']:
+        data = json.loads(Path(shard['input']).read_text())
+        reviews = [{'seq': w['seq'], 'fingerprint': w['fingerprint'],
+                    'label': 'singing' if w['seq'] in (0, 1, 2, 5) else 'speaking',
+                    'music_source': 'probable_live' if w['seq'] in (0, 1, 2, 5) else 'none',
+                    'song': '测试歌曲' if w['seq'] in (0, 1, 2, 5) else None,
+                    'confidence': 'high', 'investigation_version': 2}
+                   for w in data['windows'] if w['seq'] in data['target_seqs']]
+        atomic_json(Path(shard['result']), {'plan_id': plan['id'], 'reviews': reviews})
+    final.merge(config)
+    final.finish(config)
+    assert final.complete(config)
+    snapshot = json.loads((workspace / 'public/snapshot.json').read_text())
+    assert snapshot['phase'] == 'completed'
+    assert [r['kind'] for r in snapshot['activity_summary']] == ['song', 'talk', 'song']
+    assert snapshot['activity_summary'][0]['end'] == iso(start + 70)
+    page = (workspace / 'public/index.html').read_text()
+    assert 'id="song-catalog-links"' in page and '歌曲搜索</a>' in page
+    data = catalog({'scope': 'test', 'label': '测试', 'home_url': 'https://example.test/archive/',
+                    'sessions': [{'id': 'final', 'label': '完成场次', 'url': 'https://example.test/session/',
+                                  'gift_source': {'database': config['database'], 'room_id': config['room_id']},
+                                  'snapshot': str(workspace / 'public/snapshot.json')}]})
+    assert len(data['songs']) == 1 and data['songs'][0]['count'] == 2
+    assert data['songs'][0]['gifts']['gift_count'] == 0
+    assert not data['songs'][0]['gifts']['window_complete']
 
 
 @pytest.mark.parametrize('bad', ['identity', 'fingerprint', 'duplicate', 'context'])
@@ -167,3 +212,126 @@ def test_stop_parallel_family_waits_for_children(tmp_path, monkeypatch):
     monkeypatch.setattr(runner, 'ai_control', control)
     assert not runner.stop_ai({}, 'parent', children=True)
     assert ('abort', 'child') in calls and ('abort', 'parent') not in calls
+
+
+def add_correction(config, rows):
+    root = Path(config['workspace'])
+    (root / 'song_sources').mkdir(exist_ok=True)
+    atomic_json(root / 'song_sources/lyric.json', {'data': {'results': [
+        {'title': '测试歌 歌词', 'url': 'https://example.org/song', 'raw_content': '合成说话'}]}})
+    atomic_json(root / 'verified_songs.json', [
+        {'title': '测试歌', 'file': 'lyric.json', 'result_index': 0}])
+    atomic_json(root / 'transcript_corrections.json', {'corrections': [
+        {'seq': rows[0]['seq'], 'fingerprint': fingerprint(rows[0]),
+         'corrected_text': '合成说话', 'reason': '合成歌词提供词语拼写',
+         'evidence': [{'id': 's:lyric.json:0', 'quote': '合成说话'}]}]})
+
+
+def test_final_correction_requeues_old_review_preserves_raw_and_merges_id(tmp_path):
+    config, rows = fixture(tmp_path)
+    root = Path(config['workspace'])
+    raw = Path(config['offline_segments']).read_bytes()
+    ident = final.frozen_source(config)[0]
+    atomic_json(root / 'annotations.json', {'reviews': [
+        {'seq': s['seq'], 'fingerprint': fingerprint(s), 'label': 'speaking',
+         'music_source': 'none', 'investigation_version': 2} for s in rows]})
+    add_correction(config, rows)
+    assert final.frozen_source(config)[0] == ident  # 校正不是重写冻结原稿
+    plan = final.prepare(config)
+    assert sum(s['targets'] for s in plan['shards']) == 1
+    window = json.loads(Path(plan['shards'][0]['input']).read_text())['windows'][0]
+    assert window['text'] == '合成讲话' and window['corrected_text'] == '合成说话'
+    assert window['correction_id']
+    results(config, plan)
+    final.merge(config)
+    assert final.finish(config)['correction_ids'] == {'0': window['correction_id']}
+    assert final.complete(config)
+    assert Path(config['offline_segments']).read_bytes() == raw
+    public = (root / 'public/snapshot.json').read_text()
+    assert 'corrected_text' not in public and '合成说话' not in public
+
+
+def test_new_correction_after_shard_merge_blocks_finish_until_re_review(tmp_path):
+    config, rows = fixture(tmp_path)
+    plan = final.prepare(config)
+    results(config, plan)
+    final.merge(config)
+    add_correction(config, rows)
+    report = final.corrections(config)
+    assert report['needs_review'] == [0]
+    assert report['active'][0]['corrected_text'] == '合成说话'
+    with pytest.raises(ValueError, match='remaining'):
+        final.finish(config)
+    path = Path(config['workspace']) / 'annotations.json'
+    data = json.loads(path.read_text())
+    data['reviews'][0]['correction_id'] = report['active'][0]['correction_id']
+    atomic_json(path, data)
+    assert final.corrections(config)['needs_review'] == []
+    final.finish(config)
+    assert final.complete(config)
+
+
+def test_changed_or_removed_correction_invalidates_completion(tmp_path):
+    config, rows = fixture(tmp_path)
+    add_correction(config, rows)
+    plan = final.prepare(config)
+    results(config, plan)
+    final.merge(config)
+    final.finish(config)
+    assert final.complete(config)
+    atomic_json(Path(config['workspace']) / 'transcript_corrections.json', {'corrections': []})
+    assert not final.complete(config)
+    assert final.corrections(config)['needs_review'] == [0]
+    with pytest.raises(ValueError, match='remaining'):
+        final.finish(config)
+
+
+def test_live_correction_not_blindly_applied_to_replacement_offline_text(tmp_path):
+    config, rows = fixture(tmp_path)
+    add_correction(config, rows)
+    rows[0]['text'] = '新的离线原稿'
+    atomic_json(Path(config['offline_segments']), rows)
+    report = final.corrections(config)
+    assert report['active'] == []
+    assert report['rejected'][0]['reason'] == 'stale_or_missing_source'
+    window = final.frozen_source(config)[3][0]
+    assert window['text'] == '新的离线原稿' and 'corrected_text' not in window
+
+
+def test_serial_finalization_waits_for_corrected_window_review(tmp_path, monkeypatch):
+    config, rows = fixture(tmp_path)
+    config['finalize_parallel'] = False
+    root = Path(config['workspace'])
+    add_correction(config, rows)
+    atomic_json(root / 'annotations.json', {'reviews': [
+        {'seq': s['seq'], 'fingerprint': fingerprint(s), 'label': 'speaking',
+         'music_source': 'none', 'investigation_version': 2} for s in rows]})
+    monkeypatch.setattr(runner, 'ai_control', lambda *a, **k: {'type': 'idle'})
+    monkeypatch.setattr(runner.watch, 'ai_once', lambda *a, **k: True)
+    state = {'stage': 'offline_review', 'final_session': 'parent', 'cutoff': epoch(config['start_utc']) + 3600}
+    runner.advance(config, state, 1)
+    assert state['stage'] == 'offline_review' and state['unreviewed_windows'] == 1
+    state['stage'] = 'finalizing'
+    monkeypatch.setattr(runner, 'stop_ai', lambda *a, **k: True)
+    with pytest.raises(ValueError, match='转写校正'):
+        runner.advance(config, state, 2)
+
+
+def test_serial_final_publish_checks_raw_fingerprint_not_only_correction_id(tmp_path, monkeypatch):
+    config, rows = fixture(tmp_path)
+    config['finalize_parallel'] = False
+    add_correction(config, rows)
+    plan = final.prepare(config)
+    results(config, plan)
+    final.merge(config)
+    path = Path(config['workspace']) / 'annotations.json'
+    data = json.loads(path.read_text())
+    assert data['reviews'][0]['correction_id']
+    data['reviews'][0]['fingerprint'] = 'stale'
+    atomic_json(path, data)
+    monkeypatch.setattr(runner, 'stop_ai', lambda *a, **k: True)
+    monkeypatch.setattr(runner.watch, 'publish', lambda *a: pytest.fail('must not publish'))
+    state = {'stage': 'finalizing', 'final_session': 'parent'}
+    with pytest.raises(ValueError, match='转写校正'):
+        runner.advance(config, state, 1)
+    assert state['stage'] == 'finalizing'

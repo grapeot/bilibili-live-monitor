@@ -87,6 +87,8 @@ python -m bilibili_live_monitor.broadcast_email --env-file /PRIVATE/notify.env -
 
 新开播恢复该房间实时 ASR。本场显式更新 policy 可以降级，跨重启保留该选择，下一场再恢复；不启用自由聊天或点赞。独立 `update_periodic` 会话使用完整模型名，经过 OpenCode 项目校验和 dry-run preflight，不启动或重启 OpenCode 服务。程序每分钟更新看板，每五分钟向同一会话追加复核；busy 时跳过当轮。歌曲查证、灯牌/盲盒和隐私规则沿用实时看板契约。
 
+五分钟复核在核实歌词、歌名或前后文后，可回溯纠正本场旧ASR。校正版写入私有`transcript_corrections.json`，绑定原稿指纹、原因和确切来源引文；不改原始转写。后续AI输入同时提供原文与有效校正版，新校正影响的旧窗口重新复核。原稿被回填替换时，不盲目迁移旧校正，重新查证后再采用；校正与来源均不公开。这里只做文字纠错，不补写缺失歌词或把推断改成原话。
+
 两次新鲜离线确认且录制停止、明确换场或达到时长上限时，冻结本场上界并停止实时派发，确认本场专属 AI 已停止。固定监控主服务继续运行。页面显示本场结束、正在整理最终版，并继续等待最终产物。
 
 本场文件停止变化至少 `seal_seconds` 后，读取本场命名时间范围内的录制源，运行无 VAD 的离线 ASR。源文件只读，转写独立保存在工作区，不覆盖采集数据库。墙钟映射采用文件 UTC 加前序媒体时长的估计，不宣称精确字幕对齐；探测失败项会重新探测，全部选中源文件完成后才能进入终审。不可恢复的媒体进入 `attention`，不把部分稿当作全场完成。
@@ -95,7 +97,20 @@ python -m bilibili_live_monitor.broadcast_email --env-file /PRIVATE/notify.env -
 
 `session_finalize merge --config ...`校验分片身份、指纹和完整覆盖后统一合并；`session_finalize finish --config ...`复核所有窗口及歌名登记后生成完成标记。会话暂时idle不等于完成，程序不会因此再追加一轮。AI复核完成后，程序在同一URL发布并验证最终页；总会话不能提前宣称页面已发布。`finalize_parallel:false`保留原逐批模式，`final_review_batches`仅用于该兼容模式。
 
+终审也执行ASR回溯纠错：分片提出有来源的局部候选，总会话统一审核并合并私有`transcript_corrections.json`。以当前离线窗口指纹重新定位，不将实时校正按序号套用；原稿与冻结输入不修改。运行`python -m bilibili_live_monitor.session_finalize corrections --config ...`查看有效校正、失效原因与待重审窗口。校正影响的窗口须重新判断歌名、唱聊及声源，并记录当前`correction_id`；未完成时`finish`拒绝收尾。完成标记也绑定校正版本，校正新增、变化或撤销后不可沿用旧完成状态。
+
 ## 恢复与验收
+
+| 操作 | 命令/文件 | 约束 |
+|---|---|---|
+| 直播中回填预检 | `python -m bilibili_live_monitor.session_backfill --config /PRIVATE/sessions/SESSION/config.json --dry-run` | 只选已封口素材，不推进场次状态 |
+| 执行或续跑该回填批次 | 同上去掉 `--dry-run` | `live_backfill/manifest.json`固定批次上界；重复命令续跑同一批，不扩展上界 |
+| 直播回填输出 | `live_backfill_segments.json` | 私有；自动优先于完整覆盖的实时窗口，缺口和跨界实时证据保留 |
+| 健康巡检预检 | `python -m bilibili_live_monitor.session_health --config /PRIVATE/sessions/SESSION/config.json --dry-run` | 不发起恢复或调度 |
+| 检查并建立五分钟巡检链 | 同上改为 `--schedule` | 单场锁、单pending；completed/attention即停；默认由runner自动建立 |
+| 健康记录 | `health.json`、`health_history.jsonl` | 与五分钟内容AI复核独立，不创建AI会话；失败录制仅有界resume，不覆盖操作者停用 |
+
+`health_enabled:false`可在本场私有config禁用巡检。调度故障独立记入`health_schedule_error`，publisher继续运行并在后续周期补链。音频采集隔离修改属于常驻采集代码，需采集服务加载新版本；仅重载publisher不能使其生效。
 
 单场文件锁排除重复实例。backend 恢复后按 label 找已有进程，子进程恢复原工作区；离线 ASR 保留已完成文件，终审继续使用该场的会话。收尾超时或超过复核预算时保留 `attention`、错误及现有页面，不报告最终成功。
 

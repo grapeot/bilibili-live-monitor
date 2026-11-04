@@ -3,37 +3,50 @@ from bisect import bisect_left, bisect_right
 
 from .live_share import epoch, iso
 
+CONTENT_GAP_SECONDS = 15
 
-def content_blocks(activity):
+
+def content_blocks(activity, *, include_segments=False):
     blocks = []
+    can_merge = False
     for item in sorted(activity, key=lambda row: epoch(row['start'])):
+        if item.get('music_source') == 'recording':
+            can_merge = False
+            continue
         if item['label'] == 'singing' and item.get('music_source') == 'probable_live':
             kind, title = 'song', item.get('song')
         elif item['label'] in ('speaking', 'mixed'):
             kind, title = 'talk', None
         else:
+            can_merge = False
             continue
         start, end = epoch(item['start']), epoch(item['end'])
         if end <= start:
             continue
-        if (blocks and blocks[-1]['kind'] == kind and blocks[-1]['title'] == title
-                and 0 <= start - blocks[-1]['end'] <= 2):
-            blocks[-1]['end'] = end
+        if (can_merge and blocks and blocks[-1]['kind'] == kind and blocks[-1]['title'] == title
+                and start - blocks[-1]['end'] <= CONTENT_GAP_SECONDS):
+            blocks[-1]['end'] = max(blocks[-1]['end'], end)
+            blocks[-1]['segments'].append({'start': start, 'end': end})
         else:
-            blocks.append({'kind': kind, 'title': title, 'start': start, 'end': end})
+            blocks.append({'kind': kind, 'title': title, 'start': start, 'end': end,
+                           'segments': [{'start': start, 'end': end}], '_barrier': not can_merge})
+        can_merge = True
     # Brief acknowledgements inside the same identified song belong to that performance.
     index = 0
     while index + 2 < len(blocks):
         left, middle, right = blocks[index:index + 3]
         if (left['kind'] == right['kind'] == 'song' and left['title']
                 and left['title'] == right['title'] and middle['kind'] == 'talk'
+                and not middle['_barrier'] and not right['_barrier']
                 and middle['end'] - middle['start'] <= 60
-                and 0 <= middle['start'] - left['end'] <= 2
-                and 0 <= right['start'] - middle['end'] <= 2):
-            blocks[index:index + 3] = [{**left, 'end': right['end']}]
+                and 0 <= middle['start'] - left['end'] <= CONTENT_GAP_SECONDS
+                and 0 <= right['start'] - middle['end'] <= CONTENT_GAP_SECONDS):
+            blocks[index:index + 3] = [{**left, 'end': max(left['end'], right['end']),
+                                      'segments': left['segments'] + right['segments']}]
         else:
             index += 1
-    return blocks
+    return [{k: v for k, v in block.items() if k != '_barrier' and (include_segments or k != 'segments')}
+            for block in blocks]
 
 
 def nonnegative_integer(value):
@@ -54,11 +67,7 @@ def gift_amount(gift):
     return None
 
 
-def observations(source):
-    stocks = sorted((epoch(at), data['data']['fans']) for at, command, data in source['raw']
-                    if command == 'ROOM_REAL_TIME_MESSAGE_UPDATE'
-                    and isinstance(data.get('data'), dict)
-                    and nonnegative_integer(data['data'].get('fans')) is not None)
+def gift_observations(source):
     gifts, seen = [], set()
     for index, (kind, at, data) in enumerate(source['items']):
         gift = data.get('gift')
@@ -73,8 +82,52 @@ def observations(source):
             continue
         seen.add(key)
         count = nonnegative_integer(gift.get('num'))
-        gifts.append((epoch(at), count, gift_amount(gift)))
+        uid = gift.get('sender_uid') or data.get('sender_uid')
+        gifts.append((epoch(at), count, gift_amount(gift), uid, str(data.get('author') or '')[:200]))
+    return gifts
+
+
+def observations(source):
+    stocks = sorted((epoch(at), data['data']['fans']) for at, command, data in source['raw']
+                    if command == 'ROOM_REAL_TIME_MESSAGE_UPDATE'
+                    and isinstance(data.get('data'), dict)
+                    and nonnegative_integer(data['data'].get('fans')) is not None)
+    gifts = [item[:3] for item in gift_observations(source)]
     return stocks, gifts
+
+
+def summarize_gifters(source):
+    """Group by private identity; publish only names and aggregate totals."""
+    people = {}
+    for at, count, amount, uid, name in gift_observations(source):
+        key = ('uid', str(uid)) if uid else ('unknown',)
+        row = people.setdefault(key, {'name': name if uid and name else
+                                     '未命名观众' if uid else '未识别观众（合计）',
+                                     'gift_count':0, 'gift_count_unknown':0,
+                                     'amount_milli':0, 'amount_unknown':0})
+        if uid and name:
+            row['name'] = name
+        row['gift_count'] += count or 0
+        row['gift_count_unknown'] += count is None
+        row['amount_milli'] += amount or 0
+        row['amount_unknown'] += amount is None
+    return [{'name':row['name'], 'gift_count':row['gift_count'],
+             'gift_count_unknown':row['gift_count_unknown'],
+             'amount_yuan':row['amount_milli']/1000, 'amount_unknown':row['amount_unknown']}
+            for row in sorted(people.values(), key=lambda item:-item['amount_milli'])]
+
+
+def render_gifters(rows):
+    import html
+
+    body = ''.join('<tr><td>'+html.escape(row['name'])+'</td><td>'+str(row['gift_count'])+
+                   ('+' if row['gift_count_unknown'] else '')+'</td><td>'+f'{row["amount_yuan"]:.2f}'+
+                   ('+' if row['amount_unknown'] else '')+'</td></tr>' for row in rows)
+    return ('<section id="gift-summary"><h2>每人送礼汇总</h2>'
+            '<div class="activity-table"><table><thead><tr><th>观众</th><th>礼物件数</th>'
+            '<th>累计金额（元）</th></tr></thead><tbody>'+ (body or '<tr><td colspan="3">暂无礼物记录</td></tr>')+
+            '</tbody></table></div><p>按礼物平台标价汇总，包含盲盒结果；非主播实收。'
+            '“+”表示另有金额或数量未知的礼物。</p></section>')
 
 
 def summarize_activity(source, activity, cutoff, *, completed=False):

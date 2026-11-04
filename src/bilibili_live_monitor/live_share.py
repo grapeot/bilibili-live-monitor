@@ -253,7 +253,7 @@ def make_snapshot(source: dict, *, start: str, now: str, label: str, phase: str,
             return None
     for key in ('latest_transcript_at', 'latest_message_at'):
         safe_health[key] = safe_time(health.get(key))
-    from .activity_summary import summarize_activity, summarize_session
+    from .activity_summary import summarize_activity, summarize_gifters, summarize_session
     return {'schema_version': 1, 'label': label, 'session_start': start, 'updated_at': now,
             'phase': phase, 'series': {k: sorted(v.values()) for k, v in buckets.items()},
             'latest': latest, 'counts': counts, 'health': safe_health,
@@ -262,13 +262,15 @@ def make_snapshot(source: dict, *, start: str, now: str, label: str, phase: str,
             'followups': public_followups(source, start, annotations, followup_overrides, approved_songs, followup_rules),
             'activity_summary': summarize_activity(source, activity, upper, completed=phase == 'completed'),
             'session_summary': summarize_session(source),
+            'gift_summary': summarize_gifters(source),
             'notes': ['在线人数为平台上报口径；入场、礼物为本系统收到的事件数。',
-                      '歌唱与歌名是AI候选判断，不代表已完成听审；不公开原始转写或UID，仅显示灯牌跟进所需公开昵称。']}
+                       '歌唱与歌名是AI候选判断，不代表已完成听审；不公开原始转写或UID，仅显示送礼汇总与点歌跟进所需公开昵称。']}
 
 
-def render_snapshot(snapshot: dict) -> str:
+def render_snapshot(snapshot: dict, *, navigation=None) -> str:
     """实时页复用离线趋势页的 SVG、版式和悬浮交互。"""
     import html
+    from urllib.parse import urlsplit
     from zoneinfo import ZoneInfo
 
     from .trends_render import render
@@ -293,12 +295,17 @@ def render_snapshot(snapshot: dict) -> str:
             continue
         start, end = epoch(item['start']), epoch(item['end'])
         bands.append({'start': start, 'end': end, 'label': 'singing'})
-        if item['song']:
-            if songs and songs[-1]['title'] == item['song'] and songs[-1]['segments'][-1]['end'] >= start - 1:
-                songs[-1]['segments'][-1]['end'] = max(end, songs[-1]['segments'][-1]['end'])
+    from .activity_summary import content_blocks
+    for block in content_blocks(snapshot['activity'], include_segments=True):
+        if block['kind'] != 'song' or not block['title']:
+            continue
+        spans = []
+        for part in block['segments']:
+            if spans and part['start'] <= spans[-1]['end'] + 2:
+                spans[-1]['end'] = max(spans[-1]['end'], part['end'])
             else:
-                songs.append({'id': f'song-{len(songs)}', 'title': item['song'],
-                              'segments': [{'start': start, 'end': end}]})
+                spans.append(dict(part))
+        songs.append({'id': f'song-{len(songs)}', 'title': block['title'], 'segments': spans})
     charts = []
     for field, name, color, mode in [('entries', '每分钟入场事件', '#2563eb', 'line'),
                                      ('online', '在线人数', '#0891b2', 'stock'),
@@ -326,22 +333,38 @@ def render_snapshot(snapshot: dict) -> str:
                           if item.get('request_song') else '') + '</li>'
                         for item in snapshot['followups'])
     status = {'completed': '本场已结束', 'finalizing': '本场已结束，正在整理最终版', 'live': '直播中'}[snapshot['phase']]
+    if snapshot['phase'] == 'live':
+        status = '<span class="live-pill">'+status+'</span>'
     header = (f'<p>{clock(lo)}—{clock(hi)}（北京时间） · {status}<br>'
-              f'更新于 {clock(hi)}</p>')
-    footer = ('绿色：唱歌；其他内容不着色；灰色：暂无内容记录。'
+               f'更新于 {clock(hi)}</p>')
+    destinations = {}
+    if navigation and Path(navigation).is_file():
+        destinations = json.loads(Path(navigation).read_text())
+        links = []
+        for key, label in [('home_url', '← 返回主页'), ('songs_url', '歌曲搜索')]:
+            target = destinations.get(key, '')
+            if key == 'songs_url' and not target:
+                continue
+            parsed = urlsplit(target)
+            if parsed.scheme != 'https' or not parsed.hostname or parsed.username or parsed.password:
+                raise ValueError('场次导航必须为有效HTTPS地址')
+            links.append(f'<a href="{esc(target)}">{label}</a>')
+        header = '<nav class="archive-nav">' + ' · '.join(links) + '</nav>' + header
+    footer = ('绿色：歌曲相关片段；其他内容不着色；灰色：暂无内容记录。'
               '<section id="followups"><h2>灯牌与盲盒点歌跟进</h2><ul>' +
               (followups or '<li>暂无灯牌或盲盒点歌记录</li>') + '</ul></section>')
     rows = []
     for item in snapshot.get('activity_summary', []):
-        title = ('唱歌 · ' + (item['title'] or '歌名待确认')) if item['kind'] == 'song' else '杂谈'
+        title = (item['title'] or '歌名待确认') if item['kind'] == 'song' else '杂谈'
+        song_attr = f' data-song-catalog-title="{esc(title)}"' if item['kind'] == 'song' else ''
         change = item['followers_change']
         fans = '—' if change is None else f'{change:+d}' if change else '0'
         count = str(item['gift_count']) + ('+' if item['gift_count_unknown'] else '')
         amount = f'{item["gift_amount_yuan"]:.2f}' + ('+' if item['gift_amount_unknown'] else '')
         state = {'complete': '', 'collecting': '统计中', 'partial': '尾窗未满'}[item['status']]
         rows.append(f'<tr><td>{clock(epoch(item["start"]))}–{clock(epoch(item["end"]))}</td>'
-                    f'<td>{esc(title)}</td><td>{fans}</td><td>{count}</td><td>{amount}</td><td>{state}</td></tr>')
-    footer += ('<section id="activity-summary"><h2>唱歌与杂谈</h2>'
+                    f'<td{song_attr}>{esc(title)}</td><td>{fans}</td><td>{count}</td><td>{amount}</td><td>{state}</td></tr>')
+    footer += ('<section id="activity-summary"><h2>歌曲与杂谈</h2>'
                '<p>统计至每段结束后30秒；相邻段可能重叠。涨粉为净变化，金额为平台报告金额，非主播实收。'
                '“+”表示另有金额或数量未知的礼物。</p><div class="activity-table"><table>'
                '<thead><tr><th>时间段</th><th>内容</th><th>涨粉</th><th>礼物数</th><th>金额（元）</th><th>状态</th></tr></thead>'
@@ -350,6 +373,8 @@ def render_snapshot(snapshot: dict) -> str:
     if snapshot.get('content_mode') == 'talk':
         footer = ''
     totals = snapshot.get('session_summary', {})
+    from .activity_summary import render_gifters
+    footer += render_gifters(snapshot.get('gift_summary', []))
     change = totals.get('followers_change')
     fans = '—' if change is None else f'{change:+d}' if change else '0'
     count = str(totals.get('gift_count', 0)) + ('+' if totals.get('gift_count_unknown') else '')
@@ -362,8 +387,10 @@ def render_snapshot(snapshot: dict) -> str:
     data = {'title': snapshot['label'], 'timezone': 'Asia/Shanghai', 'since': iso(lo), 'until': iso(hi),
             'summary': {'gaps': [], 'unique_entry_uids': 0, 'gift_events': snapshot['counts']['gifts']}}
     revision = hashlib.sha256(json.dumps(snapshot, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
-    return render(data, bands, songs, charts=charts, header=header, footer=footer,
-                  show_song_list=False, refresh_revision=revision if snapshot['phase'] != 'completed' else None)
+    from .song_navigation import with_song_catalog_links, with_song_navigation
+    page = with_song_navigation(render(data, bands, songs, charts=charts, header=header, footer=footer,
+                  show_song_list=False, refresh_revision=revision if snapshot['phase'] != 'completed' else None))
+    return with_song_catalog_links(page, destinations.get('songs_url'))
 
 
 def atomic_json(path: Path, value: dict) -> None:
