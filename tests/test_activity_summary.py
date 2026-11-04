@@ -68,6 +68,35 @@ def test_reported_currency_units_quantity_and_duplicate_events():
     assert total['gift_amount_unknown'] == 1
 
 
+@pytest.mark.parametrize('gap', [15.954, 20.951, 35.296, 60])
+def test_talk_recovery_gap_groups_without_filling_source_spans(gap):
+    activity = [window(0, 30), window(30+gap, 90+gap)]
+    original = [dict(row) for row in activity]
+    blocks = content_blocks(activity, include_segments=True)
+    assert len(blocks) == 1 and blocks[0]['kind'] == 'talk'
+    assert blocks[0]['segments'] == [
+        {'start': epoch(row['start']), 'end': epoch(row['end'])} for row in activity]
+    assert activity == original
+    assert len(content_blocks([window(0, 30, '测试歌'), window(30+gap, 90+gap, '测试歌')])) == 2
+
+
+def test_talk_long_gap_or_explicit_other_content_remains_separate():
+    assert len(content_blocks([window(0, 30), window(90.001, 120)])) == 2
+    for label, source in [('singing', 'recording'), ('singing', 'probable_live'), ('unknown', 'uncertain')]:
+        middle = {**window(35, 40, '测试歌'), 'label': label, 'music_source': source}
+        blocks = content_blocks([window(0, 30), middle, window(45, 75)])
+        assert len([row for row in blocks if row['kind'] == 'talk']) == 2
+
+
+def test_recovery_gap_summary_recomputes_gifts_without_overlap_double_count():
+    source = {'raw': [fan(0, 10), fan(80, 12)], 'segments': [],
+              'items': [gift(50, 'once'), gift(100, 'tail')]}
+    rows = summarize_activity(source, [window(0, 30), window(65, 95)], epoch(at(150)))
+    assert len(rows) == 1
+    assert rows[0]['gift_count'] == 2 and rows[0]['gift_amount_yuan'] == 2
+    assert rows[0]['followers_change'] == 2
+
+
 def test_missing_followers_and_unfinished_tail_are_explicit():
     source = {'raw': [fan(40, 1)], 'segments': [], 'items': []}
     row = summarize_activity(source, [window(30, 90, '测试歌')], epoch(at(100)))[0]

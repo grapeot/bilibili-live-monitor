@@ -4,6 +4,7 @@ from bisect import bisect_left, bisect_right
 from .live_share import epoch, iso
 
 CONTENT_GAP_SECONDS = 15
+TALK_GAP_SECONDS = 60
 
 
 def content_blocks(activity, *, include_segments=False):
@@ -23,8 +24,11 @@ def content_blocks(activity, *, include_segments=False):
         start, end = epoch(item['start']), epoch(item['end'])
         if end <= start:
             continue
+        # 音频重试可产生约35秒缺口，不把短缺录机械解释为一次新的杂谈。
+        # 仅放宽杂谈分组；原始区间与图表覆盖证据保持不变。
+        gap_limit = TALK_GAP_SECONDS if kind == 'talk' else CONTENT_GAP_SECONDS
         if (can_merge and blocks and blocks[-1]['kind'] == kind and blocks[-1]['title'] == title
-                and start - blocks[-1]['end'] <= CONTENT_GAP_SECONDS):
+                and start - blocks[-1]['end'] <= gap_limit):
             blocks[-1]['end'] = max(blocks[-1]['end'], end)
             blocks[-1]['segments'].append({'start': start, 'end': end})
         else:
