@@ -12,6 +12,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 
 from . import live_share_watch as watch
+from .content_mode import content_ai_enabled
 from .live_share import atomic_json, fingerprint, iso
 from .live_share_control import (
     export_snapshot,
@@ -81,8 +82,18 @@ def advance(config, state, now):
     workspace = Path(config['workspace'])
     config_path = workspace / 'config.json'
     phase = state.setdefault('stage', 'created')
+    uses_ai = content_ai_enabled(config)
+    if not uses_ai and (config.get('ai_session') or state.get('final_session')):
+        for session in (config.get('ai_session'), state.get('final_session')):
+            if session and not stop_ai(config, session, children=True):
+                return
+        config.update(ai_enabled=False, ai_session=None)
+        state.pop('final_session', None)
+        atomic_json(config_path, {k: v for k, v in config.items() if not k.startswith('_')})
+    if not uses_ai and phase in ('sealing', 'offline_asr', 'offline_review'):
+        state['stage'] = phase = 'finalizing'
     if phase == 'created':
-        if not state.get('ai_preflight'):
+        if uses_ai and not state.get('ai_preflight'):
             ai_control(config, 'preflight', model=config['model'])
             state['ai_preflight'] = True
         if not state.get('remote_prepared'):
@@ -91,7 +102,7 @@ def advance(config, state, now):
                             'mkdir -p -- ' + shlex.quote(directory)],
                            check=True, capture_output=True, timeout=30)
             state['remote_prepared'] = True
-        if not config.get('ai_session'):
+        if uses_ai and not config.get('ai_session'):
             config.update(ai_session=ensure_ai(config, 'update_periodic'), ai_enabled=True)
             atomic_json(config_path, {k: v for k, v in config.items() if not k.startswith('_')})
         state['stage'] = 'live'
@@ -109,7 +120,7 @@ def advance(config, state, now):
             verify_remote(config)
             state['ready'] = True
         slot = int(now // 300)
-        if state.get('ai_slot') != slot:
+        if uses_ai and state.get('ai_slot') != slot:
             state['ai_slot'] = slot
             # 提交之前落盘；响应丢失不重复派发同一轮。
             atomic_json(workspace / 'workflow.json', state)
@@ -117,6 +128,9 @@ def advance(config, state, now):
             watch.ai_once(config, live_state, source, now)
         return
     if phase == 'stopping':
+        if not uses_ai:
+            state['stage'] = 'finalizing'
+            return
         if not stop_ai(config, config.get('ai_session')):
             return
         state.update(stage='sealing', stable_since=now)
@@ -196,9 +210,9 @@ def advance(config, state, now):
         watch.ai_once(final_config, {'cutoff': state['cutoff']}, source, now, final=True)
         return
     if phase == 'finalizing':
-        if not stop_ai(config, state.get('final_session'), children=config.get('finalize_parallel', False)):
+        if uses_ai and not stop_ai(config, state.get('final_session'), children=config.get('finalize_parallel', False)):
             return
-        if config.get('finalize_parallel'):
+        if uses_ai and config.get('finalize_parallel'):
             from .session_finalize import finish
             finish(config)  # 所有写入者停止后，重验实际待发布内容。
         export_snapshot(config)

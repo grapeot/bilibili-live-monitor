@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 from .likes import trigger_likes
-from .room_config import reload_plan, validate_rooms
+from .room_config import capture_overrides, reload_plan, validate_rooms
 from .welcome import WelcomeDecision, correct_page, message_limit, observations, send_chat, welcome_messages
 
 
@@ -44,6 +44,7 @@ class Automation:
         from .session_workflow import SessionWorkflows
         self.workflows = SessionWorkflows(self, config.get('session_workflow', {}))
         self.platform.session_workflow_rooms = set(self.rooms) if self.workflows.enabled else set()
+        self.platform.room_capture_overrides = capture_overrides(self.rooms)
         for row in self.state['likes'].values():
             if row['status'] in ('running', 'queued'):
                 row['status'] = 'interrupted'
@@ -113,6 +114,7 @@ class Automation:
         self.rooms = rooms
         self.workflows.config = deepcopy(config.get('session_workflow', {}))
         self.platform.session_workflow_rooms = set(rooms) if self.workflows.enabled else set()
+        self.platform.room_capture_overrides = capture_overrides(rooms)
         for rid, cfg in rooms.items():
             row = self.row(rid)
             desired = cfg.get('welcome_enabled')

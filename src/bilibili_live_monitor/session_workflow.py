@@ -86,6 +86,12 @@ class SessionWorkflows:
             raise ValueError('场次目录与持久身份不匹配')
         path = directory / 'config.json'
         if path.exists() and json.loads(path.read_text()).get('workflow_key') == record['key']:
+            current = json.loads(path.read_text())
+            if (record.get('stage') not in ('completed', 'attention')
+                    and self.automation.rooms[record['room_id']].get('content_mode', 'music') == 'talk'
+                    and current.get('content_mode', 'music') != 'talk'):
+                current.update(content_mode='talk', ai_enabled=False, health_enabled=False)
+                atomic_json(path, current)
             return path
         cfg = self.config
         rid = record['room_id']
@@ -103,6 +109,9 @@ class SessionWorkflows:
             if not (directory / filename).exists():
                 atomic_json(directory / filename, empty)
         config = json.loads(path.read_text())
+        config['content_mode'] = self.automation.rooms[rid].get('content_mode', 'music')
+        if config['content_mode'] == 'talk':
+            config.update(ai_enabled=False, health_enabled=False)
         config.update(model=cfg['model'], opencode_python=cfg['opencode_python'],
             opencode_cwd=cfg['opencode_cwd'], opencode_project=cfg['opencode_project'],
             recording_root=str(settings.data_dir / 'recordings' / rid),

@@ -15,6 +15,10 @@ def validate_rooms(rooms):
             raise ValueError('自动化房间必须有label和intro')
         if type(room.get('welcome_enabled', False)) is not bool:
             raise ValueError('welcome_enabled必须是布尔值')
+        if room.get('content_mode', 'music') not in ('music', 'talk'):
+            raise ValueError('content_mode必须是music或talk')
+        if 'record_mode' in room and room['record_mode'] not in ('none', 'audio', 'video'):
+            raise ValueError('record_mode必须是none、audio或video')
         greeting = room.get('greeting', '欢迎 {names} {suffix}')
         if not isinstance(greeting, str) or '{names}' not in greeting:
             raise ValueError('欢迎模板必须包含{names}')
@@ -60,3 +64,7 @@ def reload_plan(previous, incoming):
             raise ValueError('发布目标必须是对象，url和remote必须是字符串')
     validate_settings(incoming.get('session_workflow', {}), rooms)
     return incoming
+
+
+def capture_overrides(rooms):
+    return {rid: {'record_mode': cfg['record_mode']} for rid, cfg in rooms.items() if 'record_mode' in cfg}

@@ -98,6 +98,7 @@ class Platform:
         self.next_status_check = 0
         self.status_refused = saved.get('status_refused')
         self.session_workflow_rooms = set()
+        self.room_capture_overrides = {}
         self.session_asr = saved.get('session_asr', {})
 
     def save(self):
@@ -373,6 +374,7 @@ class Platform:
     def capture_options(self, candidate):
         options = self.policy.model_dump(exclude={'enabled', 'target_rooms', 'mode', 'fixed_rooms'})
         rid = candidate.get('room_id')
+        options.update(self.room_capture_overrides.get(rid, {}))
         override = self.session_asr.get(rid, {})
         if (rid in self.session_workflow_rooms and override.get('enabled') is True
                 and override.get('start') == candidate.get('live_start')):
