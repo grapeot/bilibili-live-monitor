@@ -53,6 +53,61 @@
 python -m bilibili_live_monitor.session_runner --config /PRIVATE/sessions/SESSION/config.json
 ```
 
+## 观众当前备忘与下播更新
+
+观众当前备忘（Audience CRM）按房间与观众 UID 聚合已完成场次记录，程序负责计数与金额汇总，GLM 负责生成带逐字引用的当前备忘；私有原始证据保留在本地，公开构建只输出最小投影。
+
+### 配置文件与隐私边界
+
+每位主播使用独立配置文件、独立输出目录和独立随机 URL。随机 URL 仅用于路径隔离，不充当鉴权机制。配置文件放在 `.local/` 下（如 `.local/example-crm.json`），主要字段包括：
+
+- 基础与输出配置：`room_id`、`scope`、`secret`、`label`、`workspace`、`output_dir`、`home_url`。其中 `secret` 用于生成公开 HMAC ID，使用私有随机密钥，不提交入库。
+- 数据源配置：`database` 与 `sessions_root`，可选接入 `legacy_sessions` 与 `analysis_files`。
+
+公开仓库只保留通用代码与合成测试，真实资料、私有配置与原始逐字证据全部留在 `.local/`。
+
+### 分步生成与语义核验
+
+首次建档或按场次补跑时，按冻结输入、模型生成与核查、接纳、构建四步执行：
+
+```bash
+# 1. 只读扫描已完成场次，冻结按人拆分的 input/result/plan/instructions
+python -m bilibili_live_monitor.audience_crm prepare --config .local/example-crm.json
+
+# 2. 校验单个观众的生成结果结构与引用锚点
+python -m bilibili_live_monitor.audience_crm validate \
+  --config .local/example-crm.json \
+  --run .local/example-run \
+  --result .local/example-run/example.result.json
+
+# 3. 全量任务通过后接纳并切换 current，拒绝旧完成结果回退新版本
+python -m bilibili_live_monitor.audience_crm finish \
+  --config .local/example-crm.json \
+  --run .local/example-run
+
+# 4. 根据当前有效状态执行本地静态构建，不触发远端发布
+python -m bilibili_live_monitor.audience_crm build --config .local/example-crm.json
+```
+
+在 `prepare` 与 `finish` 之间，针对 `plan.tasks` 中每个任务的 `input` 与 `result` 路径，调用指定的 `ollama_glm_5_3_flash` 生成备忘（运行前须实核底层模型映射），并发上限为 10。
+
+`validate` 通过仅代表 JSON 结构与引用字段合法，不代表语义通过。接纳前核对本人归属、ASR 近音、跨场履约、原唱与主播演唱的区别，以及公开引用的必要性。局部召回没有后续记录，不等于承诺未兑现；同一入团送歌与具体点歌按同一履约链处理。
+
+### 下播自动更新与独立观察器
+
+存在两种下播更新接入方式，命令行不设独立的 `publish` 子命令：
+
+1. **逐场 Finalize 联动**：在逐场配置中设置 `audience_crm_config` 路径，或在 `session_workflow` 设置的 `audience_crm` 下按房间映射配置。CRM 配置的 `publish_on_finalize` 为显式发布开关，开启时需确保 `remote` 与 `url` 匹配部署范围。
+2. **独立 `audience_watch` 观察器**：在不重启常驻采集进程时，可单独运行观察器扫描新完成的场次：
+
+```bash
+python -m bilibili_live_monitor.audience_watch --config .local/example-watch.json
+```
+
+观察器配置包含 `workspace`、`targets`（每项含 `config` 绝对 CRM 配置路径与 `not_before` 带时区起始时刻）及可选 `timeout_seconds`（默认 `21600`）。
+
+观察器对原直播 workflow 保持只读，使用独立状态与回执，不修改原 workflow 状态与通知账本，每次运行至多推进一个活跃的 completed 场次。上一轮子会话树尚未确认停止时不推进新工作；attention 回执需核查，不能对结果不确定的提交盲目重发。外部调度器的周期调用单独启用，适配器代码落地不代表自动调度已在运行。
+
 ## 通知适配器
 
 ### 单房内容模式与录制策略

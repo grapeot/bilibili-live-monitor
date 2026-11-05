@@ -390,7 +390,11 @@ def render_snapshot(snapshot: dict, *, navigation=None) -> str:
     from .song_navigation import with_song_catalog_links, with_song_navigation
     page = with_song_navigation(render(data, bands, songs, charts=charts, header=header, footer=footer,
                   show_song_list=False, refresh_revision=revision if snapshot['phase'] != 'completed' else None))
-    return with_song_catalog_links(page, destinations.get('songs_url'))
+    page = with_song_catalog_links(page, destinations.get('songs_url'))
+    if destinations.get('audience_url'):
+        from .audience_navigation import with_audience_links
+        page = with_audience_links(page, destinations['audience_url'])
+    return page
 
 
 def atomic_json(path: Path, value: dict) -> None:
