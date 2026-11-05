@@ -13,11 +13,12 @@ NAME = re.compile(r'^[a-f0-9]+-(\d{8}T\d{6}Z)-([a-f0-9]+)-(\d{5})\.(?:mkv|mka|wa
 
 
 def recording_files(config, cutoff):
+    from .archive_media import source_paths
     groups = {}
     lower = epoch(config['start_utc'])
-    for path in Path(config['recording_root']).iterdir():
+    for path in source_paths(Path(config['recording_root']), {'.mkv', '.mka', '.wav'}):
         match = NAME.fullmatch(path.name)
-        if not match or not path.is_file():
+        if not match:
             continue
         start = datetime.strptime(match[1], '%Y%m%dT%H%M%SZ').replace(tzinfo=timezone.utc).timestamp()
         if lower - 1 <= start <= cutoff:
