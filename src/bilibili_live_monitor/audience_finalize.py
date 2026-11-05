@@ -13,6 +13,13 @@ def load_settings(session):
     config = json.loads(path.read_text())
     if config['room_id'] != session['room_id']:
         raise ValueError('本场CRM配置属于其他主播')
+    agent = config.get('author_agent', 'grok' if config.get('agentic_sources') else 'ollama_glm_5_3_flash')
+    if not isinstance(agent, str) or not agent.strip():
+        raise ValueError('author_agent须为非空agent名称')
+    config['author_agent'] = agent
+    model = config.get('coordinator_model')
+    if model is not None and (not isinstance(model, str) or '/' not in model or not model.strip()):
+        raise ValueError('coordinator_model须为provider/model')
     return config, path
 
 
@@ -24,6 +31,8 @@ def advance(session, state):
     from .session_finalize import dispatch
     from .session_runner import ensure_ai, stop_ai
     config, path = load_settings(session)
+    if config.get('coordinator_model'):
+        session = {**session, 'model': config['coordinator_model']}
     state_path = Path(session.get('audience_state_path') or Path(session['workspace']) / 'workflow.json')
     root = Path(session['workspace']) / 'audience_finalize'
     root.mkdir(exist_ok=True)
@@ -66,9 +75,9 @@ def advance(session, state):
                              'finish', '--config', str(path), '--run', str(directory)])
         prompt = f'''{tag}
 你负责此场CRM总协调，不改代码、不发布、不通知。读取{directory / 'plan.json'}及{directory / 'instructions.txt'}。
-使用task的ollama_glm_5_3_flash子代理处理每位观众的input/result，最多同时10个；不可静默改模型或创建下一级代理。
-每个任务只读自己的input（含旧状态与本轮证据），只写对应result。输入很长时分段完整阅读，不依据开头几行填空。
-已有result先运行本模块validate命令核验，不重复生成有效结果。每批核验引用与状态，失败只续跑未完成或无效结果。
+使用task的{config['author_agent']}子代理处理每位观众的input/result，最多同时10个；不可静默改模型或创建下一级代理。
+每个任务读取自己的input与其中source_manifest指向的完整本房间来源，使用OpenCode工具自主查证后续；只写对应result，不改来源。没有source_manifest时仅使用原有input证据。
+不能把JSON通过当作查证完成。已有result只有在本轮已实际查证且校验通过时才复用；旧备忘仅为线索。重点追查“未见回应/待核实”的点歌，不把可从源文件查到的工作转交主播。
 总任务重点抽查未完成承诺、已跨场兑现及同名歧义：一条引用真实不等于结论成立；必须核对双方上下文，不能挪用其他观众的回应。
 全部完成后统一运行：{command}。finish失败须修复原结果，不伪造空结果通过，不修改计划或输入。
 成功后报告完成数与未决问题。若指定子代理不可用，报告阻塞，不fallback。不能访问凭据、控制采集、发送直播消息或排定时任务。

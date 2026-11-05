@@ -76,7 +76,8 @@ def public_person(person, state, uids):
 def detail(person, state, material, config, uids=None):
     home = config['home_url']
     sessions = {s['id']: s for s in material['sessions']}
-    evidence = {e['id']: e for e in person['evidence']}
+    from .audience_sources import evidence_map
+    evidence = evidence_map(person, material)
     counts = person['counts']
     if uids is None:
         uids = {p['uid'] for p in material['people'].values()}
@@ -197,7 +198,7 @@ def _build(config):
     for pid, person in material['people'].items():
         state = current['states'].get(pid, {})
         if person['evidence']:
-            validate_state(person, state)
+            validate_state(person, state, material)
         rows.append(public_person(person, state, uids))
         directory = output / pid
         directory.mkdir(exist_ok=True)
