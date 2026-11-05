@@ -212,6 +212,7 @@ def test_finalize_dispatch_once_then_builds_only_accepted_state(tmp_path, monkey
     cfg = config(tmp_path)
     if author_agent:
         cfg['author_agent'] = author_agent
+        cfg['coordinator_model'] = 'openai/gpt-6.1-sol'
     config_path = tmp_path / 'settings.json'
     config_path.write_text(json.dumps(cfg))
     scene = tmp_path / 'scene'
@@ -235,6 +236,9 @@ def test_finalize_dispatch_once_then_builds_only_accepted_state(tmp_path, monkey
     assert not audience_finalize.advance(conf, state)
     assert len(calls) == 1
     assert f"使用task的{author_agent or 'ollama_glm_5_3_flash'}子代理" in calls[0][2]
+    if author_agent:
+        assert calls[0][0]['model'] == 'openai/gpt-6.1-sol'
+        assert 'model' not in conf
     saved = json.loads((scene / 'audience_finalize/plan.json').read_text())
     directory = Path(saved['run'])
     plan = json.loads((directory / 'plan.json').read_text())

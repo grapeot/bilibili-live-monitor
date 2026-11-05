@@ -89,7 +89,7 @@ python -m bilibili_live_monitor.audience_crm finish \
 python -m bilibili_live_monitor.audience_crm build --config .local/example-crm.json
 ```
 
-在 `prepare` 与 `finish` 之间，针对 `plan.tasks` 中每个任务的 `input` 与 `result` 路径，调用指定 agent 生成备忘（运行前须实核底层模型映射），并发上限为 10。自动收尾读取 CRM 配置的 `author_agent`；未指定时，整场查证模式默认 `grok`，旧局部模式保留 `ollama_glm_5_3_flash`。指定 agent 不可用时报告阻塞，不静默切换。
+在 `prepare` 与 `finish` 之间，针对 `plan.tasks` 中每个任务的 `input` 与 `result` 路径，调用指定 agent 生成备忘（运行前须实核底层模型映射），并发上限为 10。自动收尾读取 CRM 配置的 `author_agent`；未指定时，整场查证模式默认 `grok`，旧局部模式保留 `ollama_glm_5_3_flash`。可选 `coordinator_model`（`provider/model`）仅覆盖 CRM 总协调模型，不改变直播采集或原场终审配置。指定 agent 不可用时报告阻塞，不静默切换。
 
 `validate` 通过仅代表 JSON 结构与引用字段合法，不代表语义通过。接纳前核对本人归属、ASR 近音、跨场履约、原唱与主播演唱的区别，以及公开引用的必要性。局部召回没有后续记录，不等于承诺未兑现；同一入团送歌与具体点歌按同一履约链处理。
 

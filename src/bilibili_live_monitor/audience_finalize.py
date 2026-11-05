@@ -17,6 +17,9 @@ def load_settings(session):
     if not isinstance(agent, str) or not agent.strip():
         raise ValueError('author_agent须为非空agent名称')
     config['author_agent'] = agent
+    model = config.get('coordinator_model')
+    if model is not None and (not isinstance(model, str) or '/' not in model or not model.strip()):
+        raise ValueError('coordinator_model须为provider/model')
     return config, path
 
 
@@ -28,6 +31,8 @@ def advance(session, state):
     from .session_finalize import dispatch
     from .session_runner import ensure_ai, stop_ai
     config, path = load_settings(session)
+    if config.get('coordinator_model'):
+        session = {**session, 'model': config['coordinator_model']}
     state_path = Path(session.get('audience_state_path') or Path(session['workspace']) / 'workflow.json')
     root = Path(session['workspace']) / 'audience_finalize'
     root.mkdir(exist_ok=True)
