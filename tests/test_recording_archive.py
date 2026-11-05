@@ -141,6 +141,64 @@ def test_profile_refuses_unapproved_media():
         archive.check_profile({'streams': []})
 
 
+@pytest.mark.parametrize('width,height,rate', [(1920, 1440, '60/1'), (1920, 1080, '30/1'),
+    (1600, 1280, '30/1'), (1280, 720, '30/1'), (1600, 1280, '60/1'),
+    (960, 720, '30/1'), (900, 720, '30/1'), (1600, 1280, '30000/1001'),
+    (1920, 1080, '30000/1001')])
+def test_historical_profiles_keep_original_size_and_rate(width, height, rate):
+    archive.check_profile({'streams': [{'codec_type': 'video', 'codec_name': 'h264',
+        'width': width, 'height': height, 'pix_fmt': 'yuv420p', 'avg_frame_rate': rate,
+        'color_space': 'bt709', 'color_transfer': 'bt709', 'color_primaries': 'bt709'},
+        {'codec_type': 'audio', 'codec_name': 'aac'}]})
+
+
+@pytest.mark.parametrize('override', [{'width': 3840}, {'height': 2160}, {'width': 901},
+    {'avg_frame_rate': '120/1'}, {'pix_fmt': 'yuv420p10le'}, {'color_transfer': 'smpte2084'}])
+def test_unvalidated_profile_is_rejected(override):
+    video = {'codec_type': 'video', 'codec_name': 'h264', 'width': 1920, 'height': 1080,
+             'pix_fmt': 'yuv420p', 'avg_frame_rate': '30/1', 'color_space': 'bt709',
+             'color_transfer': 'bt709', 'color_primaries': 'bt709'}
+    with pytest.raises(ValueError):
+        archive.check_profile({'streams': [{**video, **override}, {'codec_type': 'audio', 'codec_name': 'aac'}]})
+
+
+def test_verify_accepts_container_rate_estimates_and_rejects_dropped_frames(monkeypatch, tmp_path):
+    video = {'codec_type': 'video', 'codec_name': 'h264', 'width': 1920, 'height': 1080,
+             'pix_fmt': 'yuv420p', 'avg_frame_rate': '30/1', 'r_frame_rate': '30/1',
+             'nb_read_frames': '182', 'color_space': 'bt709', 'color_transfer': 'bt709',
+             'color_primaries': 'bt709'}
+    audio = {'codec_type': 'audio', 'codec_name': 'aac', 'channels': 2, 'sample_rate': '48000'}
+    source = {'streams': [video, audio], 'format': {'duration': '10.193'}}
+    output_video = {**video, 'codec_name': 'hevc', 'avg_frame_rate': '1092/61'}
+    output = {'streams': [output_video, audio], 'format': {'duration': '10.2'}}
+    monkeypatch.setattr(archive, 'probe', lambda *_a, **_k: output)
+    monkeypatch.setattr(archive, 'command', lambda *_a, **_k: None)
+    archive.verify_output(source, tmp_path / 'output.mp4')
+    output_video['nb_read_frames'] = '181'
+    with pytest.raises(ValueError, match='帧数改变'):
+        archive.verify_output(source, tmp_path / 'output.mp4')
+    video.pop('nb_read_frames')
+    with pytest.raises(ValueError, match='无法验证原片解码帧数'):
+        archive.verify_output(source, tmp_path / 'output.mp4')
+
+
+def test_only_own_manifest_recovered_source_is_eligible(tmp_path):
+    root, source, row = fixture(tmp_path)
+    recovered = root / 'one/offline/recovered' / source.name
+    recovered.parent.mkdir()
+    source.rename(recovered)
+    row['path'] = str(recovered)
+    manifest = root / 'one/offline/manifest.json'
+    manifest.write_text(json.dumps({'rows': [row]}))
+    assert archive.inventory(root)[0]['action'] == 'encode'
+    foreign = root / 'other/offline/recovered' / source.name
+    foreign.parent.mkdir(parents=True)
+    recovered.rename(foreign)
+    row['path'] = str(foreign)
+    manifest.write_text(json.dumps({'rows': [row]}))
+    assert archive.inventory(root)[0]['reason'] == 'external_media'
+
+
 def test_bad_old_receipt_does_not_break_new_scene_listing(tmp_path):
     _, source, row = fixture(tmp_path)
     target = accepted(source, row)

@@ -37,11 +37,13 @@ def streams(info):
 def check_profile(info):
     video, audio = streams(info)
     rate = float(Fraction(video.get('avg_frame_rate', '0/1')))
-    if ((video['width'], video['height'], video.get('pix_fmt')) != (1920, 1080, 'yuv420p')
-            or abs(rate - 30) > .02 or video.get('codec_name') != 'h264'
+    if (not (0 < video['width'] <= 1920 and 0 < video['height'] <= 1440)
+            or video['width'] % 2 or video['height'] % 2 or video.get('pix_fmt') != 'yuv420p'
+            or not any(abs(rate - approved) < .02 for approved in (30000 / 1001, 30, 60))
+            or video.get('codec_name') != 'h264'
             or audio.get('codec_name') != 'aac'
             or any(video.get(key) != 'bt709' for key in ('color_space', 'color_transfer', 'color_primaries'))):
-        raise ValueError('未验证的编码规格；本配方仅用于H264 1080p30 SDR BT709 + AAC')
+        raise ValueError('未验证的编码规格；仅支持H264 8-bit SDR BT709、最大1920x1440、29.97/30/60fps + AAC')
 
 
 def verify_output(source_info, target):
@@ -56,10 +58,12 @@ def verify_output(source_info, target):
             or any(video.get(key) != before_v.get(key) for key in ('width', 'height', 'pix_fmt', 'color_space', 'color_transfer', 'color_primaries'))
             or any(audio.get(key) != before_a.get(key) for key in ('codec_name', 'channels', 'sample_rate'))):
         raise ValueError('归档画面或音轨规格不匹配')
-    if abs(float(Fraction(video['avg_frame_rate'])) - float(Fraction(before_v['avg_frame_rate']))) > .02:
-        raise ValueError('归档帧率改变')
+    # MKV/MP4 infer different avg/r_frame_rate for timestamp jitter or missing starts.
+    # Preserve demux timestamps in the encoder and compare actual frames and duration.
     original_frames = before_v.get('nb_read_frames')
-    if original_frames not in (None, 'N/A') and video.get('nb_read_frames') != original_frames:
+    if original_frames in (None, 'N/A', '0'):
+        raise ValueError('无法验证原片解码帧数，保留原片')
+    if video.get('nb_read_frames') != original_frames:
         raise ValueError('归档帧数改变')
     command(['ffmpeg', '-nostdin', '-v', 'error', '-xerror', '-threads', '2', '-i', str(target),
              '-map', '0:v:0', '-map', '0:a:0', '-f', 'null', '-'])
@@ -101,8 +105,9 @@ def inventory(root, session_ids=()):
                     'action': 'encode', 'config': str(config_path), 'workflow': str(state_path), 'legacy_row': row}
             if source.suffix.lower() != '.mkv':
                 item.update(action='skip', reason='audio_only_or_unsupported')
-            elif not source.is_relative_to(recording_root):
-                item.update(action='skip', reason='recovered_or_external_media')
+            elif not (source.is_relative_to(recording_root)
+                      or source.is_relative_to((directory / 'offline/recovered').resolve())):
+                item.update(action='skip', reason='external_media')
             elif receipt_path(source).exists():
                 try:
                     saved = archive_receipt(source)
@@ -143,8 +148,8 @@ def check_source(item):
 def encode(item, lock_fd):
     check_source(item)
     source, target = Path(item['source']), Path(item['output'])
+    check_profile(probe(source))
     source_info = probe(source, frames=True)
-    check_profile(source_info)
     # 留出录制余量；Trash并不释放空间，不能计入可用空间。
     needed = max(source.stat().st_size, int(float(source_info['format']['duration']) * 500_000))
     if shutil.disk_usage(source.parent).free < 5 * 1024**3 + needed:
@@ -159,7 +164,8 @@ def encode(item, lock_fd):
                  '-c:v', 'hevc_videotoolbox', '-allow_sw', '0', '-require_sw', '0',
                  '-profile:v', 'main', '-pix_fmt', 'yuv420p', '-b:v', '2800k',
                  '-color_range', 'tv', '-colorspace', 'bt709', '-color_trc', 'bt709', '-color_primaries', 'bt709',
-                 '-fps_mode', 'passthrough', '-c:a', 'copy', '-tag:v', 'hvc1', str(temporary)], pass_fds=(lock_fd,))
+                  '-fps_mode', 'passthrough', '-enc_time_base:v', 'demux',
+                  '-c:a', 'copy', '-tag:v', 'hvc1', str(temporary)], pass_fds=(lock_fd,))
         output_info = verify_output(source_info, temporary)
         check_source(item)
         if temporary.stat().st_size >= source.stat().st_size:

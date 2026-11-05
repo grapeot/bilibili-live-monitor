@@ -9,7 +9,7 @@ python -m bilibili_live_monitor archive inspect --sessions-root /PRIVATE/live_se
 python -m bilibili_live_monitor archive plan --sessions-root /PRIVATE/live_sessions --session SESSION_ID
 ```
 
-`inspect/plan` 只读已有 config、workflow、offline manifest 和文件元数据，不建目录、锁或缓存、不算媒体哈希、不启动转码。stdout 返回逐文件动作及原因。只有 `workflow.stage=completed` 的场次进入计划；WAV、恢复副本、缺失或改变的原片、未验收的同名输出不会自动处理。没有离线清单的历史录像须先明确归属，不把目录里所有文件视为可清理。
+`inspect/plan` 只读已有 config、workflow、offline manifest 和文件元数据，不建目录、锁或缓存、不算媒体哈希、不启动转码。stdout 返回逐文件动作及原因。只有 `workflow.stage=completed` 的场次进入计划；支持清单中位于录制目录或本场 `offline/recovered/` 的素材。WAV、其他外部路径、缺失或改变的原片、未验收的同名输出不会自动处理。恢复副本归档不自动删除另存的损坏原件；没有离线清单的历史录像须先明确归属，不把目录里所有文件视为可清理。
 
 ```bash
 # run 不带 --execute 仍只出计划；默认最多处理一份
@@ -19,7 +19,7 @@ python -m bilibili_live_monitor archive verify --sessions-root /PRIVATE/live_ses
   --session SESSION_ID --max-files 1
 ```
 
-首版配方是已验证的 H.264、1080p、30fps、8-bit BT.709、单路 AAC 输入，VideoToolbox HEVC Main 目标视频码率 2800k，音轨 copy。禁用软件回退，保持分段、帧率和色彩，不增加音频旁车，不合并或裁掉缺口。其他规格报告失败后保留原片，不静默套用。成品须比原片小，完整解码、时长、帧数、画面及音轨规格检查通过才算 archived。
+输入支持 H.264、最大 1920×1440、29.97/30/60fps、8-bit BT.709 和单路 AAC，VideoToolbox HEVC Main 目标视频码率 2800k，音轨 copy。禁用软件回退，保持原分辨率、分段、帧率和色彩，不增加音频旁车，不合并或裁掉缺口。其他规格报告失败后保留原片，不静默套用。成品须比原片小，完整解码、时长、帧数、画面及音轨规格检查通过才算 archived；低码率原片可能因压缩后更大而保留。
 
 原片 `recordings/ROOM/NAME.mkv` 对应 `recordings/ROOM/archive/NAME.mkv.mp4` 和同名 `.json` 完成记录。记录只保存路径、大小、mtime、配方、验收及原有清单字段，不计算新哈希、不改旧清单。一个 sessions-root 使用一把归档写锁；其 FFmpeg 子进程继承锁，父进程退出后不会因锁提前释放而启动第二个编码器。使用同一 sessions-root 执行历史回填和周期任务。
 
