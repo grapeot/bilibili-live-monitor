@@ -45,12 +45,13 @@ def test_song_tail_window_and_overall_do_not_sum_overlapping_rows():
     assert total['gift_count'] < sum(r['gift_count'] for r in rows)
 
 
-def test_group_brief_talk_inside_song_but_preserve_long_talk_and_gaps():
+def test_displayed_other_content_separates_but_time_gaps_do_not():
     blocks = content_blocks([window(0, 30, '测试歌'), window(30, 60), window(60, 90, '测试歌'),
                              window(90, 180), window(180, 210, '测试歌'), window(230, 260, '测试歌')])
     assert [(b['kind'], b['start'], b['end']) for b in blocks] == [
-        ('song', epoch(at(0)), epoch(at(90))), ('talk', epoch(at(90)), epoch(at(180))),
-        ('song', epoch(at(180)), epoch(at(210))), ('song', epoch(at(230)), epoch(at(260)))]
+        ('song', epoch(at(0)), epoch(at(30))), ('talk', epoch(at(30)), epoch(at(60))),
+        ('song', epoch(at(60)), epoch(at(90))), ('talk', epoch(at(90)), epoch(at(180))),
+        ('song', epoch(at(180)), epoch(at(260)))]
 
 
 def test_reported_currency_units_quantity_and_duplicate_events():
@@ -68,7 +69,7 @@ def test_reported_currency_units_quantity_and_duplicate_events():
     assert total['gift_amount_unknown'] == 1
 
 
-@pytest.mark.parametrize('gap', [15.954, 20.951, 35.296, 60])
+@pytest.mark.parametrize('gap', [15.954, 20.951, 35.296, 60, 3600])
 def test_talk_recovery_gap_groups_without_filling_source_spans(gap):
     activity = [window(0, 30), window(30+gap, 90+gap)]
     original = [dict(row) for row in activity]
@@ -77,15 +78,15 @@ def test_talk_recovery_gap_groups_without_filling_source_spans(gap):
     assert blocks[0]['segments'] == [
         {'start': epoch(row['start']), 'end': epoch(row['end'])} for row in activity]
     assert activity == original
-    assert len(content_blocks([window(0, 30, '测试歌'), window(30+gap, 90+gap, '测试歌')])) == 2
+    assert len(content_blocks([window(0, 30, '测试歌'), window(30+gap, 90+gap, '测试歌')])) == 1
 
 
-def test_talk_long_gap_or_explicit_other_content_remains_separate():
-    assert len(content_blocks([window(0, 30), window(90.001, 120)])) == 2
+def test_only_visible_other_content_separates():
+    assert len(content_blocks([window(0, 30), window(90.001, 120)])) == 1
     for label, source in [('singing', 'recording'), ('singing', 'probable_live'), ('unknown', 'uncertain')]:
         middle = {**window(35, 40, '测试歌'), 'label': label, 'music_source': source}
         blocks = content_blocks([window(0, 30), middle, window(45, 75)])
-        assert len([row for row in blocks if row['kind'] == 'talk']) == 2
+        assert len([row for row in blocks if row['kind'] == 'talk']) == (2 if source == 'probable_live' else 1)
 
 
 def test_recovery_gap_summary_recomputes_gifts_without_overlap_double_count():

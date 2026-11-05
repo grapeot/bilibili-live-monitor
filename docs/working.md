@@ -1,5 +1,14 @@
 # 工作记录
 
+## Finalization hardening（2026-11-04）
+- `media_recovery`：稳定至少300秒、可识别音轨但缺少duration的MKV/MKA，终审冻结前生成无损重封装副本；校验原文件身份及音频包SHA，保留manifest原路径/身份、分段序号与时间映射，凭证复用不重复转码。
+- `activity_summary.content_blocks`：最终展示序列相邻同类/同歌直接合并，无时间阈值；隐藏recording/unknown不形成屏障，可见异类仍分隔。保留真实segments，图表缺录不填补；旧阈值及短杂谈跨歌桥接撤销。
+- `talk_finalize`：仅未来新杂谈场默认启用，实时内容AI仍禁用；离线ASR后分片精修、总任务验收、完整事务写`transcript_revisions`，原稿不改。发布和通知检查校正版完整入库，旧completed场不自动回填。
+- `finalize_context`：歌回/杂谈分片均携同期弹幕时间、昵称与正文，作为本地纠错旁证；杂谈计划冻结弹幕身份，引用检查ID及原文/昵称，理由与证据随校正版保存。
+- `session_timeline`：未来新场最终发布前，单事务写`finalized_timeline_versions`和`finalized_timeline`；绑定workflow_key/room/start/cutoff，按事件时间排序保留最终转写、原稿、纠错依据及弹幕/礼物/入场/点赞原结构。重跑校验版本及内容，不覆盖不同最终稿。
+- 展示决策：本轮只落私有数据库；无新增页面/API/公开全文。部署和历史回填另行执行，当前运行版未切换。
+- 验证：全套775 passed / 1 skipped；补充两项配置兼容/通知门槛后定向27 passed。前端24项测试及build、Ruff、diff检查通过。独立最终code/privacy review APPROVE，另以合成SQLite贯通真实读取、精修、时间线提交和幂等校验。
+
 ## 观众记忆与转化副驾动机文档修订（2026-11-04）
 - 修订 `docs/motivation.md` 与 `README.md`：明确最大化前端引流留存与最大化礼物及大航海收入的商业目标，按商业与关系价值排定实时副驾提示优先级。
 - 补齐五层漏斗表与正文缺口：恢复单场快速升温新客的实时高亮提示，区分点歌送礼层的当场履约闭环与跨场承诺账本，修正纯黑听路人仅记跨场到访频次与时段、不伪造停留时长的协议边界，保留口头称呼、听歌偏好与个人近况等客观事实档案，并对齐主分支已实现的预告剪辑、自动欢迎、单场实时副驾与歌曲归因能力。

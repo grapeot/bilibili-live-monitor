@@ -141,6 +141,9 @@ def read_session_source(config):
                 raise ValueError('直播回填须保存在本场私有工作区')
             offline = json.loads(path.read_text())
             source['segments'] = prefer_offline(source['segments'], offline)
+    if config.get('talk_finalize') and config.get('content_mode') == 'talk' and not config.get('_skip_talk_revisions'):
+        from .talk_finalize import apply_revisions
+        source = apply_revisions(config, source)
     return source
 
 

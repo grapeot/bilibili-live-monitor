@@ -47,11 +47,16 @@ def run_offline(config, state):
     if not rows:
         raise RuntimeError('本场没有已识别命名的录制文件')
     for row in rows:
+        if row.get('recovery_original_identity'):
+            offline_asr._verify_identity(row['recovery_original_identity'])
         offline_asr._verify_identity(row)
         if row.get('sealed') != 'sealed_readable':
             # 仅重探测失败项；不让瞬时ffprobe失败变成永久skipped。
             row.update(offline_asr.probe(Path(config['recording_root']), Path(row['path'])))
             row['room_id'] = config['room_id']
+        if row.get('sealed') != 'sealed_readable':
+            from .media_recovery import recover
+            row.update(recover(row, workspace))
     cursors = {}
     for row in rows:
         key = (row['run_start'], row['run_group'])

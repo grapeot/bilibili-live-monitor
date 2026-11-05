@@ -42,6 +42,25 @@ def test_shards_have_unique_ownership_and_shared_boundary_context(tmp_path):
     assert final.prepare(config) == plan
 
 
+def test_music_shards_include_local_danmaku_and_nicknames_are_valid_witnesses(tmp_path, monkeypatch):
+    from bilibili_live_monitor.transcript_corrections import correction_context
+    config, rows = fixture(tmp_path)
+    source = {'segments': rows, 'items': [
+        ('danmaku', iso(epoch(rows[0]['start_utc']) + 1),
+         {'_record_id': 1, 'author': '合成小鹿', 'text': '合成话题'}),
+        ('danmaku', iso(epoch(rows[-1]['end_utc']) + 300),
+         {'_record_id': 2, 'author': '其他时段', 'text': '不可跨片使用'})], 'raw': []}
+    monkeypatch.setattr(final, 'source_at_cutoff', lambda c: ({}, epoch(config['start_utc']) + 3600, source))
+    plan = final.prepare(config)
+    first = json.loads(Path(plan['shards'][0]['input']).read_text())
+    assert [m['name'] for m in first['danmaku']] == ['合成小鹿']
+    atomic_json(Path(config['workspace']) / 'transcript_corrections.json', {'corrections': [{
+        'seq': rows[0]['seq'], 'fingerprint': fingerprint(rows[0]), 'corrected_text': '合成小鹿讲话',
+        'reason': '同期弹幕昵称给出拼写', 'evidence': [{'id': 'm:1', 'quote': '合成小鹿'}]}]})
+    active, info = correction_context(Path(config['workspace']), source)
+    assert active[rows[0]['seq']]['corrected_text'] == '合成小鹿讲话' and not info['rejected']
+
+
 def test_merge_preserves_followups_and_requires_every_shard(tmp_path):
     config, _ = fixture(tmp_path)
     path = Path(config['workspace']) / 'annotations.json'

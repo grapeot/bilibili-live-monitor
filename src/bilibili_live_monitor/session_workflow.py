@@ -112,7 +112,7 @@ class SessionWorkflows:
         config = json.loads(path.read_text())
         config['content_mode'] = self.automation.rooms[rid].get('content_mode', 'music')
         if config['content_mode'] == 'talk':
-            config.update(ai_enabled=False)
+            config.update(ai_enabled=False, talk_finalize=True)
         config.update(model=cfg['model'], opencode_python=cfg['opencode_python'],
             opencode_cwd=cfg['opencode_cwd'], opencode_project=cfg['opencode_project'],
             recording_root=str(settings.data_dir / 'recordings' / rid),
@@ -121,7 +121,7 @@ class SessionWorkflows:
             seal_seconds=cfg.get('seal_seconds', 300),
             final_review_batches=cfg.get('final_review_batches', 40),
             finish_timeout=cfg.get('finish_timeout', 21600), workflow_key=record['key'])
-        config.update(finalize_parallel=cfg.get('finalize_parallel', True),
+        config.update(final_timeline=True, finalize_parallel=cfg.get('finalize_parallel', True),
                       final_concurrency=cfg.get('final_concurrency', 10),
                       final_subagent=cfg.get('final_subagent', 'general'))
         config['followup_rules'].update(self.automation.rooms[rid].get('followup_rules', {}))

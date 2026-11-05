@@ -29,14 +29,14 @@ def test_same_song_short_gap_one_performance_with_original_spans(tmp_path):
 
 
 def test_repeats_and_other_sessions_are_preserved(tmp_path):
-    conf = config(tmp_path, activity=[window(0, 30), window(80, 110)])
+    conf = config(tmp_path, activity=[window(0, 30), window(30, 80, label='speaking'), window(80, 110)])
     conf['sessions'].append({**conf['sessions'][0], 'id': 's2', 'url': '/session/two/'})
     song = catalog(conf)['songs'][0]
     assert song['count'] == 4 and len({p['id'] for p in song['performances']}) == 4
 
 
 def test_cards_prioritize_performance_count_over_recency(tmp_path):
-    conf = config(tmp_path, activity=[window(0, 20, '常唱'), window(80, 100, '常唱'),
+    conf = config(tmp_path, activity=[window(0, 20, '常唱'), window(20, 80, label='speaking'), window(80, 100, '常唱'),
                                       window(200, 220, '最近单次'), window(150, 170, '较早单次')])
     data = catalog(conf)
     assert [(s['title'], s['count']) for s in data['songs']] == [('常唱', 2), ('最近单次', 1), ('较早单次', 1)]
@@ -84,7 +84,7 @@ def test_id_survives_boundary_correction(tmp_path):
 
 
 def test_merged_old_performances_keep_alias_anchors(tmp_path):
-    conf = config(tmp_path, activity=[window(0, 30), window(60, 90)])
+    conf = config(tmp_path, activity=[window(0, 30), window(30, 60, label='speaking'), window(60, 90)])
     old = catalog(conf)['songs'][0]['performances']
     from pathlib import Path
     Path(conf['sessions'][0]['snapshot']).write_text(json.dumps({'phase': 'completed', 'activity': [window(0, 90)]}))
@@ -122,11 +122,11 @@ def test_legacy_dynamic_detail_data_is_included(tmp_path):
 
 def test_split_merge_split_keeps_original_ids_unique(tmp_path):
     from pathlib import Path
-    conf = config(tmp_path, activity=[window(0, 20), window(40, 60)])
+    conf = config(tmp_path, activity=[window(0, 20), window(20, 40, label='speaking'), window(40, 60)])
     first = catalog(conf)['songs'][0]['performances']
     Path(conf['sessions'][0]['snapshot']).write_text(json.dumps({'phase': 'completed', 'activity': [window(0, 60)]}))
     merged = catalog(conf, {'scope': conf['scope'], 'performances': first})['songs'][0]['performances']
-    Path(conf['sessions'][0]['snapshot']).write_text(json.dumps({'phase': 'completed', 'activity': [window(0, 20), window(40, 60)]}))
+    Path(conf['sessions'][0]['snapshot']).write_text(json.dumps({'phase': 'completed', 'activity': [window(0, 20), window(20, 40, label='speaking'), window(40, 60)]}))
     last = catalog(conf, {'scope': conf['scope'], 'performances': merged})['songs'][0]['performances']
     assert {p['start']: p['id'] for p in first} == {p['start']: p['id'] for p in last}
     assert len({p['id'] for p in last}) == 2
@@ -134,11 +134,11 @@ def test_split_merge_split_keeps_original_ids_unique(tmp_path):
 
 def test_split_assigns_old_identity_to_best_overlapping_new_record(tmp_path):
     from pathlib import Path
-    conf = config(tmp_path, activity=[window(0, 40), window(60, 100)])
+    conf = config(tmp_path, activity=[window(0, 40), window(40, 60, label='speaking'), window(60, 100)])
     first = catalog(conf)['songs'][0]['performances']
     Path(conf['sessions'][0]['snapshot']).write_text(json.dumps({'phase': 'completed', 'activity': [window(0, 100)]}))
     merged = catalog(conf, {'scope': conf['scope'], 'performances': first})['songs'][0]['performances']
-    Path(conf['sessions'][0]['snapshot']).write_text(json.dumps({'phase': 'completed', 'activity': [window(0, 65), window(81, 110)]}))
+    Path(conf['sessions'][0]['snapshot']).write_text(json.dumps({'phase': 'completed', 'activity': [window(0, 65), window(65, 81, label='speaking'), window(81, 110)]}))
     final = catalog(conf, {'scope': conf['scope'], 'performances': merged})['songs'][0]['performances']
     assert final[0]['id'] == first[0]['id']
     assert final[1]['id'] == first[1]['id']

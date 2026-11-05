@@ -61,8 +61,16 @@ def final_report(config, record):
         raise ValueError('invalid_final_snapshot')
     from .session_offline import verify_offline
     offline = verify_offline(local, state['cutoff'])
+    if local.get('final_timeline'):
+        from .session_timeline import verify
+        verify(local, state['cutoff'])
+    if local.get('talk_finalize'):
+        from .talk_finalize import complete
+        if not complete(local):
+            raise ValueError('talk_revision_not_committed')
     verify_remote(local)
     return {'url': url, 'completed_at': state['completed_at'], 'mode': 'talk', 'offline_files': offline['files'],
+            'transcript_refined': bool(local.get('talk_finalize')),
             'hashes': {name: hashlib.sha256((directory / 'public' / name).read_bytes()).hexdigest()
                        for name in ('index.html', 'snapshot.json')}}
 
@@ -111,8 +119,10 @@ def notify(config, dry_run=False):
                     raise ValueError('waiting_for_offline_message_id')
                 name = html.escape(settings['display_name'])
                 payload = {'id': ident, 'subject': 'Re: ' + parent['subject'], 'in_reply_to': message_id,
-                           'html': f'<p>{name}本场直播已收尾，最终统计页面已发布。</p>'
-                                   '<p>本场已完成已保存录音的离线转写；杂谈模式不进行歌曲AI终审。</p>'
+                           'html': f'<p>{name}本场直播已收尾，最终统计页面已发布。</p>' +
+                                    ('<p>本场已完成已保存录音的离线转写及AI转写精修。</p>'
+                                     if proof.get('transcript_refined') else
+                                     '<p>本场已完成已保存录音的离线转写；杂谈模式不进行歌曲AI终审。</p>') +
                                    f'<p><a href="{html.escape(proof["url"], quote=True)}">打开最终看板</a></p>'}
                 if call_adapter(command, payload, ('--dry-run',)).get('valid') is not True:
                     raise ValueError('mail_preflight_failed')
