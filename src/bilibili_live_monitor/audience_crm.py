@@ -35,6 +35,8 @@ def identity(data):
 def collect(config, sessions):
     """sessions含已封口的source；同房同账号跨场归档，绝不估算离场或停留。"""
     room = config['room_id']
+    agentic = config.get('agentic_sources', False)
+    full_evidence, documents = {}, {}
     people, seen_sessions, spans, spoken = {}, set(), [], []
     for session in sorted(sessions, key=lambda s: epoch(s['start'])):
         start, end = epoch(session['start']), epoch(session['end'])
@@ -44,6 +46,10 @@ def collect(config, sessions):
         seen_sessions.add(session['id'])
         spans.append((start, end))
         source = scope_source(session['source'], session['start'], end)
+        if agentic:
+            from .audience_sources import transcript_records
+            full_evidence.update(transcript_records(room, {**session, 'source': source}))
+            documents[session['id']] = session.get('documents', [])
         segments = sorted((s for s in source['segments'] if s.get('is_final') and s.get('text')),
                           key=lambda s: epoch(s['start_utc']))
         starts = [epoch(s['start_utc']) for s in segments]
@@ -97,6 +103,9 @@ def collect(config, sessions):
             person['history'].append(event)
             if kind in ('danmaku', 'gift'):
                 person['evidence'][event['id']] = {**event, 'speaker': 'viewer'}
+                if agentic:
+                    full_evidence[event['id']] = {**event, 'speaker': 'other_viewer', 'person_id': pid}
+                    continue
                 # 同期语音仅为候选上下文，不意味着主播在回应此人。
                 lo, hi = bisect_left(starts, epoch(at) - 180), bisect_right(starts, epoch(at) + 120)
                 for segment in segments[lo:hi]:
@@ -118,6 +127,7 @@ def collect(config, sessions):
     prior = json.loads(prior_file.read_text()) if prior_file.exists() else {}
     if prior and (prior['room_id'] != room or prior['scope'] != config['scope']):
         raise ValueError('已有状态属于其他主播')
+    source_revision = digest([full_evidence, documents, digest(AGENTIC_PROMPT)]) if agentic else None
     for person in people.values():
         person['name'] = person['names'][-1] if person['names'] else '未提供昵称的观众'
         person['names'] = list(dict.fromkeys(person['names']))
@@ -125,7 +135,7 @@ def collect(config, sessions):
         person['last_observed'] = person['history'][-1]['at']
         # 主播主动提名、补唱时观众可能没有发弹幕；这些也必须进入候选证据。
         # 名字/歌名命中只是召回，不是履约结论；最终归属仍须双边引用与审阅。
-        if person['evidence']:
+        if person['evidence'] and not agentic:
             names = set(person['names'])
             for name in person['names']:
                 names.update(re.findall(r'[\u4e00-\u9fff]{2,}', name))
@@ -150,9 +160,15 @@ def collect(config, sessions):
                     'recall': 'name_candidate' if named else 'promise_candidate'}
         person['evidence'] = sorted(person['evidence'].values(), key=lambda e: (epoch(e['at']), e['id']))
         person['revision'] = digest({k: person[k] for k in ('id', 'names', 'history', 'evidence')})
-    return {'schema_version': 1, 'room_id': room, 'scope': config['scope'],
+        if agentic:
+            person['revision'] = digest([person['revision'], source_revision])
+    material = {'schema_version': 2 if agentic else 1, 'room_id': room, 'scope': config['scope'],
             'label': config['label'], 'people': people,
             'sessions': [{k: s[k] for k in ('id', 'label', 'url', 'start', 'end')} for s in sessions]}
+    if agentic:
+        material.update(source_evidence=full_evidence, source_documents=documents,
+                        analysis_contract=digest(AGENTIC_PROMPT))
+    return material
 
 
 SECTIONS = ('overview', 'preferences', 'attention', 'promises', 'actions', 'interactions')
@@ -182,12 +198,47 @@ overview最多2条、每条最多70字：只留主播见到此人时立即有用
 preferences与attention只留具体偏好/互动条件，不写“考据熟练”“高价值”等推断标签。历史过程及时间归入interactions，细节留引用折叠区。
 '''
 
+AGENTIC_PROMPT = PROMPT.replace(
+    '只读input文件，只写指定result文件，不改代码、不发布。',
+    '你是OpenCode查证agent，不是截取文本的摘要器。自主读取本人的input及source_manifest指向的整场来源文件；只写指定result，不改来源、代码或发布。'
+).replace(
+    '输入包含该观众全部自有弹幕/礼物和前后候选主播转写。',
+    'input提供本人弹幕/礼物与旧备忘；source_manifest提供本房间整场转写、同期互动、歌曲表及已存歌词文件。按需使用read、搜索或脚本查阅，不必把整场塞入上下文。'
+).replace(
+    '材料是局部召回，缺少后续不证明未兑现，应标uncertain并先核实，条件未触发不算失约。',
+    '初始input不是证据边界。条件未触发不算失约；未知不等于欠账。对未确认的后续先自行查完整来源，不能把本可查清的工作转交主播。'
+).replace(
+    '引用必须仍可在本轮证据中找到。',
+    '引用须来自本轮本人evidence或source_manifest内transcripts/events记录的id和逐字text。歌曲表与歌词可支持曲目出现判断，不伪造它们为本人发言。'
+).replace(
+    '分析文件仅为定位线索，不是逐字原文；仍须回到input.evidence核对。不读其他房间的分析。',
+    '分析文件仅为定位线索，不是原始证据。不读其他房间、配置、凭据或未列入来源清单的私人文件。'
+).replace(
+    '只有转写出现歌词、主播说“刚好我会”，均不能据此断言已经演唱或兑现；区分试听/放原唱/试唱与完整演唱，证据不足只描述可确定动作。',
+    '只提到歌名或说“我会”不是歌曲实际出现。普通点歌有对应的后续歌曲区间和歌词证据，可记已响应；这不认证主播亲唱或整曲完整。明确要求亲唱、学会后补唱时，另按其具体要求判断。'
+) + '''
+你的目标是查清当前关系与事项，而不只是安全地留下“待核实”。你自行决定搜索词、时间范围、需要连读哪些段落以及何时证据充分。
+优先复用已有整场歌曲时间线，再核对必要歌词及原始ASR。已记录的歌曲区间是歌曲出现的正证据，不能因无法区分唱/放一律降成未响应；有歧义再深入查证，不必每位观众从零重做整场歌曲识别。
+主播可能按点歌机队列延迟处理请求，口头接单不是必要步骤，不能以没念弹幕认定没接单。没有可用队列记录时不虚构队列；查完整后续，不能只限点歌附近几分钟。
+每次点歌分开判断：本人请求什么、歌曲后来是否出现、能否合理关联该请求。不同日期重复点同首歌不能互相覆盖；同曲多人请求或明显自行选曲等竞争线索存在时保留归属不确定，不强求每次都点名献歌。
+不同归属、不同响应方式或不同确定程度的歌曲，不合并成一笔fulfilled。没有明确承诺的点歌后续可写入互动经过，不必都变成欠账；篇幅不足时择要，不靠混合状态压缩。
+歌曲表可能漏掉杂谈中的BGM，转写可能错字或漏词。需要时交叉查校正版、原稿、在线稿、歌曲表、已存歌词和前后互动；歌名与昵称近音只作搜索线索。
+歌词不能单独证明本人演唱，但可证明歌曲内容出现；开唱/合唱说明、过程自评、曲末反馈应综合判断。不能因为纯独唱或逐字完整度未知，就否认已经播放、跟唱或回应。
+普通点歌若后续确有对应歌曲、无明显归属冲突，可记录“已响应，歌曲已出现，唱/放未区分”，或在互动经过保留这个完成事实；不因声源未知留一个让主播去核实是否回应的待办。只有请求明确要求主播亲唱/完整唱/学会后补唱时，才追查该特定承诺是否完成。
+不能把“歌曲出现”升级成“主播唱过”：演唱者未知与完整度未知不同；不要对未提出的完整亲唱要求额外制造不确定性。也不把普通请求自动升级为确定欠账。
+歌词参考和用该参考修过的ASR不是独立双证据；关键歧义看原稿是否有相应词句，或结合其他独立前后互动。仅有校正补出的歌词不够确认发生。
+原稿、在线稿、校正版可能是同一次发言的多个版本，不累加为多次互动；清唱、完整、新观众、专属送歌等修饰也必须分别有依据。
+所有写“未见回应/是否已唱待核实”的事项，都要先在完整来源里做实质查证。确实缺录、含混或查无决定性证据时，准确指出剩余未知；不要为追求确定性猜测。
+旧result即使JSON合法，也不是语义完成的证明：本轮须实际查证再写结果。不要自动复用旧结论。
+'''
 
-def validate_state(person, state):
+
+def validate_state(person, state, material=None):
     if (state.get('person_id') != person['id'] or state.get('revision') != person['revision']
             or set(state) != {'person_id', 'revision', *SECTIONS}):
         raise ValueError('观众状态身份、版本或字段不匹配')
-    evidence = {e['id']: e for e in person['evidence']}
+    from .audience_sources import evidence_map
+    evidence = evidence_map(person, material or {})
     clean = {'person_id': person['id'], 'revision': person['revision']}
     for section in SECTIONS:
         rows = state[section]
@@ -236,6 +287,10 @@ def _prepare(config, material):
             raise ValueError('冻结素材已变化')
         return directory, json.loads((directory / 'plan.json').read_text())
     atomic_json(directory / 'material.json', material)
+    source_manifest = None
+    if 'source_evidence' in material:
+        from .audience_sources import freeze_sources
+        source_manifest = freeze_sources(directory, material)
     previous_file = root / 'current.json'
     previous = json.loads(previous_file.read_text()) if previous_file.exists() else {}
     if previous and (previous['room_id'] != material['room_id'] or previous['scope'] != material['scope']):
@@ -250,18 +305,20 @@ def _prepare(config, material):
             'names': person['names'], 'counts': person['counts'], 'previous': prior,
             'evidence': person['evidence'], 'timezone': 'Asia/Shanghai',
             'analysis_files': config.get('analysis_files', [])}
+        if source_manifest:
+            payload['source_manifest'] = str(source_manifest)
         temporary = source.with_suffix('.tmp')
         temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2))
         temporary.replace(source)
         if prior and prior.get('revision') == person['revision']:
-            atomic_json(result, validate_state(person, prior))
+            atomic_json(result, validate_state(person, prior, material))
         tasks.append({'person_id': pid, 'input': str(source), 'input_sha256': digest(json.loads(source.read_text())),
                       'result': str(result)})
     plan = {'id': signature, 'room_id': material['room_id'], 'scope': material['scope'],
             'concurrency': 10, 'subagent': 'ollama_glm_5_3_flash', 'tasks': tasks,
             'previous_plan_id': previous.get('plan_id')}
     atomic_json(directory / 'plan.json', plan)
-    (directory / 'instructions.txt').write_text(PROMPT)
+    (directory / 'instructions.txt').write_text(AGENTIC_PROMPT if source_manifest else PROMPT)
     return directory, plan
 
 
@@ -275,6 +332,8 @@ def finish(config, directory):
     if (plan['id'] != directory.name or digest(material) != plan['id']
             or material['room_id'] != config['room_id'] or material['scope'] != config['scope']):
         raise ValueError('冻结素材或主播身份已变化')
+    from .audience_sources import verify_sources
+    verify_sources(directory, material)
     expected = {pid for pid, person in material['people'].items() if person['evidence']}
     if {task['person_id'] for task in plan['tasks']} != expected or len(plan['tasks']) != len(expected):
         raise ValueError('计划没有恰好覆盖有证据的观众')
@@ -285,7 +344,7 @@ def finish(config, directory):
         if (task['input'] != str(source) or task['result'] != str(result)
                 or digest(json.loads(source.read_text())) != task['input_sha256']):
             raise ValueError('观众分片输入已变化')
-        states[pid] = validate_state(material['people'][pid], json.loads(result.read_text()))
+        states[pid] = validate_state(material['people'][pid], json.loads(result.read_text()), material)
     # 完整版本先落盘，再一次切换指针。失败时保留原有current。
     current = {'plan_id': plan['id'], 'room_id': material['room_id'], 'scope': material['scope'],
                'material': str(directory / 'material.json'), 'states': states}
@@ -325,12 +384,27 @@ def load_material(config):
         state, cutoff, source = session_source(session_config)
         if not (state.get('stop_intent') or state.get('phase') == 'completed'):
             continue
-        sessions.append({'id': session_config.get('workflow_key') or digest(session_config['start_utc'])[:24],
+        item = {'id': session_config.get('workflow_key') or digest(session_config['start_utc'])[:24],
             'room_id': config['room_id'], 'label': session_config['live_start'],
-            'url': session_config['url'], 'start': session_config['start_utc'], 'end': iso(cutoff), 'source': source})
+            'url': session_config['url'], 'start': session_config['start_utc'], 'end': iso(cutoff), 'source': source}
+        if config.get('agentic_sources'):
+            from .audience_sources import attach_session_files
+            attach_session_files(item, workspace)
+        sessions.append(item)
     from .live_share import read_source
     for item in config.get('legacy_sessions', []):
-        sessions.append({**item, 'source': read_source(Path(config['database']), config['room_id'], item['start'])})
+        legacy = {**item, 'source': read_source(Path(config['database']), config['room_id'], item['start'])}
+        if config.get('agentic_sources'):
+            if item.get('evidence_workspace'):
+                from .audience_sources import attach_session_files
+                attach_session_files(legacy, item['evidence_workspace'])
+            if item.get('offline_transcript'):
+                path = Path(item['offline_transcript'])
+                rows = ([json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+                        if path.suffix == '.jsonl' else json.loads(path.read_text()))
+                legacy['source']['segments'].extend({**row, 'seq': row.get('seq', row.get('source_key')),
+                    'is_final': True} for row in rows if row.get('text'))
+        sessions.append(legacy)
     return collect(config, sessions)
 
 
@@ -364,7 +438,9 @@ def main():
             parser.error('validate需要--run与--result')
         payload = json.loads(args.result.read_text())
         material = json.loads((args.run / 'material.json').read_text())
-        validate_state(material['people'][payload['person_id']], payload)
+        from .audience_sources import verify_sources
+        verify_sources(args.run, material)
+        validate_state(material['people'][payload['person_id']], payload, material)
         result = {'valid': True, 'person_id': payload['person_id']}
     else:
         from .audience_pages import build

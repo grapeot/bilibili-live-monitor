@@ -9,8 +9,9 @@ function fill(){for(const cell of document.querySelectorAll('#gift-summary tbody
 if(cell.querySelector('a'))continue;const name=cell.textContent.trim(),ids=names.get(name)||[];
 const a=document.createElement('a');a.textContent=name;const url=new URL(ids.length===1?ids[0]+'/':'',base);
 if(ids.length!==1)url.searchParams.set('q',name);a.href=url.href;cell.replaceChildren(a);}}
-const nav=document.createElement('nav');nav.id='audience-entry';const a=document.createElement('a');a.href=base.href;a.textContent='观众备忘';
-nav.append(a);(document.querySelector('main')||document.body).prepend(nav);
+const a=document.createElement('a');a.id='audience-entry';a.href=base.href;a.textContent='观众备忘';
+const songs=[...document.querySelectorAll('header a,nav a')].find(link=>link.textContent.trim()==='歌曲搜索');
+if(songs)songs.after(a);else{const nav=document.createElement('nav');nav.append(a);(document.querySelector('main')||document.body).prepend(nav);}
 fetch(new URL('index.json',base),{cache:'no-cache'}).then(r=>{if(!r.ok)throw Error();return r.json();}).then(data=>{
 for(const p of data.people||[]){if(!/^[a-f0-9]{32}$/.test(p.id))continue;for(const name of new Set(p.names||[])){
 const list=names.get(name)||[];list.push(p.id);names.set(name,list);}}fill();new MutationObserver(fill).observe(document.body,{childList:true,subtree:true});}).catch(()=>{});
