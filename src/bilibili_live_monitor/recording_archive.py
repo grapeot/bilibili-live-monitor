@@ -58,8 +58,8 @@ def verify_output(source_info, target):
             or any(video.get(key) != before_v.get(key) for key in ('width', 'height', 'pix_fmt', 'color_space', 'color_transfer', 'color_primaries'))
             or any(audio.get(key) != before_a.get(key) for key in ('codec_name', 'channels', 'sample_rate'))):
         raise ValueError('归档画面或音轨规格不匹配')
-    # MKV/MP4 infer different avg/r_frame_rate for timestamp jitter or missing starts.
-    # Preserve demux timestamps in the encoder and compare actual frames and duration.
+    # MKV/MP4 infer different avg/r_frame_rate for jitter or missing starts.
+    # Keep frame timestamps (disambiguating duplicates by 1us), actual count and duration.
     original_frames = before_v.get('nb_read_frames')
     if original_frames in (None, 'N/A', '0'):
         raise ValueError('无法验证原片解码帧数，保留原片')
@@ -161,10 +161,11 @@ def encode(item, lock_fd):
     try:
         command(['nice', '-n', '10', 'ffmpeg', '-hide_banner', '-nostdin', '-v', 'error', '-xerror', '-n',
                  '-threads', '2', '-i', str(source), '-map', '0:v:0', '-map', '0:a:0',
+                 '-vf', 'settb=AVTB,setpts=if(eq(N\\,0)\\,PTS\\,max(PTS\\,PREV_OUTPTS+1))',
                  '-c:v', 'hevc_videotoolbox', '-allow_sw', '0', '-require_sw', '0',
                  '-profile:v', 'main', '-pix_fmt', 'yuv420p', '-b:v', '2800k',
                  '-color_range', 'tv', '-colorspace', 'bt709', '-color_trc', 'bt709', '-color_primaries', 'bt709',
-                  '-fps_mode', 'passthrough', '-enc_time_base:v', 'demux',
+                  '-fps_mode', 'passthrough', '-enc_time_base:v', 'filter', '-video_track_timescale', '1000000',
                   '-c:a', 'copy', '-tag:v', 'hvc1', str(temporary)], pass_fds=(lock_fd,))
         output_info = verify_output(source_info, temporary)
         check_source(item)
@@ -175,7 +176,8 @@ def encode(item, lock_fd):
         saved = {'status': 'archived', 'source': str(source), 'source_stat': item['source_stat'],
                  'output': str(target), 'output_stat': file_stat(target), 'source_info': source_info,
                  'legacy_row': item['legacy_row'],
-                 'output_duration': float(output_info['format']['duration']), 'video_bitrate': 2_800_000,
+                  'output_duration': float(output_info['format']['duration']), 'video_bitrate': 2_800_000,
+                  'timestamp_policy': 'source_timestamps_monotonic_1us',
                  'verified_at': datetime.now(timezone.utc).isoformat()}
         atomic_json(receipt_path(source), saved)
         return {'source': str(source), 'status': 'archived', 'saved_bytes': source.stat().st_size - target.stat().st_size}

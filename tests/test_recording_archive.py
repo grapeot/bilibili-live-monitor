@@ -169,7 +169,7 @@ def test_verify_accepts_container_rate_estimates_and_rejects_dropped_frames(monk
              'color_primaries': 'bt709'}
     audio = {'codec_type': 'audio', 'codec_name': 'aac', 'channels': 2, 'sample_rate': '48000'}
     source = {'streams': [video, audio], 'format': {'duration': '10.193'}}
-    output_video = {**video, 'codec_name': 'hevc', 'avg_frame_rate': '1092/61'}
+    output_video = {**video, 'codec_name': 'hevc', 'avg_frame_rate': '1092/61', 'r_frame_rate': '60/1'}
     output = {'streams': [output_video, audio], 'format': {'duration': '10.2'}}
     monkeypatch.setattr(archive, 'probe', lambda *_a, **_k: output)
     monkeypatch.setattr(archive, 'command', lambda *_a, **_k: None)
