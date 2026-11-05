@@ -127,15 +127,25 @@ def collect(config, sessions):
     prior = json.loads(prior_file.read_text()) if prior_file.exists() else {}
     if prior and (prior['room_id'] != room or prior['scope'] != config['scope']):
         raise ValueError('已有状态属于其他主播')
-    source_revision = digest([full_evidence, documents, digest(AGENTIC_PROMPT)]) if agentic else None
+    contract_revision = digest(AGENTIC_PROMPT) if agentic else None
+    session_digests = {}
+    if agentic:
+        by_session = {}
+        for item in full_evidence.values():
+            if item.get('kind') == 'transcript':
+                by_session.setdefault(item['session_id'], []).append(item)
+        for s in sessions:
+            sid = s['id']
+            session_digests[sid] = digest([by_session.get(sid, []), documents.get(sid, [])])
     for person in people.values():
         person['name'] = person['names'][-1] if person['names'] else '未提供昵称的观众'
         person['names'] = list(dict.fromkeys(person['names']))
         person['first_observed'] = person['history'][0]['at']
         person['last_observed'] = person['history'][-1]['at']
-        # 主播主动提名、补唱时观众可能没有发弹幕；这些也必须进入候选证据。
+        # 主播主动提名、补唱时观众可能没有发弹幕；这些也必须进入候选证据或触发增量更新。
         # 名字/歌名命中只是召回，不是履约结论；最终归属仍须双边引用与审阅。
-        if person['evidence'] and not agentic:
+        recalled_refs = []
+        if person['evidence']:
             names = set(person['names'])
             for name in person['names']:
                 names.update(re.findall(r'[\u4e00-\u9fff]{2,}', name))
@@ -154,14 +164,17 @@ def collect(config, sessions):
                 if not named and not followup:
                     continue
                 ref = digest([room, sid, segment['seq'], text])[:32]
-                person['evidence'][ref] = {'id': ref, 'speaker': 'streamer', 'kind': 'transcript',
-                    'session_id': sid, 'at': segment['start_utc'], 'text': text,
-                    'transcription': 'corrected' if segment.get('corrected_text') else 'asr',
-                    'recall': 'name_candidate' if named else 'promise_candidate'}
+                recalled_refs.append(ref)
+                if not agentic:
+                    person['evidence'][ref] = {'id': ref, 'speaker': 'streamer', 'kind': 'transcript',
+                        'session_id': sid, 'at': segment['start_utc'], 'text': text,
+                        'transcription': 'corrected' if segment.get('corrected_text') else 'asr',
+                        'recall': 'name_candidate' if named else 'promise_candidate'}
         person['evidence'] = sorted(person['evidence'].values(), key=lambda e: (epoch(e['at']), e['id']))
         person['revision'] = digest({k: person[k] for k in ('id', 'names', 'history', 'evidence')})
         if agentic:
-            person['revision'] = digest([person['revision'], source_revision])
+            attended = [[sid, session_digests[sid]] for sid in person['sessions'] if sid in session_digests]
+            person['revision'] = digest([person['revision'], attended, recalled_refs, contract_revision])
     material = {'schema_version': 2 if agentic else 1, 'room_id': room, 'scope': config['scope'],
             'label': config['label'], 'people': people,
             'sessions': [{k: s[k] for k in ('id', 'label', 'url', 'start', 'end')} for s in sessions]}
@@ -181,6 +194,8 @@ PROMPT = '''用中文更新这位观众的当前备忘档案。只读input文件
 输出为当前状态，不写“新增/本轮更新/较上次”等更新过程。旧状态只是线索，引用必须仍可在本轮证据中找到。
 承诺状态使用 open/conditional/fulfilled/uncertain；材料是局部召回，缺少后续不证明未兑现，应标uncertain并先核实，条件未触发不算失约。
 若后续确有补唱/履约，更新为fulfilled并附新证据；同一次入团送歌与随后点歌属于同一履约链，不拆成额外欠账。本人接受替代曲后也须核对是否已满足原请求。
+看到观众首次赠送「粉丝团灯牌」（本房间历史首次送出粉丝团灯牌，或主播口播「欢迎加入粉丝团/入团送歌」）时，必须核查这次首次入团送歌是否已选曲及兑现演唱；若主播问过入团送歌而观众尚未选曲或尚未唱，须记入promises（conditional）和actions提醒下次补问入团歌，不得漏记或写成不必补歌。非首次的日常续亮灯牌不触发送歌。
+主播口播称呼与观众昵称同音但ASR写成同音别字时，备忘正文应还原用昵称对应的正字，仅在refs.quote保留原转写字样。
 每条为{text:中文简洁句子,refs:[{id:证据ID,quote:逐字原文子串}]}；每条至少一条引用。
 promises条目另含status，actions只是建议但也须引用起因；interactions按具体事件总结，不能仅概括“有互动”。
 actions供主播执行，写主播可询问、确认或回应什么，不让观众去问主播、补解释或报歌名；建议不能预设已经在学或此前欠歌。
@@ -222,14 +237,14 @@ AGENTIC_PROMPT = PROMPT.replace(
 主播可能按点歌机队列延迟处理请求，口头接单不是必要步骤，不能以没念弹幕认定没接单。没有可用队列记录时不虚构队列；查完整后续，不能只限点歌附近几分钟。
 每次点歌分开判断：本人请求什么、歌曲后来是否出现、能否合理关联该请求。不同日期重复点同首歌不能互相覆盖；同曲多人请求或明显自行选曲等竞争线索存在时保留归属不确定，不强求每次都点名献歌。
 不同归属、不同响应方式或不同确定程度的歌曲，不合并成一笔fulfilled。没有明确承诺的点歌后续可写入互动经过，不必都变成欠账；篇幅不足时择要，不靠混合状态压缩。
-歌曲表可能漏掉杂谈中的BGM，转写可能错字或漏词。需要时交叉查校正版、原稿、在线稿、歌曲表、已存歌词和前后互动；歌名与昵称近音只作搜索线索。
+歌曲表可能漏掉杂谈中的BGM，转写可能错字或漏词。需要时交叉查离线校正稿（无校正时为离线原稿）、歌曲表、已存歌词和前后互动；歌名与昵称近音只作搜索线索。
 歌词不能单独证明本人演唱，但可证明歌曲内容出现；开唱/合唱说明、过程自评、曲末反馈应综合判断。不能因为纯独唱或逐字完整度未知，就否认已经播放、跟唱或回应。
 普通点歌若后续确有对应歌曲、无明显归属冲突，可记录“已响应，歌曲已出现，唱/放未区分”，或在互动经过保留这个完成事实；不因声源未知留一个让主播去核实是否回应的待办。只有请求明确要求主播亲唱/完整唱/学会后补唱时，才追查该特定承诺是否完成。
 不能把“歌曲出现”升级成“主播唱过”：演唱者未知与完整度未知不同；不要对未提出的完整亲唱要求额外制造不确定性。也不把普通请求自动升级为确定欠账。
-歌词参考和用该参考修过的ASR不是独立双证据；关键歧义看原稿是否有相应词句，或结合其他独立前后互动。仅有校正补出的歌词不够确认发生。
-原稿、在线稿、校正版可能是同一次发言的多个版本，不累加为多次互动；清唱、完整、新观众、专属送歌等修饰也必须分别有依据。
+歌词参考和用该参考修过的ASR不是独立双证据；关键歧义看离线转写是否有相应词句，或结合其他独立前后互动。仅有校正补出的歌词不够确认发生。
+转写仅使用离线校正稿（无校正时为离线原稿），不使用实时在线ASR；相邻切片不累加为多次互动；清唱、完整、新观众、专属送歌等修饰也必须分别有依据。
 所有写“未见回应/是否已唱待核实”的事项，都要先在完整来源里做实质查证。确实缺录、含混或查无决定性证据时，准确指出剩余未知；不要为追求确定性猜测。
-旧result即使JSON合法，也不是语义完成的证明：本轮须实际查证再写结果。不要自动复用旧结论。
+增量更新原则：input.previous为上一版已验收备忘。跨场更新时须保留previous中引用有效且未被新证据推翻的历史偏好、注意事项、重要互动与未完结承诺；结合新场证据核查旧承诺是否兑现并合入本场新增互动，不无故清空或丢弃既有历史栏目。
 '''
 
 
@@ -310,9 +325,15 @@ def _prepare(config, material):
         temporary = source.with_suffix('.tmp')
         temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2))
         temporary.replace(source)
+        reused = False
         if prior and prior.get('revision') == person['revision']:
-            atomic_json(result, validate_state(person, prior, material))
-        tasks.append({'person_id': pid, 'input': str(source), 'input_sha256': digest(json.loads(source.read_text())),
+            try:
+                atomic_json(result, validate_state(person, prior, material))
+                reused = True
+            except ValueError:
+                reused = False
+        tasks.append({'person_id': pid, 'reused': reused, 'input': str(source),
+                      'input_sha256': digest(json.loads(source.read_text())),
                       'result': str(result)})
     plan = {'id': signature, 'room_id': material['room_id'], 'scope': material['scope'],
             'concurrency': 10, 'subagent': 'ollama_glm_5_3_flash', 'tasks': tasks,

@@ -37,7 +37,9 @@ def gift_amount(gift):
     """Return platform amount in thousandths of a yuan; no quantity multiplier for totals."""
     if gift.get('event_type') == 'SUPER_CHAT_MESSAGE':
         amount = nonnegative_integer(gift.get('price_yuan'))
-        return amount * 1000 if amount is not None else None
+        if amount is not None:
+            return amount * 1000
+        return nonnegative_integer(gift.get('total_coin'))
     if gift.get('event_type') == 'GUARD_BUY':
         return nonnegative_integer(gift.get('guard_price_gold'))
     if gift.get('coin_type') == 'silver':

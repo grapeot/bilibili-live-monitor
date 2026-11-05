@@ -106,8 +106,10 @@ def gift_message(packet):
         text = f"购买 {gift['gift_name']} ×{gift['num']}（大航海等级 {gift['guard_level']}）"
         if gift['guard_price_gold'] is not None:
             text += f" · 平台报告金额 {gift['guard_price_gold']} 金瓜子"
-    else:  # SUPER_CHAT_MESSAGE，price的协议单位为人民币元，不与平台金币混加。
-        gift.update(gift_name='醒目留言', num=1, price_yuan=integer(data['price']))
+    else:  # SUPER_CHAT_MESSAGE，price的协议单位为人民币元，同时折算千分元写入total_coin供统一汇总。
+        price_yuan = integer(data['price'])
+        gift.update(gift_name='醒目留言', num=1, price_yuan=price_yuan,
+                    coin_type='gold', total_coin=price_yuan * 1000)
         identity = data.get('id')
         text = f"醒目留言 {gift['price_yuan']} 元：{str(data.get('message') or '')[:10000]}"
     identity = str(identity) if isinstance(identity, (int, str)) and str(identity) not in ('', '0') else None
