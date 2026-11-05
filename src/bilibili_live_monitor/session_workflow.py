@@ -124,6 +124,11 @@ class SessionWorkflows:
         config.update(final_timeline=True, finalize_parallel=cfg.get('finalize_parallel', True),
                       final_concurrency=cfg.get('final_concurrency', 10),
                       final_subagent=cfg.get('final_subagent', 'general'))
+        audience = cfg.get('audience_crm', {}).get(rid)
+        if audience:
+            if not isinstance(audience, str) or not Path(audience).is_absolute():
+                raise ValueError('audience_crm房间配置须指向绝对路径')
+            config['audience_crm_config'] = audience
         config['followup_rules'].update(self.automation.rooms[rid].get('followup_rules', {}))
         atomic_json(path, config)
         return path

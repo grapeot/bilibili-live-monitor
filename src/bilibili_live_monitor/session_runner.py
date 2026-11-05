@@ -261,6 +261,10 @@ def advance(config, state, now):
             from .session_timeline import commit, verify
             state['final_timeline'] = commit(config, state['cutoff'])
             verify(config, state['cutoff'])
+        if config.get('audience_crm_config'):
+            from .audience_finalize import advance as advance_audience
+            if not advance_audience(config, state):
+                return
         watch.publish(config, workspace / 'public')
         verify_remote(config)
         state.update(stage='completed', completed_at=iso(now), last_error=None)
@@ -298,10 +302,11 @@ def run(path):
                 if isinstance(error, ValueError) or state['consecutive_errors'] >= 10:
                     # 收尾失败亦先停本场专属AI，不重新打开实时调度。
                     stopped = True
-                    for session in (config.get('ai_session'), state.get('final_session')):
+                    for session in (config.get('ai_session'), state.get('final_session'), state.get('audience_session')):
                         if session:
                             try:
-                                stopped = stop_ai(config, session, children=(config.get('finalize_parallel', False)
+                                stopped = stop_ai(config, session, children=(session == state.get('audience_session')
+                                                  or config.get('finalize_parallel', False)
                                                   or config.get('talk_finalize') is True)) and stopped
                             except Exception:
                                 stopped = False
