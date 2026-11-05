@@ -55,7 +55,7 @@ python -m bilibili_live_monitor.session_runner --config /PRIVATE/sessions/SESSIO
 
 ## 观众当前备忘与下播更新
 
-观众当前备忘（Audience CRM）按房间与观众 UID 聚合已完成场次记录，程序负责计数与金额汇总，GLM 负责生成带逐字引用的当前备忘；私有原始证据保留在本地，公开构建只输出最小投影。
+观众当前备忘（Audience CRM）按房间与观众 UID 聚合已完成场次记录，程序负责计数与金额汇总，指定查证 agent 负责生成带逐字引用的当前备忘；私有原始证据保留在本地，公开构建只输出最小投影。
 
 ### 配置文件与隐私边界
 
@@ -89,7 +89,7 @@ python -m bilibili_live_monitor.audience_crm finish \
 python -m bilibili_live_monitor.audience_crm build --config .local/example-crm.json
 ```
 
-在 `prepare` 与 `finish` 之间，针对 `plan.tasks` 中每个任务的 `input` 与 `result` 路径，调用指定的 `ollama_glm_5_3_flash` 生成备忘（运行前须实核底层模型映射），并发上限为 10。
+在 `prepare` 与 `finish` 之间，针对 `plan.tasks` 中每个任务的 `input` 与 `result` 路径，调用指定 agent 生成备忘（运行前须实核底层模型映射），并发上限为 10。自动收尾读取 CRM 配置的 `author_agent`；未指定时，整场查证模式默认 `grok`，旧局部模式保留 `ollama_glm_5_3_flash`。指定 agent 不可用时报告阻塞，不静默切换。
 
 `validate` 通过仅代表 JSON 结构与引用字段合法，不代表语义通过。接纳前核对本人归属、ASR 近音、跨场履约、原唱与主播演唱的区别，以及公开引用的必要性。局部召回没有后续记录，不等于承诺未兑现；同一入团送歌与具体点歌按同一履约链处理。
 

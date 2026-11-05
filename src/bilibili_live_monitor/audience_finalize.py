@@ -13,6 +13,10 @@ def load_settings(session):
     config = json.loads(path.read_text())
     if config['room_id'] != session['room_id']:
         raise ValueError('本场CRM配置属于其他主播')
+    agent = config.get('author_agent', 'grok' if config.get('agentic_sources') else 'ollama_glm_5_3_flash')
+    if not isinstance(agent, str) or not agent.strip():
+        raise ValueError('author_agent须为非空agent名称')
+    config['author_agent'] = agent
     return config, path
 
 
@@ -66,7 +70,7 @@ def advance(session, state):
                              'finish', '--config', str(path), '--run', str(directory)])
         prompt = f'''{tag}
 你负责此场CRM总协调，不改代码、不发布、不通知。读取{directory / 'plan.json'}及{directory / 'instructions.txt'}。
-使用task的ollama_glm_5_3_flash子代理处理每位观众的input/result，最多同时10个；不可静默改模型或创建下一级代理。
+使用task的{config['author_agent']}子代理处理每位观众的input/result，最多同时10个；不可静默改模型或创建下一级代理。
 每个任务读取自己的input与其中source_manifest指向的完整本房间来源，使用OpenCode工具自主查证后续；只写对应result，不改来源。没有source_manifest时仅使用原有input证据。
 不能把JSON通过当作查证完成。已有result只有在本轮已实际查证且校验通过时才复用；旧备忘仅为线索。重点追查“未见回应/待核实”的点歌，不把可从源文件查到的工作转交主播。
 总任务重点抽查未完成承诺、已跨场兑现及同名歧义：一条引用真实不等于结论成立；必须核对双方上下文，不能挪用其他观众的回应。

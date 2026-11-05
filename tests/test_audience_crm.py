@@ -204,11 +204,14 @@ def test_failed_build_preserves_entire_previous_site(tmp_path, monkeypatch):
     assert before == after
 
 
-def test_finalize_dispatch_once_then_builds_only_accepted_state(tmp_path, monkeypatch):
+@pytest.mark.parametrize('author_agent', [None, 'grok'])
+def test_finalize_dispatch_once_then_builds_only_accepted_state(tmp_path, monkeypatch, author_agent):
     from pathlib import Path
 
     from bilibili_live_monitor import audience_finalize, session_ai, session_finalize, session_runner
     cfg = config(tmp_path)
+    if author_agent:
+        cfg['author_agent'] = author_agent
     config_path = tmp_path / 'settings.json'
     config_path.write_text(json.dumps(cfg))
     scene = tmp_path / 'scene'
@@ -231,6 +234,7 @@ def test_finalize_dispatch_once_then_builds_only_accepted_state(tmp_path, monkey
     assert not audience_finalize.advance(conf, state)
     assert not audience_finalize.advance(conf, state)
     assert len(calls) == 1
+    assert f"使用task的{author_agent or 'ollama_glm_5_3_flash'}子代理" in calls[0][2]
     saved = json.loads((scene / 'audience_finalize/plan.json').read_text())
     directory = Path(saved['run'])
     plan = json.loads((directory / 'plan.json').read_text())
@@ -239,6 +243,21 @@ def test_finalize_dispatch_once_then_builds_only_accepted_state(tmp_path, monkey
     finish(cfg, directory)
     assert audience_finalize.advance(conf, state)
     assert state['audience_crm']['people'] == 2
+
+
+@pytest.mark.parametrize('agentic, override, expected', [
+    (True, None, 'grok'), (False, None, 'ollama_glm_5_3_flash'),
+    (True, 'custom-reviewer', 'custom-reviewer'),
+])
+def test_finalize_author_route(tmp_path, agentic, override, expected):
+    from bilibili_live_monitor.audience_finalize import load_settings
+    path = tmp_path / 'settings.json'
+    settings = {'room_id': '123456', 'agentic_sources': agentic}
+    if override is not None:
+        settings['author_agent'] = override
+    path.write_text(json.dumps(settings))
+    loaded, _ = load_settings({'room_id': '123456', 'audience_crm_config': str(path)})
+    assert loaded['author_agent'] == expected
 
 
 def test_symlink_workspace_can_finish(tmp_path):
