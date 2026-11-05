@@ -60,23 +60,54 @@ def test_agent_reads_full_session_and_cites_delayed_response(tmp_path):
     assert not transcript.exists()
 
 
-def test_later_session_changes_revision_even_without_viewer_return(tmp_path, monkeypatch):
+def test_later_session_incremental_revision_and_reuse(tmp_path, monkeypatch):
     cfg = {'room_id': '10001', 'scope': 'example', 'secret': 'x' * 48,
            'label': '示例', 'workspace': str(tmp_path), 'agentic_sources': True}
     first = {'id': 'one', 'room_id': '10001', 'start': '2026-01-01T00:00:00+00:00',
              'end': '2026-01-01T01:00:00+00:00', 'label': '一', 'url': 'https://example.com/one/',
-             'source': {'raw': [], 'segments': [], 'items': [('danmaku', '2026-01-01T00:01:00+00:00',
-                        {'sender_uid': '101', 'author': '观众一', 'text': '想听示例歌'})]}}
+             'source': {'raw': [], 'segments': [{'seq': 1, 'is_final': True,
+                 'text': '原稿错字', 'corrected_text': '校正后正字',
+                 'start_utc': '2026-01-01T00:01:10+00:00', 'end_utc': '2026-01-01T00:01:20+00:00'}],
+                 'items': [('danmaku', '2026-01-01T00:01:00+00:00',
+                        {'sender_uid': '101', 'author': '观众一', 'text': '想听示例歌'})]},
+             'online_evidence': [{'id': 't:online', 'room_id': '10001', 'kind': 'transcript',
+                 'at': '2026-01-01T00:01:15+00:00', 'text': '在线ASR噪声'}]}
     before = collect(cfg, [first])
-    second = {**first, 'id': 'two', 'start': '2026-01-02T00:00:00+00:00', 'end': '2026-01-02T01:00:00+00:00',
-              'source': {'raw': [], 'items': [], 'segments': [{'seq': 2, 'is_final': True,
-                  'text': '昨天的歌准备好了。', 'start_utc': '2026-01-02T00:31:00+00:00',
-                  'end_utc': '2026-01-02T00:31:30+00:00'}]}}
-    after = collect(cfg, [first, second])
     pid = next(iter(before['people']))
-    assert before['people'][pid]['revision'] != after['people'][pid]['revision']
-    assert len(after['people'][pid]['sessions']) == 1
-    assert any(e['session_id'] == 'two' for e in after['source_evidence'].values())
+    # 存在corrected_text时仅保留corrected，且不混入online_evidence
+    transcript_items = [e for e in before['source_evidence'].values() if e['kind'] == 'transcript']
+    assert len(transcript_items) == 1
+    assert transcript_items[0]['transcription'] == 'corrected'
+    assert transcript_items[0]['text'] == '校正后正字'
+    # 落盘第一轮结果
+    dir1, plan1 = prepare(cfg, before)
+    own = before['people'][pid]['evidence'][0]
+    state1 = {'person_id': pid, 'revision': before['people'][pid]['revision'],
+              'overview': [{'text': '曾点示例歌', 'refs': [{'id': own['id'], 'quote': '想听示例歌'}]}],
+              'preferences': [], 'attention': [], 'promises': [], 'actions': [], 'interactions': []}
+    Path(plan1['tasks'][0]['result']).write_text(json.dumps(state1, ensure_ascii=False))
+    finish(cfg, dir1)
+    # 后续无关场次（观众未到场且未被提名）不改变该观众revision，prepare直接复用旧result
+    unrelated = {**first, 'id': 'two', 'start': '2026-01-02T00:00:00+00:00', 'end': '2026-01-02T01:00:00+00:00',
+                 'online_evidence': [],
+                 'source': {'raw': [], 'items': [], 'segments': [{'seq': 2, 'is_final': True,
+                     'text': '今天唱首别的歌。', 'start_utc': '2026-01-02T00:31:00+00:00',
+                     'end_utc': '2026-01-02T00:31:30+00:00'}]}}
+    after_unrelated = collect(cfg, [first, unrelated])
+    assert before['people'][pid]['revision'] == after_unrelated['people'][pid]['revision']
+    _, plan_unrelated = prepare(cfg, after_unrelated)
+    assert plan_unrelated['tasks'][0]['reused'] is True
+    assert Path(plan_unrelated['tasks'][0]['result']).is_file()
+    # 若后续场次主播点名该观众，则改变revision并要求重跑
+    named_second = {**unrelated, 'source': {'raw': [], 'items': [], 'segments': [{'seq': 2, 'is_final': True,
+        'text': '观众一，昨天的歌准备好了。', 'start_utc': '2026-01-02T00:31:00+00:00',
+        'end_utc': '2026-01-02T00:31:30+00:00'}]}}
+    after_named = collect(cfg, [first, named_second])
+    assert before['people'][pid]['revision'] != after_named['people'][pid]['revision']
+    assert len(after_named['people'][pid]['sessions']) == 1
+    assert any(e['session_id'] == 'two' for e in after_named['source_evidence'].values())
+    _, plan_named = prepare(cfg, after_named)
+    assert plan_named['tasks'][0]['reused'] is False
     from bilibili_live_monitor import audience_crm
     monkeypatch.setattr(audience_crm, 'AGENTIC_PROMPT', audience_crm.AGENTIC_PROMPT + '\n新查证合同')
     revised = collect(cfg, [first])
@@ -84,7 +115,7 @@ def test_later_session_changes_revision_even_without_viewer_return(tmp_path, mon
     assert revised['people'][pid]['revision'] != before['people'][pid]['revision']
 
 
-@pytest.mark.parametrize('layer', ['original', 'online', 'legacy'])
+@pytest.mark.parametrize('layer', ['original', 'legacy'])
 def test_foreign_room_transcripts_are_rejected(tmp_path, monkeypatch, layer):
     from bilibili_live_monitor.audience_crm import load_material
     cfg = {'room_id': '10001', 'scope': 'example', 'secret': 'x' * 48,
@@ -97,9 +128,6 @@ def test_foreign_room_transcripts_are_rejected(tmp_path, monkeypatch, layer):
              'source': {'raw': [], 'segments': [], 'items': []}}
     if layer == 'original':
         scene['source']['segments'] = [segment]
-    elif layer == 'online':
-        scene['online_evidence'] = [{'id': 't:1', 'room_id': '99999', 'kind': 'transcript',
-                                     'at': segment['start_utc'], 'text': '唱完了'}]
     else:
         path = tmp_path / 'legacy.jsonl'
         path.write_text(json.dumps(segment) + '\n')

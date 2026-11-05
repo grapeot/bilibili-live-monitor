@@ -57,6 +57,7 @@ def test_guard_and_superchat_keep_distinct_value_units():
     guard['data']['username'] = '合成改名'
     assert messages(frame(guard))[0]['source_key'] == g['source_key']
     assert s['gift']['price_yuan'] == 30 and s['gift']['event_id'] == '789'
+    assert s['gift']['coin_type'] == 'gold' and s['gift']['total_coin'] == 30000
     assert '合成醒目留言' in s['text']
 
 

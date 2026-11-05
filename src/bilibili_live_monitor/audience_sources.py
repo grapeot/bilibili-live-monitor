@@ -17,32 +17,21 @@ def check_room(value, room):
 
 
 def transcript_records(room, session):
-    """校正版和原稿均保留；歌词只作识别线索，不认证声源。"""
+    """优先使用离线校正稿（无校正时回退离线原稿），不混入在线ASR；歌词只作识别线索，不认证声源。"""
     records = {}
     for segment in session['source']['segments']:
         check_room(segment, room)
         if not segment.get('is_final') or not segment.get('text'):
             continue
-        for layer, text in [('original', segment['text']),
-                            ('corrected', segment.get('corrected_text'))]:
-            if not text:
-                continue
-            ident = source_id([room, session['id'], segment['seq'], text])
-            records[ident] = {'id': ident, 'speaker': 'streamer', 'kind': 'transcript',
-                'session_id': session['id'], 'at': segment['start_utc'],
-                'end': segment['end_utc'], 'text': text, 'transcription': layer,
-                'source_seq': segment['seq'], **({'time_mapping': segment['time_mapping']}
-                                               if segment.get('time_mapping') else {})}
-    # 在线稿可补足离线ASR的漏词；只开放本场冻结范围内的转写记录。
-    for item in session.get('online_evidence', []):
-        check_room(item, room)
-        if (item.get('kind') != 'transcript' or not item.get('text')
-                or not item.get('at') or not epoch(session['start']) <= epoch(item['at']) <= epoch(session['end'])):
-            continue
-        ident = source_id([room, session['id'], 'online', item['id'], item['text']])
+        corrected = segment.get('corrected_text')
+        layer = 'corrected' if corrected else 'original'
+        text = corrected or segment['text']
+        ident = source_id([room, session['id'], segment['seq'], text])
         records[ident] = {'id': ident, 'speaker': 'streamer', 'kind': 'transcript',
-            'session_id': session['id'], 'at': item['at'], 'text': item['text'],
-            'transcription': 'online', 'source_id': item['id']}
+            'session_id': session['id'], 'at': segment['start_utc'],
+            'end': segment['end_utc'], 'text': text, 'transcription': layer,
+            'source_seq': segment['seq'], **({'time_mapping': segment['time_mapping']}
+                                           if segment.get('time_mapping') else {})}
     return records
 
 
@@ -136,10 +125,5 @@ def attach_session_files(session, workspace):
     for path in sorted((workspace / 'song_sources').glob('*.json')):
         docs.append({'kind': 'song_identity_and_lyrics', 'name': path.name,
                      'content': json.loads(path.read_text())})
-    context = workspace / 'full_context.json'
-    if context.is_file():
-        data = json.loads(context.read_text())
-        check_room(data, session['room_id'])
-        session['online_evidence'] = data.get('evidence', [])
     session['documents'] = docs
     return session
