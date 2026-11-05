@@ -34,7 +34,8 @@ def accepted(source, row):
     target.parent.mkdir()
     target.write_bytes(b'hevc')
     saved = {'status': 'archived', 'source': str(source), 'source_stat': media.file_stat(source),
-             'output': str(target), 'output_stat': media.file_stat(target), 'legacy_row': row, 'source_info': {}}
+             'output': str(target), 'output_stat': media.file_stat(target), 'legacy_row': row,
+             'source_info': {'timestamp_max_adjustment_us': 0}}
     media.receipt_path(source).write_text(json.dumps(saved))
     return target
 
@@ -168,7 +169,7 @@ def test_verify_accepts_container_rate_estimates_and_rejects_dropped_frames(monk
              'nb_read_frames': '182', 'color_space': 'bt709', 'color_transfer': 'bt709',
              'color_primaries': 'bt709'}
     audio = {'codec_type': 'audio', 'codec_name': 'aac', 'channels': 2, 'sample_rate': '48000'}
-    source = {'streams': [video, audio], 'format': {'duration': '10.193'}}
+    source = {'streams': [video, audio], 'format': {'duration': '10.193'}, 'timestamp_max_adjustment_us': 0}
     output_video = {**video, 'codec_name': 'hevc', 'avg_frame_rate': '1092/61', 'r_frame_rate': '60/1'}
     output = {'streams': [output_video, audio], 'format': {'duration': '10.2'}}
     monkeypatch.setattr(archive, 'probe', lambda *_a, **_k: output)
@@ -180,6 +181,16 @@ def test_verify_accepts_container_rate_estimates_and_rejects_dropped_frames(monk
     video.pop('nb_read_frames')
     with pytest.raises(ValueError, match='无法验证原片解码帧数'):
         archive.verify_output(source, tmp_path / 'output.mp4')
+
+
+def test_timestamp_adjustment_bounds_duplicates_and_backwards_jump(monkeypatch, tmp_path):
+    assert archive.timestamp_adjustment(['0', '0', '0.01']) == 1
+    assert archive.timestamp_adjustment(['0', '2', '1', '3']) == 1_000_001
+    assert archive.timestamp_adjustment(['0'] * 1002) == 1001
+    monkeypatch.setattr(archive, 'probe', lambda *_a, **_k: pytest.fail('invalid source reached output probe'))
+    for correction in (1001, 1_000_001):
+        with pytest.raises(ValueError, match='超过1毫秒'):
+            archive.verify_output({'timestamp_max_adjustment_us': correction}, tmp_path / 'output.mp4')
 
 
 def test_only_own_manifest_recovered_source_is_eligible(tmp_path):

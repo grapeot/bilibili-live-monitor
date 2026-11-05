@@ -22,8 +22,25 @@ def command(args, **kwargs):
 def probe(path, *, frames=False):
     args = ['ffprobe', '-v', 'error', '-show_format', '-show_streams', '-of', 'json']
     if frames:
-        args += ['-count_frames']
-    return json.loads(command([*args, str(path)]).stdout)
+        args += ['-count_frames', '-show_frames', '-show_entries', 'frame=media_type,best_effort_timestamp_time']
+    info = json.loads(command([*args, str(path)]).stdout)
+    if frames:
+        # Retain only the bound, not thousands of frame records in the receipt.
+        times = [f['best_effort_timestamp_time'] for f in info.pop('frames', []) if f['media_type'] == 'video']
+        info['timestamp_max_adjustment_us'] = timestamp_adjustment(times)
+    return info
+
+
+def timestamp_adjustment(times):
+    previous, maximum = None, 0
+    if not times:
+        raise ValueError('没有可验证的视频帧时间戳')
+    for value in times:
+        timestamp = round(Fraction(value) * 1_000_000)
+        adjusted = timestamp if previous is None else max(timestamp, previous + 1)
+        maximum = max(maximum, adjusted - timestamp)
+        previous = adjusted
+    return maximum
 
 
 def streams(info):
@@ -47,6 +64,8 @@ def check_profile(info):
 
 
 def verify_output(source_info, target):
+    if source_info.get('timestamp_max_adjustment_us', 1001) > 1000:
+        raise ValueError('原片时间戳需要超过1毫秒修正或未经验证，保留原片')
     info = probe(target, frames=True)
     before_v, before_a = streams(source_info)
     video, audio = streams(info)
@@ -150,6 +169,8 @@ def encode(item, lock_fd):
     source, target = Path(item['source']), Path(item['output'])
     check_profile(probe(source))
     source_info = probe(source, frames=True)
+    if source_info['timestamp_max_adjustment_us'] > 1000:
+        raise ValueError('原片时间戳需要超过1毫秒修正，保留原片')
     # 留出录制余量；Trash并不释放空间，不能计入可用空间。
     needed = max(source.stat().st_size, int(float(source_info['format']['duration']) * 500_000))
     if shutil.disk_usage(source.parent).free < 5 * 1024**3 + needed:
@@ -191,7 +212,10 @@ def cleanup(item, *, permanent=False):
     saved = archive_receipt(source)
     if saved['source_stat'] != file_stat(source):
         raise ValueError('原片已变化，不能清理')
-    verify_output(saved['source_info'], archive_path(source))
+    source_info = saved['source_info']
+    if 'timestamp_max_adjustment_us' not in source_info:
+        source_info = probe(source, frames=True)
+    verify_output(source_info, archive_path(source))
     check_source(item)
     if permanent:
         source.unlink()
