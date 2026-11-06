@@ -80,7 +80,8 @@ def detail(person, state, material, config, uids=None):
     evidence = evidence_map(person, material)
     counts = person['counts']
     if uids is None:
-        uids = {p['uid'] for p in material['people'].values()}
+        uids = {str(uid) for p in material['people'].values()
+                for uid in [p.get('uid'), *p.get('observed_uids', [])] if uid}
 
     def show(value):
         return esc(public_text(value, uids))
@@ -194,7 +195,8 @@ def _build(config):
         raise ValueError('私有工作区不能放进公开目录')
     output.mkdir(parents=True, exist_ok=True)
     rows, files = [], ['index.html', 'index.json']
-    uids = {p['uid'] for p in material['people'].values()}
+    uids = {str(uid) for p in material['people'].values()
+            for uid in [p.get('uid'), *p.get('observed_uids', [])] if uid}
     for pid, person in material['people'].items():
         state = current['states'].get(pid, {})
         if person['evidence']:

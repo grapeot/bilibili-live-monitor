@@ -66,6 +66,8 @@ def frozen_cutoff(config, state, platform, now):
 
 
 def publish(config, destination):
+    if config.get('local_only', False):
+        return
     subprocess.run(['rsync', '-az', '--timeout=25', str(destination / 'index.html'),
                     str(destination / 'snapshot.json'), config['remote']], check=True, timeout=40,
                    capture_output=True)

@@ -120,6 +120,7 @@ def gift_message(packet):
     key = command + ':' + (identity or hashlib.sha256(fingerprint.encode()).hexdigest())
     level = guard_level(data.get('guard_level', user.get('guard_level')))
     return {'kind': 'gift', 'gift': gift, 'text': text, 'author': author,
+            'sender_hidden': bool(data.get('is_mystery')),
             'at_utc': at, 'source_key': key, **sender, 'guard_level': level,
             'guard_source': 'purchase' if command == 'GUARD_BUY' else 'gift_event'}
 
@@ -179,6 +180,7 @@ def entry_message(packet, *, received_utc=None):
         fields.append(data)
     key = 'entry:' + hashlib.sha256(json.dumps(fields, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
     return {'kind': 'entry', 'author': author or '未命名用户', 'text': '进入直播间',
+            'sender_hidden': anonymous,
             'at_utc': at, 'source_key': key, **identity,
             'guard_level': guard_level(data.get('guard_level', data.get('guard_type'))),
             'guard_source': 'interaction_event',
@@ -198,6 +200,7 @@ def like_message(packet):
     author = '神秘人' if anonymous else str(base.get('name') or data.get('uname') or '未命名用户')[:200]
     guard = user.get('guard') or {}
     return {'kind': 'like', 'author': author, 'text': '为主播点赞了', 'at_utc': now,
+            'sender_hidden': anonymous,
             'source_key': 'like:'+uuid.uuid4().hex, **identity,
             'guard_level': guard_level(guard.get('level')), 'guard_source': 'like_event',
             'like': {'event_type': packet['cmd'], 'time_source': 'received',

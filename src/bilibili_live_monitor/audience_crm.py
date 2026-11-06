@@ -22,6 +22,9 @@ def person_id(secret, room, uid):
 
 def identity(data):
     """昵称不是身份；拒收缺UID、未解析或内外UID冲突的事件。"""
+    if data.get('analysis_identity_basis') == 'nickname':
+        from .identity import analysis_key
+        return analysis_key(data)
     if data.get('identity_status') == 'unresolved':
         return None
     gift_uid = (data.get('gift') or {}).get('sender_uid')
@@ -76,10 +79,17 @@ def collect(config, sessions):
                 continue
             seen.add(event_key)
             pid = person_id(config['secret'], room, uid)
-            person = people.setdefault(pid, {'id': pid, 'uid': uid, 'names': [], 'sessions': [],
+            by_name = data.get('analysis_identity_basis') == 'nickname'
+            person = people.setdefault(pid, {'id': pid, 'uid': None if by_name else uid,
+                'analysis_key': uid, 'identity_basis': 'nickname' if by_name else 'uid',
+                'observed_uids': [], 'names': [], 'sessions': [],
                 'history': [], 'evidence': {}, 'counts': {'danmaku': 0, 'entry': 0, 'like': 0,
                 'gift_events': 0, 'gift_count': 0, 'gift_count_unknown': 0,
                 'amount_milli': 0, 'amount_unknown': 0}})
+            for observed in (data.get('sender_uid'), gift.get('sender_uid')):
+                if (not isinstance(observed, bool) and str(observed or '').isdigit()
+                        and int(observed) > 0 and str(observed) not in person['observed_uids']):
+                    person['observed_uids'].append(str(observed))
             name = ''.join(c for c in str(data.get('author') or '') if c.isprintable())[:200]
             if name and (not person['names'] or person['names'][-1] != name):
                 person['names'].append(name)
