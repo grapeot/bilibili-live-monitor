@@ -1,16 +1,18 @@
 import React, {useState} from 'react';
+import {useInstance} from './Instance';
 
 type Variant={id:string;info:string;cta:string};
 type Copy={revision:number;greeting:string;intro:string;welcome_variants:Variant[];copy_values:Record<string,string>};
 
 export function WelcomeCopy({roomId}:{roomId:string}){
+  const {base}=useInstance();
   const [open,setOpen]=useState(false);
   const [draft,setDraft]=useState<Copy|null>(null);
   const [busy,setBusy]=useState(false);
   const [error,setError]=useState('');
   const [message,setMessage]=useState('');
   async function request(value?:Copy):Promise<Copy>{
-    const response=await fetch(import.meta.env.BASE_URL+'api/automation/rooms/'+roomId+'/copy',value===undefined?undefined:{
+    const response=await fetch(base+'api/automation/rooms/'+roomId+'/copy',value===undefined?undefined:{
       method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(value)});
     const body=await response.json();
     if(!response.ok)throw new Error(typeof body.detail==='string'?body.detail:JSON.stringify(body.detail));
