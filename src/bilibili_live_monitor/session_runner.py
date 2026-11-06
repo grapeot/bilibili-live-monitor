@@ -280,6 +280,8 @@ def run(path):
         fcntl.flock(publisher, fcntl.LOCK_EX | fcntl.LOCK_NB)
         status_path = workspace / 'workflow.json'
         state = json.loads(status_path.read_text()) if status_path.exists() else {'stage': 'created'}
+        # 首次健康任务可能在AI预检完成前启动，先发布可读取的初始状态。
+        atomic_json(status_path, state)
         next_health_check = 0
         while state['stage'] not in ('completed', 'attention'):
             started = time.time()

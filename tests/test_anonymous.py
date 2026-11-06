@@ -196,3 +196,22 @@ def test_local_only_publish_and_verification_make_no_external_calls(monkeypatch)
     monkeypatch.setattr(session_runner.urllib.request, 'urlopen', forbidden)
     live_share_watch.publish({'local_only': True}, None)
     session_runner.verify_remote({'local_only': True})
+
+
+def test_initial_workflow_exists_before_health_is_scheduled(tmp_path, monkeypatch):
+    from bilibili_live_monitor import session_health, session_runner
+
+    config = {'workspace': str(tmp_path)}
+    checked = []
+
+    def schedule(cfg, **kwargs):
+        checked.append(json.loads((tmp_path / 'workflow.json').read_text()))
+
+    def advance(cfg, state, now):
+        state['stage'] = 'completed'
+
+    monkeypatch.setattr(session_runner, 'load_config', lambda path: config)
+    monkeypatch.setattr(session_runner, 'advance', advance)
+    monkeypatch.setattr(session_health, 'ensure_scheduled', schedule)
+    assert session_runner.run(tmp_path / 'config.json') == 0
+    assert checked == [{'stage': 'created'}]
