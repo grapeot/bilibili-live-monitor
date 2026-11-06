@@ -164,24 +164,27 @@ def audio_duration(path):
 
 
 def encode_audio(windows, output):
+    from .archive_media import resolve_media
     sources = {}
     for w in windows:
         sha = w['sha256']
         if not isinstance(sha, str) or not re.fullmatch('[0-9a-f]{64}', sha):
             raise ValueError('源片SHA256格式无效')
-        source = Path(w['source_path']).resolve(strict=True)
-        if sha in sources and sources[sha] != source:
+        original = Path(w['source_path']).resolve()
+        source = resolve_media(original, expected_sha=sha)
+        if sha in sources and sources[sha][1] != source:
             raise ValueError('同一源片哈希映射到不同路径')
-        sources[sha] = source
+        sources[sha] = (original, source)
     audio = output/'audio'
     audio.mkdir()
 
     def encode(pair):
-        sha, path = pair
-        with path.open('rb') as stream:
-            actual = hashlib.file_digest(stream, 'sha256').hexdigest()
-        if actual != sha:
-            raise ValueError(f'源片已变化：{path.name}')
+        sha, (original, path) = pair
+        if original == path:
+            with path.open('rb') as stream:
+                actual = hashlib.file_digest(stream, 'sha256').hexdigest()
+            if actual != sha:
+                raise ValueError(f'源片已变化：{path.name}')
         before = path.stat()
         process = subprocess.run(['ffmpeg', '-nostdin', '-v', 'error', '-i', str(path), '-map', '0:a:0', '-vn',
                         '-af', 'aresample=async=1:first_pts=0', '-ac', '1', '-ar', '16000',

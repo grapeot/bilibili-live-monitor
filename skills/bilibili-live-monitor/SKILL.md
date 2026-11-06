@@ -1,6 +1,6 @@
 ---
 name: bilibili-live-monitor
-description: 在Apple Silicon Mac运行B站常驻录制平台，通过AI控制面管理目标与来源，将原始媒体、本地语音转写与网页弹幕持久保存；包含面向AI的平台运维子skill。
+description: 在Apple Silicon Mac运行B站常驻录制平台，通过AI控制面管理目标与来源，保存媒体、转写与弹幕；支持已完成录像的H.265归档、历史回填及原片清理。
 ---
 
 # B站多路直播监控
@@ -20,6 +20,8 @@ description: 在Apple Silicon Mac运行B站常驻录制平台，通过AI控制�
 常驻目标、重启恢复、健康摘要、开播巡检与补位见 [平台运维子skill](platform-operations.md)。`rotate-live`默认只读预演，显式`--execute`才停止已确认停播的来源并补位；定时频率与最终一次时间由外部调度器管理。只注册本根skill，子skill按任务加载；真实路径、端口、模型和运行状态从本机私有overlay读取。
 
 已有录制素材的盘点、可恢复本地转写与文本/能量判读边界见 [离线ASR子skill](offline-asr.md)。
+
+已完成录像的 H.265 2.8 Mbps 归档、历史回填、原片清理及归档读取兼容见 [录像归档](archive.md)。默认只读计划，执行及永久清理分别显式开启，不把清理接入直播收尾关键路径。
 
 直播中或结束后，使用 `bili-live trends build` 从已有数据库只读生成入场流量、送礼频次、关注总数与粉丝团人数四图及冻结数据；参数、口径与 `trends verify` 验收见 [直播趋势子skill](trends.md)。不画大航海人数，不访问控制面或中断录制。
 

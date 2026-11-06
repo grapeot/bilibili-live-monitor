@@ -14,19 +14,23 @@ from .session_offline import recording_files
 
 
 def prepare(config, cutoff):
+    from .archive_media import archive_receipt, resolve_media
     rows, skipped = [], []
     root = Path(config['recording_root'])
     for (start, group), files in sorted(recording_files(config, cutoff).items()):
         cursor, previous = start, -1
         for index, path in sorted(files):
             cursor += max(0, index - previous - 1) * config['recording_segment_seconds']
-            before = path.stat()
+            physical = resolve_media(path)
+            before = physical.stat()
+            source_mtime = (before.st_mtime if physical == path
+                            else archive_receipt(path)['source_stat']['mtime_ns'] / 1e9)
             # 正在写入的尾片不做哈希或探测，更不送入离线模型。
-            if before.st_mtime > cutoff - 10:
+            if source_mtime > cutoff - 10:
                 row = {'path': str(path), 'duration_sec': None, 'sealed': 'recent_write'}
             else:
                 row = offline_asr.probe(root, path)
-                after = path.stat()
+                after = physical.stat()
                 if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
                     row['sealed'] = 'changed_during_probe'
             row.update(room_id=config['room_id'], run_start=start, run_group=group,

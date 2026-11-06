@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
+from .archive_media import archive_receipt, archived_input, resolve_media, source_paths
 from .asr import ASR
 
 MEDIA_SUFFIXES = {'.mka', '.mkv', '.wav', '.flac', '.mp3', '.ogg'}
@@ -125,7 +126,7 @@ def _main(args):
 
 
 def scan(root, jobs):
-    files = sorted(path for path in root.rglob('*') if path.is_file() and path.suffix.lower() in MEDIA_SUFFIXES)
+    files = source_paths(root, MEDIA_SUFFIXES, recursive=True)
     if jobs == 1 or len(files) < 2:
         return [probe(root, path) for path in files]
     from concurrent.futures import ThreadPoolExecutor
@@ -135,6 +136,12 @@ def scan(root, jobs):
 
 
 def probe(root, path):
+    if not path.exists():
+        saved = archive_receipt(path)
+        row = dict(saved['legacy_row'])
+        archived_input(row)
+        row.update(path=str(path), relative=str(path.relative_to(root)))
+        return row
     stat = path.stat()
     relative = path.relative_to(root)
     item = {
@@ -256,9 +263,10 @@ def run_files(out, selected, python, worker, args):
 
 def transcribe_file(session, out, row, chunk_seconds):
     _verify_identity(row)
-    before = Path(row['path']).stat()
-    pcm = decode_pcm(row['path'])
-    after = Path(row['path']).stat()
+    source = resolve_media(row['path'])
+    before = source.stat()
+    pcm = decode_pcm(source)
+    after = source.stat()
     if (after.st_size, after.st_mtime_ns) != (before.st_size, before.st_mtime_ns):
         raise RuntimeError('输入在解码期间发生变化')
     work = out / 'work' / row['sha256']
@@ -305,6 +313,8 @@ def transcribe_file(session, out, row, chunk_seconds):
         counts[chunk['text_evidence']] = counts.get(chunk['text_evidence'], 0) + 1
     return {
         'path': row['path'],
+        'media_input': str(source),
+        'media_is_archived': source != Path(row['path']).resolve(),
         'room_id': row['room_id'],
         'sha256': row['sha256'],
         'size': row['size'],
@@ -494,6 +504,9 @@ def _load_inventory(out, root, jobs):
 
 def _verify_identity(row):
     path = Path(row['path'])
+    if not path.exists():
+        archived_input(row)
+        return
     stat = path.stat()
     if (stat.st_size, stat.st_mtime_ns, _sha256(path)) != (row['size'], row['mtime_ns'], row['sha256']):
         raise ValueError('素材已变化，请显式scan后恢复：'+str(path))

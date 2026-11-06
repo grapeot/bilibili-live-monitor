@@ -115,6 +115,7 @@ def rectangle(value, width, height):
 
 
 def validate(plan, subject):
+    from .archive_media import resolve_media
     if plan.get('schema_version') != 1:
         raise ValueError('不支持的精剪表版本')
     selected = plan['subjects'][subject]
@@ -123,7 +124,8 @@ def validate(plan, subject):
         raise ValueError('需要1至40个片段')
     sources, normalized = {}, []
     for clip in clips:
-        source = Path(clip['source']).resolve(strict=True)
+        original = Path(clip['source']).resolve()
+        source = resolve_media(original, expected_sha=clip['sha256'])
         if not source.is_file():
             raise ValueError('源必须是本地文件')
         if source not in sources:
@@ -133,9 +135,10 @@ def validate(plan, subject):
                 raise ValueError('源片缺少音轨')
             if any(s.get('side_data_type') == 'Display Matrix' for s in video.get('side_data_list', [])):
                 raise ValueError('不支持带显示变换矩阵的源片，先在私有流程明确归一方向与坐标')
-            sources[source] = (digest(source), video, float(info['format']['duration']), coverage(source, info))
+            sources[source] = (digest(source) if source == original else None,
+                               video, float(info['format']['duration']), coverage(source, info))
         sha, video, duration, spans = sources[source]
-        if clip['sha256'] != sha:
+        if sha is not None and clip['sha256'] != sha:
             raise ValueError('源片指纹不符')
         start, end = number(clip['start']), number(clip['end'])
         if not 0 <= start < end <= duration:
@@ -146,7 +149,8 @@ def validate(plan, subject):
         label = clip['label']
         if not isinstance(label, str) or not 1 <= len(label) <= 36 or any(c in label for c in '\r\n\x00'):
             raise ValueError('情境标题须为1至36字符的单行文字')
-        normalized.append({**clip, 'source': str(source), 'crop': crop, 'masks': masks})
+        normalized.append({**clip, 'source': str(source), 'crop': crop, 'masks': masks,
+                           **({'archived_from': str(original)} if source != original else {})})
     duration = sum(c['end'] - c['start'] for c in normalized)
     if not 120 <= duration <= 180:
         raise ValueError('预告片必须为120至180秒，不能靠截断句子凑时长')
