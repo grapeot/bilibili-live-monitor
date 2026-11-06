@@ -509,3 +509,9 @@
 - finalize总任务prompt改为"最多同时{final_concurrency}片"，字段默认值由4上调至10，允许范围1–10；分片本身仍按30分钟桶划分，本场共10片可全量并行。
 - session-workflow skill示例同步更新为10；final_concurrency保留为可配置项。
 - 628项Python测试与ruff通过；改动镜像到 deployed_20261103 运行快照。
+# 匿名 profile 与昵称分析身份（2026-11-06）
+
+- 增加显式 `profiles.<id>.mode=anonymous`，独立 Chrome 目录、跳过切换后的登录页，并核验匿名登录态；常规 profile 默认行为保留。
+- 匿名时间线显式标记 nickname 分析口径，房间与原样昵称组成键；平台 UID 不改写，不追溯重算旧数据。入场去重、送礼统计及观众资料支持该口径；神秘人不合并。
+- 实时 ASR、程序健康巡检与内容 AI 使用现有独立配置，不因未登录而停用；欢迎与点赞仍要求已登录。可设置 `session_workflow.local_only=true` 保留本地分析但不建立远端目录、上传或读取远端页面。
+- 全量859项Python测试、Ruff通过；前端24项测试及构建通过。独立复审覆盖启动/切换/恢复屏障、并发开房排空、身份与公开投影。真实访客Chrome启动预检通过，部署结果另存私有运行记录。

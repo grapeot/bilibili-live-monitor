@@ -50,7 +50,7 @@ def advance(session, state):
             raise ValueError('CRM接纳版本房间错误')
         if not stop_ai(session, state.get('audience_session'), children=True):
             return False
-        if config.get('publish_on_finalize'):
+        if config.get('publish_on_finalize') and not session.get('local_only', False):
             from .audience_publish import publish
             result = publish(config)
         else:

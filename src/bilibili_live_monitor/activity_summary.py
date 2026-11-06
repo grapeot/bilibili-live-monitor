@@ -64,7 +64,9 @@ def gift_observations(source):
             continue
         seen.add(key)
         count = nonnegative_integer(gift.get('num'))
-        uid = gift.get('sender_uid') or data.get('sender_uid')
+        from .identity import analysis_key
+        uid = (analysis_key(data) if data.get('analysis_identity_basis') == 'nickname'
+               else gift.get('sender_uid') or data.get('sender_uid'))
         gifts.append((epoch(at), count, gift_amount(gift), uid, str(data.get('author') or '')[:200]))
     return gifts
 

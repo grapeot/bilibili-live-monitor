@@ -102,6 +102,7 @@ def create_app(settings=None):
                     assistant_store.close()
             await accounts.start()
             store = Store(settings.data_dir / 'monitor.sqlite3')
+            store.nickname_identity = accounts.anonymous
             monitor = Monitor(settings, store)
             app.state.monitor = monitor
             await monitor.start()

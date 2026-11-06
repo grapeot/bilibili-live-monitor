@@ -10,6 +10,7 @@ def utc_now():
 
 class Store:
     def __init__(self, path: Path):
+        self.nickname_identity = False
         self.path = path.resolve()
         path.parent.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(path)
@@ -137,6 +138,8 @@ class Store:
             return
         if message.get('kind') in ('gift', 'entry', 'like'):
             message = dict(message)
+            if self.nickname_identity:
+                message['analysis_identity_basis'] = 'nickname'
             token = message.pop('_raw_token', None)
             raw = getattr(self, '_raw_like', {}).get(room_id)
             if kind == 'like' and token and raw and token == raw[0]:
@@ -150,6 +153,8 @@ class Store:
                     self.db.execute("INSERT INTO events(kind,data) VALUES('likes',?)",
                                     (json.dumps({'room_id': room_id, 'summary': summary}, ensure_ascii=False),))
         else:
+            if self.nickname_identity:
+                message = {**message, 'analysis_identity_basis': 'nickname'}
             self.danmaku(room_id, message)
 
     def like_summary(self, room_id):

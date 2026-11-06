@@ -41,6 +41,8 @@ def _strip_cdn_beacon(match):
 
 
 def verify_remote(config):
+    if config.get('local_only', False):
+        return
     for name in ('index.html', 'snapshot.json'):
         local = (Path(config['workspace']) / 'public' / name).read_bytes()
         req = urllib.request.Request(config['url'] + name,
@@ -98,7 +100,7 @@ def advance(config, state, now):
         if uses_ai and not state.get('ai_preflight'):
             ai_control(config, 'preflight', model=config['model'])
             state['ai_preflight'] = True
-        if not state.get('remote_prepared'):
+        if not config.get('local_only', False) and not state.get('remote_prepared'):
             host, directory = config['remote'].split(':', 1)
             subprocess.run(['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', host,
                             'mkdir -p -- ' + shlex.quote(directory)],
