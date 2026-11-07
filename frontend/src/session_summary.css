@@ -1,0 +1,48 @@
+.room-archive .session-summary {
+  min-width: 0;
+  overflow: hidden;
+  box-shadow: 0 4px 16px #18243b05;
+}
+
+.session-summary h2 { margin: 0 0 12px; }
+.session-summary > p { color: #63728a; font-size: 13px; line-height: 1.7; margin: 8px 0; }
+.session-summary .archive-stats { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.session-summary .archive-stats > div { min-width: 0; background: #f8faff; }
+
+.session-summary-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+  border: 1px solid #e0e6ef;
+  border-radius: 10px;
+  scrollbar-width: thin;
+  scrollbar-color: #b7c7df #f3f6fb;
+  -webkit-overflow-scrolling: touch;
+}
+
+.session-summary-scroll:focus-visible { outline: 2px solid #2563eb; outline-offset: 3px; }
+.session-summary table {
+  border-collapse: collapse;
+  width: 100%;
+  white-space: nowrap;
+  font-size: 14px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.7;
+}
+.session-summary th, .session-summary td {
+  padding: 14px 12px;
+  text-align: right;
+  border-bottom: 1px solid #e7edf4;
+}
+.session-summary th { background: #f8faff; color: #53637a; font-weight: 500; }
+.session-summary th:first-child, .session-summary td:first-child { text-align: left; min-width: 188px; }
+.session-summary td:first-child a { font-weight: 600; }
+.session-summary tbody tr:last-child td { border-bottom: 0; }
+.session-summary tbody tr:hover { background: #f2f6ff; }
+
+@media (max-width: 600px) {
+  .room-archive .session-summary { padding: 16px 12px; }
+  .session-summary .archive-stats { gap: 8px; margin: 16px 0; }
+  .session-summary .archive-stats > div { padding: 12px 8px; }
+  .session-summary .archive-stats strong { font-size: 21px; }
+  .session-summary th, .session-summary td { padding: 12px; }
+}

@@ -18,3 +18,9 @@ it('缺少数据不渲染零，也不为仅存历史汇总生成失效链接',()
  expect(screen.getAllByText('—')).toHaveLength(8);expect(screen.getAllByText('0')).toHaveLength(2);
  expect(screen.queryByRole('link')).toBeNull();
 });
+it('没有本地详情的历史场次可打开配置来源的原详情',()=>{
+ render(<SessionSummaryTable base="/instances/guest/" shared rows={[{key:null,date:'2026-01-01',session:'早场',
+  hours:2,status:'completed',has_result:false,detail_url:'https://archive.example.com/s/history/',metrics:{}}]}/>);
+ expect(screen.getByRole('link').getAttribute('href')).toBe('https://archive.example.com/s/history/');
+ expect(screen.getByRole('link').getAttribute('rel')).toBe('noreferrer');
+});

@@ -4,6 +4,7 @@ import math
 import re
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 from .activity_summary import gift_observations, nonnegative_integer
@@ -53,12 +54,18 @@ def summaries(source, sessions):
     return sorted(rows, key=lambda row: row['start_utc'], reverse=True)
 
 
-def shared_summaries(path, local_rows):
-    """只投影已发布汇总字段；不输出本机路径或远程私有链接。"""
+def shared_summaries(path, local_rows, origin=None):
+    """投影已发布汇总字段；历史详情只使用显式配置的HTTPS来源。"""
     data = json.loads(Path(path).read_text())
     if not isinstance(data, dict) or not isinstance(data.get('sessions'), list):
         raise ValueError('汇总文件格式无效')
     matches = {row['start_utc']: row for row in local_rows}
+    if origin:
+        parsed = urlsplit(origin)
+        if (parsed.scheme != 'https' or not parsed.netloc or parsed.username or parsed.password
+                or parsed.path not in ('', '/') or parsed.query or parsed.fragment):
+            raise ValueError('历史详情来源须为HTTPS站点origin')
+        origin = origin.rstrip('/')
     rows = []
     for row in data['sessions']:
         if (not isinstance(row, dict) or not isinstance(row.get('metrics'), dict)
@@ -71,11 +78,15 @@ def shared_summaries(path, local_rows):
         values = {key: value if type(value := metrics.get(key)) in (int, float) and math.isfinite(value)
                   else None for key in FIELDS}
         match = matches.get(row.get('start_utc'))
+        remote_path = row.get('url')
+        detail_url = (origin + remote_path if origin and isinstance(remote_path, str)
+                      and re.fullmatch(r'/(?:s|share)/[A-Za-z0-9_-]+/', remote_path) else None)
         hours = row.get('hours')
         hours = hours if type(hours) in (int, float) and math.isfinite(hours) and hours >= 0 else None
         status = row.get('status', 'completed')
         status = status if status in ('live', 'finalizing', 'completed') else 'finalizing'
         rows.append({key: row.get(key) for key in ('date', 'session', 'start_utc', 'updated_at')}
                     | {'hours': hours, 'status': status, 'metrics': values,
-                       'key': match['key'] if match else None, 'has_result': bool(match and match['has_result'])})
+                       'key': match['key'] if match else None, 'has_result': bool(match and match['has_result']),
+                       'detail_url': detail_url if not match or not match['has_result'] else None})
     return rows

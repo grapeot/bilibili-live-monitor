@@ -8,7 +8,8 @@
       "archive": {
         "database": "/PRIVATE/account/monitor.sqlite3",
         "rooms": {"123456": "示例主播 A", "234567": "示例主播 B"},
-        "summary_files": {"123456": "/PRIVATE/archive/site/sessions.json"}
+        "summary_files": {"123456": "/PRIVATE/archive/site/sessions.json"},
+        "summary_origins": {"123456": "https://archive.example.com"}
       }
     },
     {

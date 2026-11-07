@@ -146,7 +146,8 @@ def create_gateway(config, *, transport=None):
                 if summary_file:
                     from .archive_summary import shared_summaries
                     data['summaries'] = await asyncio.to_thread(shared_summaries, summary_file,
-                                                               [{**s, 'start_utc': s['start']} for s in data['sessions']])
+                        [{**s, 'start_utc': s['start']} for s in data['sessions']],
+                        archive.get('summary_origins', {}).get(room_id))
                     data['summary_source'] = 'shared'
             except (OSError, ValueError, TypeError) as error:
                 raise HTTPException(503, '暂时无法读取房间归档，请稍后刷新') from error

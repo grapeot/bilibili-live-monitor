@@ -49,3 +49,15 @@ def test_shared_metadata_rejects_nested_fields(tmp_path):
     path.write_text(json.dumps({'sessions': [{'date': {'private': 'value'}, 'metrics': {}}]}))
     with pytest.raises(ValueError, match='格式无效'):
         shared_summaries(path, [])
+
+
+def test_historical_detail_uses_only_configured_https_origin(tmp_path):
+    path = tmp_path / 'summary.json'
+    row = {'date': '2026-01-01', 'session': '早场', 'metrics': {}, 'url': '/s/history/'}
+    path.write_text(json.dumps({'sessions': [row]}))
+    assert shared_summaries(path, [], 'https://archive.example.com')[0]['detail_url'] == 'https://archive.example.com/s/history/'
+    row['url'] = '//untrusted.example/s/history/'
+    path.write_text(json.dumps({'sessions': [row]}))
+    assert shared_summaries(path, [], 'https://archive.example.com')[0]['detail_url'] is None
+    with pytest.raises(ValueError):
+        shared_summaries(path, [], 'javascript:alert(1)')
