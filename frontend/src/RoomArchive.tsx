@@ -1,6 +1,7 @@
 import React,{useEffect,useState} from 'react';
 import './room_archive.css';
 import {SessionSummaryTable,type SummaryRow} from './SessionSummaryTable';
+import {SessionOverviewChart} from './SessionOverviewChart';
 
 type Summary={followers_change:number|null;gift_count:number|null;gift_amount_yuan:number|null;watched:number|null};
 type Session={key:string;start:string;end:string;status:string;has_result:boolean;summary:Summary;dates:string[]};
@@ -14,7 +15,7 @@ const hours=(n:number)=>(n/3600).toFixed(2)+' 小时';
 const status:Record<string,string>={completed:'已完成',live:'直播中',created:'准备中',running:'处理中',stopping:'收尾中',sealing:'收尾中',offline_asr:'离线转写',offline_review:'最终分析',finalizing:'生成最终结果',attention:'需处理'};
 
 export function RoomArchive({base,roomId}:{base:string;roomId:string}){
- const [data,setData]=useState<Archive|null>(null),[error,setError]=useState(''),[date,setDate]=useState(''),[metric,setMetric]=useState<'gift_amount_yuan'|'danmaku'|'entries'|'coverage_seconds'>('gift_amount_yuan');
+ const [data,setData]=useState<Archive|null>(null),[error,setError]=useState(''),[date,setDate]=useState('');
  useEffect(()=>{let alive=true;let timer:ReturnType<typeof setTimeout>;async function refresh(){try{
   const r=await fetch(base+'api/rooms/'+roomId+'/archive',{cache:'no-store'});if(!r.ok)throw Error('归档暂时无法读取');
   const value=await r.json();if(alive){setData(value);setError('');}
@@ -28,21 +29,15 @@ export function RoomArchive({base,roomId}:{base:string;roomId:string}){
   },[data?.name]);
  const selected=data?.days.find(d=>d.date===date)||data?.days[0];
  const sessions=data?.sessions.filter(s=>selected?.session_keys.includes(s.key))||[];
- const days=data?.days.slice(0,30).reverse()||[];
- const max=Math.max(1,...days.map(d=>d[metric]??0));
  return <main className="room-archive">
   <a href={import.meta.env.BASE_URL}>← 返回监控看板</a>
    <header><div><p className="archive-eyebrow">{data?.mode==='anonymous'?'匿名监控':data?.mode==='account'?'账号监控':'房间归档'} · 北京时间 · 每30秒刷新</p><h1>{data?.name||'房间 '+roomId}</h1><p>按日期回看直播数据，查看每场最终分析。</p></div>
    <a href={'https://live.bilibili.com/'+roomId} target="_blank" rel="noreferrer">打开直播间 ↗</a></header>
   {error&&<p role="alert">{error}；已有内容保留，稍后自动重试。</p>}
   {!data&&!error&&<p>正在读取历史场次…</p>}
-   {data&&<>
+    {data&&<>
+    <SessionOverviewChart rows={data.summaries||[]}/>
     <SessionSummaryTable rows={data.summaries||[]} base={base} shared={data.summary_source==='shared'}/>
-   <section className="archive-panel"><div className="archive-section-title"><h2>每日趋势</h2><select aria-label="趋势指标" value={metric} onChange={e=>setMetric(e.target.value as typeof metric)}>
-    <option value="gift_amount_yuan">礼物平台金额（元）</option><option value="danmaku">弹幕条数</option><option value="entries">进房次数</option><option value="coverage_seconds">转写覆盖时长</option></select></div>
-    {days.length?<div className="archive-bars">{days.map(d=><button key={d.date} className={'archive-bar '+(d===selected?'selected':'')} onClick={()=>setDate(d.date)} aria-label={d.date+' 查看当天'}>
-     <strong>{!d.has_observations?'无采集':metric==='coverage_seconds'?hours(d[metric]??0):number(d[metric])}</strong><span className="bar-space"><i style={{height:Math.max(3,(d[metric]??0)/max*130)}}/></span><small>{d.date.slice(5)}</small></button>)}</div>:<p>还没有场次记录；开播后会自动出现在这里。</p>}
-   </section>
    {selected&&<>
     <div className="archive-section-title"><h2>{selected.date}</h2><label>选择日期 <select aria-label="选择日期" value={selected.date} onChange={e=>setDate(e.target.value)}>{data.days.map(d=><option key={d.date}>{d.date}</option>)}</select></label></div>
     <section className="archive-stats">

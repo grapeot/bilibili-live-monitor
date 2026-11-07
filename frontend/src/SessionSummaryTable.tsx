@@ -11,11 +11,6 @@ export function SessionSummaryTable({rows,base,shared}:{rows:SummaryRow[];base:s
   key==='online_mean'?value.toFixed(2):key.startsWith('amount')?'¥'+value.toFixed(2):value.toLocaleString('zh-CN');
  return <section className="archive-panel session-summary" aria-label="场次汇总"><h2>场次汇总</h2>
   <p>{shared?'与远程主页共用同一份汇总数据。':'按与远程主页相同的场次口径计算；缺失信息显示为 —。'}按北京时间开播日期列出完整场次，跨午夜不拆分。</p>
-  {rows[0]&&<><p>{rows[0].date} · {rows[0].session} · 最近一场</p><div className="archive-stats">
-   {[['watched_last','累计看过'],['online_mean','平均在线'],['online_peak','峰值在线']].map(([key,label])=><div key={key}>
-    <span>{label}</span><strong>{show(rows[0].metrics[key],key)}</strong>
-   </div>)}
-  </div></>}
   <div className="session-summary-scroll" tabIndex={0} aria-label="场次汇总表，可横向滚动"><table><thead><tr>
    <th>日期 · 场次</th><th>时长</th>{columns.map(([key,label])=><th key={key}>{label}</th>)}<th>状态</th>
   </tr></thead><tbody>{rows.map((row,index)=><tr key={row.key||row.date+row.session+index}>
