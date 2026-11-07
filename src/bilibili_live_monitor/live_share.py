@@ -4,22 +4,15 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
+from .session_source import read_source as read_source
+from .session_source import scope_source as scope_source
+from .time_utils import epoch as epoch
+from .time_utils import iso as iso
+
 SERIES = ('entries', 'online', 'fans', 'gifts')
-
-
-def epoch(value: str) -> float:
-    parsed = datetime.fromisoformat(value.replace('Z', '+00:00'))
-    if parsed.tzinfo is None:
-        raise ValueError('时间必须带时区')
-    return parsed.timestamp()
-
-
-def iso(value: float) -> str:
-    return datetime.fromtimestamp(value, timezone.utc).isoformat()
 
 
 def number(value):
@@ -31,31 +24,6 @@ def number(value):
 def fingerprint(segment: dict) -> str:
     return hashlib.sha256(json.dumps({k: segment.get(k) for k in ('seq', 'start_utc', 'end_utc', 'text')},
                                    sort_keys=True, ensure_ascii=False).encode()).hexdigest()
-
-
-def scope_source(source: dict, start: str, end: float) -> dict:
-    lower = epoch(start)
-    return {
-        'raw': [row for row in source['raw'] if lower <= epoch(row[0]) <= end],
-        'items': [row for row in source['items'] if lower <= epoch(row[1]) <= end],
-        'segments': [s for s in source['segments']
-                     if lower <= epoch(s['start_utc']) <= epoch(s['end_utc']) <= end],
-    }
-
-
-def read_source(database: Path, room_id: str, start: str) -> dict:
-    with sqlite3.connect(database.resolve().as_uri() + '?mode=ro', uri=True) as db:
-        db.execute('PRAGMA query_only=ON')
-        db.execute('BEGIN')
-        raw = [(at, cmd, json.loads(data)) for at, cmd, data in db.execute(
-            'SELECT received_utc,command,data FROM raw_events WHERE room_id=? AND received_utc>=? ORDER BY id',
-            (room_id, start))]
-        items = [(kind, at, {**json.loads(data), '_record_id': ident}) for ident, kind, at, data in db.execute(
-            'SELECT id,kind,at_utc,data FROM timeline WHERE room_id=? AND at_utc>=? ORDER BY id', (room_id, start))]
-        segments = [json.loads(data) for data, in db.execute(
-            "SELECT data FROM segments WHERE room_id=? AND json_extract(data,'$.start_utc')>=? ORDER BY seq",
-            (room_id, start))]
-    return {'raw': raw, 'items': items, 'segments': segments}
 
 
 def followup_candidates(source: dict, start: str, rules: dict | None = None) -> list[dict]:

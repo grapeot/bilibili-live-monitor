@@ -14,7 +14,9 @@ Python 3.12/FastAPI提供本机API与静态前端，React/Vite/TypeScript负责�
 | 活动、整场与跨场分析 | `activity_summary.py`、`archive_summary.py`、`room_archive.py`、`song_catalog.py`、`song_gifts.py`、`song_followers.py`、`audience_crm.py` |
 | 授权操作与可选产物 | `assistant_api.py`、`automation.py`、`audience_publish.py`、`offline_asr.py`、`trailer.py`、`recording_archive.py`及对应脚本 |
 
-当前 `live_share.py` 同时承载 `epoch/iso`、`read_source/scope_source`、快照组装与页面渲染。分析模块从它导入时间或读库函数，它又在函数内导入分析模块。该实际依赖不能被描述为已经完全分层的架构。外部归档消费者也可能直接导入这些入口。
+`time_utils.py`提供时间转换，`session_source.py`提供只读取数与范围裁剪；活动、归档和歌曲分析直接依赖这些基础模块。`live_share.py`继续负责基础快照和页面渲染，并保留 `epoch/iso/read_source/scope_source` 兼容导出，外部消费者无需同时改入口。部分写入、编排模块仍依赖它的其他工具函数，不将当前结构描述为已经完全分层。
+
+`session_snapshot.py`共用配置到快照的组装、内容模式处理和HTML/JSON写出步骤，不自行取数、推断阶段或发布。调用者传入已确定的source、cutoff、phase、health和标注；正常写出保持先HTML后JSON，异常收尾只复用适用的HTML写出步骤。不同入口的临时文件名也保留。
 
 `export_snapshot`、`watch.build`、`watch.cycle`截止异常分支各有产物写出路径。手动export在stop_intent时标记completed，watch带workflow_key时标记finalizing；正常路径先HTML后JSON，截止异常路径从已有snapshot文件读取，先JSON后HTML。单文件临时替换不等于HTML/JSON联合事务。阶段、失败后状态和调用顺序是各入口契约，不能只根据函数名字推断行为相同。
 

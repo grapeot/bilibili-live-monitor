@@ -14,11 +14,10 @@ from .live_share import (
     fingerprint,
     followup_candidates,
     iso,
-    make_snapshot,
     read_source,
-    render_snapshot,
     scope_source,
 )
+from .session_snapshot import build_snapshot, write_snapshot
 from .song_sources import register_source, verified_titles
 
 
@@ -172,18 +171,11 @@ def export_snapshot(config):
     health = dict(state.get('last_health', {}))
     if completed:
         health['recording'] = False
-    snapshot = make_snapshot(source, start=config['start_utc'], now=iso(cutoff), label=config['label'],
+    snapshot = build_snapshot(source, config, cutoff=cutoff,
         phase='completed' if completed else 'live', health=health, annotations=annotations,
-        approved_songs=tuple(config.get('approved_songs', [])) + verified_titles(workspace),
-        followup_overrides=config.get('followup_overrides', {}), followup_rules=config.get('followup_rules'))
-    from .content_mode import apply_content_mode
-    apply_content_mode(snapshot, config)
+        approved_songs=tuple(config.get('approved_songs', [])) + verified_titles(workspace))
     destination = workspace / 'public'
-    destination.mkdir(exist_ok=True)
-    temporary = destination / 'index.html.tmp'
-    temporary.write_text(render_snapshot(snapshot, navigation=workspace / 'navigation.json'))
-    temporary.replace(destination / 'index.html')
-    atomic_json(destination / 'snapshot.json', snapshot)
+    write_snapshot(snapshot, destination, navigation=workspace / 'navigation.json', temporary_suffix='.html.tmp')
     return {'output': str(destination), 'published': False, 'phase': snapshot['phase'], 'cutoff': iso(cutoff)}
 
 

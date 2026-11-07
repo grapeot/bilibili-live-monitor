@@ -8,7 +8,7 @@ from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 from .activity_summary import gift_observations, nonnegative_integer
-from .live_share import epoch
+from .time_utils import epoch
 
 FIELDS = ('online_mean', 'online_peak', 'watched_last', 'followers_net', 'amount',
           'amount_nonself', 'paid_donors_nonself')

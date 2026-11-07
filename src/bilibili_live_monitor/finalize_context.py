@@ -1,5 +1,5 @@
 """按场次和时间截取弹幕，只作为转写纠错的只读旁证。"""
-from .live_share import epoch
+from .time_utils import epoch
 
 
 def danmaku_context(source, lower, upper):

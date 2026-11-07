@@ -9,7 +9,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-from bilibili_live_monitor.content_mode import apply_content_mode, content_ai_enabled
+from bilibili_live_monitor.content_mode import content_ai_enabled
 from bilibili_live_monitor.live_share import (
     atomic_json,
     epoch,
@@ -17,11 +17,10 @@ from bilibili_live_monitor.live_share import (
     followup_candidates,
     followup_evidence,
     iso,
-    make_snapshot,
-    render_snapshot,
     scope_source,
 )
 from bilibili_live_monitor.live_share_control import load_config, read_session_source
+from bilibili_live_monitor.session_snapshot import build_snapshot, write_page, write_snapshot
 from bilibili_live_monitor.song_sources import verified_titles
 from bilibili_live_monitor.transcript_corrections import correction_context, correction_prompt, review_window
 
@@ -99,19 +98,11 @@ def build(config, state, platform, api_state, now, upload=True):
         health = {**health, 'recording': False}
     else:
         state['last_health'] = health
-    snapshot = make_snapshot(source, start=config['start_utc'], now=iso(cutoff), label=config['label'],
-                              phase=('finalizing' if config.get('workflow_key') else 'completed') if state.get('stop_intent') else 'live', health=health,
-                              annotations=annotations, approved_songs=tuple(config.get('approved_songs', [])) + verified_titles(Path(config['workspace'])),
-                              followup_overrides=config.get('followup_overrides', {}),
-                               followup_rules=config.get('followup_rules'))
-    apply_content_mode(snapshot, config)
+    snapshot = build_snapshot(source, config, cutoff=cutoff,
+                               phase=('finalizing' if config.get('workflow_key') else 'completed') if state.get('stop_intent') else 'live', health=health,
+                               annotations=annotations, approved_songs=tuple(config.get('approved_songs', [])) + verified_titles(Path(config['workspace'])))
     destination = Path(config['workspace']) / 'public'
-    destination.mkdir(exist_ok=True)
-    page = destination / 'index.html'
-    temporary = page.with_suffix('.tmp')
-    temporary.write_text(render_snapshot(snapshot, navigation=Path(config['workspace']) / 'navigation.json'))
-    temporary.replace(page)
-    atomic_json(destination / 'snapshot.json', snapshot)
+    write_snapshot(snapshot, destination, navigation=Path(config['workspace']) / 'navigation.json')
     state['last_exported_at'] = iso(now)
     if upload and config.get('remote'):
         publish(config, destination)
@@ -272,10 +263,7 @@ def cycle(config, path, mode, upload=True):
                     snapshot['phase'] = 'finalizing' if config.get('workflow_key') else 'completed'
                     snapshot['health']['recording'] = False
                     atomic_json(saved, snapshot)
-                    page = saved.parent / 'index.html'
-                    temporary = page.with_suffix('.tmp')
-                    temporary.write_text(render_snapshot(snapshot, navigation=Path(config['workspace']) / 'navigation.json'))
-                    temporary.replace(page)
+                    write_page(snapshot, saved.parent, navigation=Path(config['workspace']) / 'navigation.json')
                     try:
                         if upload and config.get('remote'):
                             publish(config, saved.parent)
