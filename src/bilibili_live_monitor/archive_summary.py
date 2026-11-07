@@ -63,7 +63,7 @@ def shared_summaries(path, local_rows):
     for row in data['sessions']:
         if (not isinstance(row, dict) or not isinstance(row.get('metrics'), dict)
                 or not isinstance(row.get('date'), str) or not re.fullmatch(r'\d{4}-\d{2}-\d{2}', row['date'])
-                or row.get('session') not in ('上午场', '下午场', '晚间场')
+                or not isinstance(row.get('session'), str) or not 0 < len(row['session']) <= 80
                 or any(row.get(key) is not None and not isinstance(row[key], str)
                        for key in ('start_utc', 'updated_at'))):
             raise ValueError('场次汇总格式无效')

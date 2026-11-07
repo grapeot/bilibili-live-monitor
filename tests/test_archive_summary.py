@@ -27,11 +27,12 @@ def test_shared_file_is_authoritative_includes_old_sessions_and_projects_private
         {'date': '2026-01-01', 'session': '晚间场', 'hours': 2, 'start_utc': 'start',
          'metrics': {'online_mean': 12.5, 'watched_last': 987, 'amount_nonself': 10},
          'url': '/private-link/', 'private': '/private/path'},
-        {'date': '2025-01-01', 'session': '上午场', 'hours': 1, 'metrics': {'watched_last': 42}}]}))
+        {'date': '2025-01-01', 'session': '早场', 'hours': 1, 'metrics': {'watched_last': 42}}]}))
     rows = shared_summaries(path, [{'start_utc': 'start', 'key': 'local', 'has_result': True}])
     assert rows[0]['metrics']['watched_last'] == 987
     assert rows[0]['key'] == 'local' and rows[0]['has_result']
     assert rows[1]['metrics']['watched_last'] == 42 and rows[1]['key'] is None
+    assert rows[1]['session'] == '早场'
     assert 'private' not in json.dumps(rows)
 
 
