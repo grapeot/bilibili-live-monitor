@@ -21,6 +21,17 @@ def test_waiting_rooms_are_visible_without_capture_or_database_mutation(tmp_path
     assert result['rooms'][1]['asr_enabled'] is True
 
 
+def test_configured_rooms_get_per_instance_daily_links_without_private_config():
+    state = {'rooms': [{'room_id': '123456', 'status': 'capturing', 'url': 'https://live.bilibili.com/123456'},
+                       {'room_id': '234567', 'status': 'waiting'}]}
+    result = room_snapshot(state, {}, {}, {'id': 'example', 'label': '示例',
+        'archive': {'database': 'PRIVATE_PATH', 'rooms': {'123456': '示例主播'}}})
+    assert result['rooms'][0]['home_url'] == 'rooms/123456/'
+    assert 'home_url' not in result['rooms'][1]
+    assert 'PRIVATE_PATH' not in json.dumps(result)
+    assert result['rooms'][0]['url'] == 'https://live.bilibili.com/123456'
+
+
 @pytest.mark.parametrize('url', ['https://example.org', 'http://127.0.0.1:1/api', 'http://user@127.0.0.1:1'])
 def test_only_explicit_local_instance_endpoints(url):
     with pytest.raises(ValueError):
@@ -137,3 +148,22 @@ def test_metrics_are_routed_to_the_correct_instance():
         assert client.get('/instances/account/assets/resource_metrics.json').json() == {'port': 8765}
         assert client.get('/instances/guest/assets/resource_metrics.json').json() == {'port': 8766}
         assert client.get('/instances/guest/assets/private.json').status_code == 404
+
+
+def test_archive_allowlist_and_session_backlink(tmp_path):
+    key = 'd' * 24
+    directory = tmp_path / key
+    (directory / 'public').mkdir(parents=True)
+    (directory / 'config.json').write_text('{"room_id":"1","start_utc":"2026-01-01T00:00:00Z"}')
+    (directory / 'public/index.html').write_text('<html><main>result</main></html>')
+    config = {'instances': [{'id': 'guest', 'label': '匿名', 'url': 'http://127.0.0.1:8766',
+        'session_root': str(tmp_path), 'archive': {'database': str(tmp_path / 'private.db'), 'rooms': {'1': '测试'}}}]}
+    with TestClient(create_gateway(config)) as client:
+        assert client.get('/instances/guest/api/rooms/2/archive').status_code == 404
+        assert client.get('/instances/guest/rooms/2/').status_code == 404
+        archive = client.get('/instances/guest/api/rooms/1/archive')
+        assert archive.status_code == 200 and archive.json()['mode'] == 'account'
+        assert str(tmp_path) not in archive.text
+        page = client.get(f'/instances/guest/sessions/{key}/')
+        assert page.status_code == 200 and '/instances/guest/rooms/1/' in page.text
+        assert str(tmp_path) not in page.text

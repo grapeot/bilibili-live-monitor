@@ -49,6 +49,8 @@ python -m bilibili_live_monitor run --until 2030-01-01T22:00:00-08:00
 
 Tailscale内访问可使用 `tailscale serve --bg --https=8447 http://127.0.0.1:8765`，以该命令返回的tailnet URL为准。
 
+多实例看板与按日归档可参考 [示例配置](docs/dashboard.example.json)，把真实配置另存到本地 `.local/`，再运行 `python -m bilibili_live_monitor.dashboard_gateway --config .local/dashboard.json --port 8767`。房间卡提供直播间与按日汇总两个入口；公开仓库只包含代码和占位示例，不包含运行中的看板页面、真实配置或统计数据。
+
 ## 存储与接口
 
 直播中或结束后可运行 `bili-live trends build --db <monitor.sqlite3> --room 123456 --since '2030-01-01T10:00:00+08:00' --output <新的私有目录>`，生成入场流量、送礼频次、关注总数与粉丝团人数四图。数据只读、输出冻结、不影响录制；`bili-live trends verify --output <目录>` 可脱离源库复核。完整参数、隐私边界和统计口径见 [趋势分析子skill](skills/bilibili-live-monitor/trends.md)。

@@ -7,12 +7,14 @@ import {Assistant} from './Assistant';
 import {AutomationControls} from './Automation';
 import {RoomIssue} from './RoomIssue';
 import {InstanceProvider, useApi, useInstance, type Instance} from './Instance';
+import {RoomArchive} from './RoomArchive';
+import {RoomLinks} from './RoomLinks';
 
 type Segment = {seq:number; start_utc:string; end_utc:string; text:string; status:string;
   queue_wait_ms:number; infer_ms:number; rms_dbfs:number; error:string|null; coverage_ratio?:number|null};
 type LikeSummary = {reported_total?:number|null;observed_utc?:string|null;notifications:number;identified_users:number};
 type Room = {room_id:string; title:string; url:string; cover_url:string; status:string;
-  instance_label?:string;account_mode?:string;result_url?:string;workflow_stage?:string;
+  instance_label?:string;account_mode?:string;result_url?:string;workflow_stage?:string;home_url?:string;
   like_summary?:LikeSummary|null;
   reconnect_attempts?:number;next_retry_utc?:string|null;
   record_mode:'none'|'audio'|'video';asr_enabled:boolean;preview_enabled:boolean;
@@ -146,6 +148,7 @@ const RoomCard = React.memo(function RoomCard({room,status,onError}:{room:Room;s
   return <article className="card">
     <RoomPreview room={room}/>
     <div className="card-body"><div className="room-heading"><a href={room.url} target="_blank" rel="noreferrer">{room.title.replace(/ - 哔哩哔哩直播.*$/,'')}</a><span className={'badge '+status}>{labels[status]||status}</span></div>
+    <RoomLinks liveUrl={room.url} archiveUrl={room.home_url?base+room.home_url:undefined}/>
     <div className="room-sub"><span>房间 {room.room_id}{room.instance_label?` · ${room.instance_label}`:''} · 流式输入 5 秒 · 上下文 ≤30 秒</span><button className="text-button" disabled={room.status==='stopped'||room.status==='waiting'} onClick={()=>api(`rooms/${room.room_id}/stop`,{method:'POST'}).catch(e=>onError(e.message))}>停止监控</button></div>
     {room.result_url&&<p className="room-sub"><a href={base+room.result_url} target="_blank" rel="noreferrer">{room.workflow_stage==='completed'?'查看本场最终结果':'查看本场结果（处理中）'}</a></p>}
     <RoomIssue status={room.status} error={room.error} updatedAt={room.updated_at}/>
@@ -268,4 +271,6 @@ export function App(){
   return <>{instances.map(instance=><section key={instance.id} aria-label={instance.label}>
     <InstanceProvider instance={instance}><SingleApp/></InstanceProvider></section>)}</>;
 }
-createRoot(document.getElementById('root')!).render(<React.StrictMode><App/></React.StrictMode>);
+const archiveRoute=window.location.pathname.match(/^(.*\/instances\/[^/]+\/)rooms\/(\d+)\/$/);
+createRoot(document.getElementById('root')!).render(<React.StrictMode>{archiveRoute?
+  <RoomArchive base={archiveRoute[1]} roomId={archiveRoute[2]}/>:<App/>}</React.StrictMode>);

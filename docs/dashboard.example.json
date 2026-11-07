@@ -1,0 +1,25 @@
+{
+  "instances": [
+    {
+      "id": "account",
+      "label": "账号实例",
+      "url": "http://127.0.0.1:8765",
+      "session_root": "/PRIVATE/account/live_sessions",
+      "archive": {
+        "database": "/PRIVATE/account/monitor.sqlite3",
+        "rooms": {"123456": "示例主播 A", "234567": "示例主播 B"}
+      }
+    },
+    {
+      "id": "guest",
+      "label": "匿名实例",
+      "mode": "anonymous",
+      "url": "http://127.0.0.1:8766",
+      "session_root": "/PRIVATE/guest/live_sessions",
+      "archive": {
+        "database": "/PRIVATE/guest/monitor.sqlite3",
+        "rooms": {"345678": "示例主播 C"}
+      }
+    }
+  ]
+}

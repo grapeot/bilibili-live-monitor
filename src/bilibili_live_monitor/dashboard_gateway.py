@@ -1,16 +1,18 @@
 """同源多实例看板；仅代理明确配置的本机监控服务，不共享Chrome或账号。"""
 import argparse
 import asyncio
+import html
 import json
 import logging
 import re
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import urlsplit
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 
@@ -71,6 +73,8 @@ def room_snapshot(state, platform, automation, instance):
             room.update(status='error', error=candidate['status_error'])
     for rid, room in rooms.items():
         room.update(instance_id=instance['id'], instance_label=label, account_mode=mode)
+        if rid in instance.get('archive', {}).get('rooms', {}):
+            room['home_url'] = f'rooms/{rid}/'
         records = [r for r in automation.get('session_workflows', []) if r.get('room_id') == rid]
         if records:
             latest = max(records, key=lambda r: r.get('start', ''))
@@ -103,6 +107,8 @@ def create_gateway(config, *, transport=None):
             yield
 
     app = FastAPI(title='B站统一监控看板', lifespan=lifespan)
+    archive_cache = {}
+    archive_lock = asyncio.Lock()
 
     def instance(ident):
         if ident not in instances:
@@ -115,6 +121,36 @@ def create_gateway(config, *, transport=None):
         for response in responses:
             response.raise_for_status()
         return room_snapshot(*(response.json() for response in responses), row)
+
+    def archive_room(ident, room_id):
+        row = instance(ident)
+        archive = row.get('archive', {})
+        if (room_id not in archive.get('rooms', {}) or not re.fullmatch(r'\d+', room_id)
+                or not row.get('session_root') or not archive.get('database')):
+            raise HTTPException(404, '未配置房间主页')
+        return row, archive
+
+    @app.get('/instances/{ident}/api/rooms/{room_id}/archive')
+    async def room_archive(ident: str, room_id: str):
+        row, archive = archive_room(ident, room_id)
+        async with archive_lock:
+            cached = archive_cache.get((ident, room_id))
+            if cached and time.monotonic() - cached[0] < 30:
+                return cached[1]
+            try:
+                from .room_archive import archive_data
+                data = await asyncio.to_thread(archive_data, row['session_root'], archive['database'],
+                                               room_id, archive['rooms'][room_id])
+                data['mode'] = row.get('mode', 'account')
+            except (OSError, ValueError, TypeError) as error:
+                raise HTTPException(503, '暂时无法读取房间归档，请稍后刷新') from error
+            archive_cache[ident, room_id] = time.monotonic(), data
+            return data
+
+    @app.get('/instances/{ident}/rooms/{room_id}/')
+    async def room_home(ident: str, room_id: str):
+        archive_room(ident, room_id)
+        return FileResponse(Path(__file__).resolve().parents[2] / 'frontend/dist/index.html')
 
     @app.get('/api/dashboard/instances')
     async def instance_list():
@@ -153,6 +189,18 @@ def create_gateway(config, *, transport=None):
         path = (root / key / 'public' / asset).resolve()
         if not path.is_relative_to(root) or not path.is_file():
             raise HTTPException(404, '结果尚未生成')
+        if asset == 'index.html' and row.get('archive'):
+            from .room_archive import read_json
+            try:
+                config = read_json(root, root / key / 'config.json')
+                rid = str(config.get('room_id'))
+                if rid in row['archive'].get('rooms', {}):
+                    label = html.escape(row['archive']['rooms'][rid])
+                    link = f'/instances/{ident}/rooms/{rid}/'
+                    nav = f'<nav style="max-width:1120px;margin:12px auto"><a href="{link}">← {label} · 按日归档</a></nav>'
+                    return HTMLResponse(path.read_text().replace('<main', nav + '<main', 1))
+            except (OSError, ValueError, TypeError):
+                pass
         return FileResponse(path)
 
     async def relay(row, path, request):

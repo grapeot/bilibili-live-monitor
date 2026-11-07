@@ -119,6 +119,8 @@ python scripts/live_smoke.py --rooms 30 --segments 2 --wait-seconds 180 --output
 
 多个账号/匿名实例可用统一看板汇总：`python -m bilibili_live_monitor.dashboard_gateway --config /PRIVATE/dashboard.json --port 8767`。配置为 `{"instances":[{"id":"account","label":"账号监控","url":"http://127.0.0.1:8765"},{"id":"guest","label":"匿名监控","mode":"anonymous","url":"http://127.0.0.1:8766","session_root":"/PRIVATE/sessions"}]}`。仅接收明确配置的本机HTTP上游，前端按实例隔离实时状态与操作；固定名单未开播房间仍显示守候卡。可选session_root只提供各场public下的index.html和snapshot.json，房间卡可打开本地最终结果，不开放原始数据目录。网关不接管或重启采集进程。
 
+实例可加 `"archive":{"database":"/PRIVATE/monitor.sqlite3","rooms":{"123456":"示例主播"}}` 启用只读房间主页，入口为 `/instances/<id>/rooms/<room_id>/`。按北京时间自然日汇总，跨日场次保留完整详情；无观测的日期显示未知。主页扫描session_root下的历史场次，不受实时API最近场次条数限制；每30秒刷新，只开放配置名单，不返回数据库路径、原始消息或观众标识。
+
 账号配置 `profiles.<id>.mode` 支持 `account`（默认）与 `anonymous`。匿名 profile 使用独立、持久的未登录 Chrome 目录，保留设备 Cookie，不复制其他账号 Cookie。切换沿用现有账号接口；匿名模式不打开登录页、不发送欢迎或点赞，实时 ASR、采集与独立程序/内容 AI 巡检继续按配置运行。登录态核验发现匿名目录意外登录时关闭该 Chrome。
 
 仅本地分析时设置 `session_workflow.local_only=true`：保留本地看板、ASR、程序与内容 AI 巡检、离线收尾，不创建远端目录、不上传或核验远端页面。未设置时保留原有发布流程。
