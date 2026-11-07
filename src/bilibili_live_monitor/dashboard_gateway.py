@@ -141,7 +141,10 @@ def create_gateway(config, *, transport=None):
                 from .room_archive import archive_data
                 summary_file = archive.get('summary_files', {}).get(room_id)
                 data = await asyncio.to_thread(archive_data, row['session_root'], archive['database'],
-                                               room_id, archive['rooms'][room_id], not bool(summary_file))
+                                               room_id, archive['rooms'][room_id], not bool(summary_file),
+                                               gift_share=archive.get('gift_share', {}).get(room_id),
+                                               historical_windows=archive.get('historical_windows', {}).get(room_id, []),
+                                               historical_root=archive.get('historical_root'))
                 data['mode'] = row.get('mode', 'account')
                 if summary_file:
                     from .archive_summary import shared_summaries
@@ -149,6 +152,10 @@ def create_gateway(config, *, transport=None):
                         [{**s, 'start_utc': s['start']} for s in data['sessions']],
                         archive.get('summary_origins', {}).get(room_id))
                     data['summary_source'] = 'shared'
+                    if ('gift_share' in data and archive.get('gift_share', {}).get(room_id, {})
+                            .get('overall_from_summaries') is True):
+                        from .period_overview import summary_gift_share
+                        data['gift_share'] = summary_gift_share(data['summaries'], data['gift_share']['label'])
             except (OSError, ValueError, TypeError) as error:
                 raise HTTPException(503, '暂时无法读取房间归档，请稍后刷新') from error
             archive_cache[ident, room_id] = time.monotonic(), data
@@ -190,10 +197,13 @@ def create_gateway(config, *, transport=None):
     @app.get('/instances/{ident}/sessions/{key}/{asset}')
     async def session_file(ident: str, key: str, asset: str = 'index.html'):
         row = instance(ident)
-        if not re.fullmatch(r'[a-f0-9]{24}', key) or asset not in ('index.html', 'snapshot.json') or not row.get('session_root'):
+        if not re.fullmatch(r'[a-f0-9]{24}', key) or asset not in ('index.html', 'snapshot.json', 'data.json') or not row.get('session_root'):
             raise HTTPException(404, '结果不存在')
         root = Path(row['session_root']).resolve()
         path = (root / key / 'public' / asset).resolve()
+        if not path.is_file() and row.get('archive', {}).get('historical_root'):
+            root = Path(row['archive']['historical_root']).resolve()
+            path = (root / key / 'public' / asset).resolve()
         if not path.is_relative_to(root) or not path.is_file():
             raise HTTPException(404, '结果尚未生成')
         if asset == 'index.html' and row.get('archive'):

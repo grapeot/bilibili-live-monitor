@@ -46,12 +46,22 @@ def day_windows(start, end):
         start = upper
 
 
-def archive_data(session_root, database, room_id, name, include_summaries=True):
+def archive_data(session_root, database, room_id, name, include_summaries=True, *, gift_share=None, now=None,
+                 historical_windows=(), historical_root=None):
     root = Path(session_root).resolve()
     sessions, windows, coverage, offline_keys = [], [], [], set()
     warnings = 0
-    for directory in sorted(root.iterdir()):
+    share_enabled = isinstance(gift_share, dict) and gift_share.get('enabled') is True
+    share_uids = set(str(uid) for uid in gift_share.get('uids', []) if str(uid).isdigit()) if share_enabled else set()
+    share_label = str(gift_share.get('label') or '指定观众')[:80] if share_enabled and share_uids else None
+    roots = [root]
+    if historical_root and Path(historical_root).resolve() != root:
+        roots.append(Path(historical_root).resolve())
+    seen_keys = set()
+    for root, directory in [(r, d) for r in roots for d in sorted(r.iterdir())]:
         if not re.fullmatch(r'[a-f0-9]{24}', directory.name):
+            continue
+        if directory.name in seen_keys:
             continue
         try:
             cfg = read_object(root, directory / 'config.json')
@@ -94,16 +104,47 @@ def archive_data(session_root, database, room_id, name, include_summaries=True):
                     staged_coverage = []
                     warnings += 1
             sessions.append(row)
+            seen_keys.add(directory.name)
             coverage.extend(staged_coverage)
             if end > start:
                 windows.append((start, end))
         except (OSError, ValueError, TypeError, KeyError):
             warnings += 1
 
-    if not sessions:
-        return {'room_id': room_id, 'name': name, 'timezone': 'Asia/Shanghai',
-                'sessions': [], 'days': [], 'warnings': warnings, 'updated_at': None}
-    source = read_source(Path(database), room_id, min(s['start'] for s in sessions))
+    history = []
+    for window in historical_windows:
+        start, end = epoch(window['start']), epoch(window['end'])
+        if not math.isfinite(start) or not math.isfinite(end) or end <= start:
+            raise ValueError('历史统计时间无效')
+        history.append((start, end))
+    windows.extend(history)
+    if not sessions and not windows:
+        from .period_overview import period_overview
+        result = {'room_id': room_id, 'name': name, 'timezone': 'Asia/Shanghai',
+                'sessions': [], 'days': [], 'periods': period_overview([], now=now, share_label=share_label),
+                'warnings': warnings, 'updated_at': None}
+        if share_label is not None:
+            result['gift_share'] = {'label': share_label, 'percentage': None}
+        return result
+    earliest = min([a for a, _ in windows] + [epoch(s['start']) for s in sessions])
+    source = read_source(Path(database), room_id, iso(earliest))
+    if history:
+        # 早期归档可能只有原始进房报文；仅补足已授权历史窗口的缺失事件。
+        from .danmaku import entry_message
+        seen = {item.get('source_key') for kind, _, item in source['items'] if kind == 'entry'}
+        for at, command, packet in source['raw']:
+            if command not in ('INTERACT_WORD', 'INTERACT_WORD_V2'):
+                continue
+            if not any(a <= epoch(at) <= b for a, b in history):
+                continue
+            try:
+                entry = entry_message({**packet, 'cmd': command}, received_utc=at)
+            except (ValueError, TypeError, KeyError):
+                warnings += 1
+                continue
+            if entry and entry['source_key'] not in seen:
+                source['items'].append(('entry', at, entry))
+                seen.add(entry['source_key'])
     from .archive_summary import summaries
     session_summaries = summaries(source, sessions) if include_summaries else []
     windows = merged_windows(windows)
@@ -112,7 +153,7 @@ def archive_data(session_root, database, room_id, name, include_summaries=True):
         return any(a <= at <= b for a, b in windows)
 
     # 已完成场次使用离线覆盖，其余场次使用当前转写覆盖；区间合并防止滑窗重复计时。
-    live_windows = [(epoch(s['start']), epoch(s['end'])) for s in sessions if s['key'] not in offline_keys]
+    live_windows = [(epoch(s['start']), epoch(s['end'])) for s in sessions if s['key'] not in offline_keys] + history
     for segment in source['segments']:
         if not usable_segment(segment):
             continue
@@ -123,13 +164,16 @@ def archive_data(session_root, database, room_id, name, include_summaries=True):
                 coverage.append((left, right))
     coverage = merged_windows(coverage)
     days = {}
+    for date in {date for session in sessions for date in session['dates']} | {
+            date for start, end in history for date, _, _ in day_windows(start, end)}:
+        days[date] = {'date': date, 'session_keys': [], 'observed_seconds': 0,
+                                   'coverage_seconds': 0, 'danmaku': 0, 'entries': 0,
+                                   'gift_count': 0, 'gift_amount_yuan': 0,
+                                   'gift_count_unknown': 0, 'gift_amount_unknown': 0,
+                                   'followers_change': None, 'followers_partial': False}
     for session in sessions:
         for date in session['dates']:
-            days.setdefault(date, {'date': date, 'session_keys': [], 'observed_seconds': 0,
-                                  'coverage_seconds': 0, 'danmaku': 0, 'entries': 0,
-                                  'gift_count': 0, 'gift_amount_yuan': 0,
-                                  'gift_count_unknown': 0, 'gift_amount_unknown': 0,
-                                  'followers_change': None, 'followers_partial': False})['session_keys'].append(session['key'])
+            days[date]['session_keys'].append(session['key'])
     for field, spans in [('observed_seconds', windows), ('coverage_seconds', coverage)]:
         for start, end in spans:
             for date, a, b in day_windows(start, end):
@@ -140,7 +184,8 @@ def archive_data(session_root, database, room_id, name, include_summaries=True):
             date = datetime.fromtimestamp(stamp, ZONE).date().isoformat()
             if date in days:
                 days[date]['danmaku' if kind == 'danmaku' else 'entries'] += 1
-    for stamp, count, amount, _, _ in gift_observations(source):
+    share_amounts = {}
+    for stamp, count, amount, uid, _ in gift_observations(source, platform_uid=True):
         date = datetime.fromtimestamp(stamp, ZONE).date().isoformat()
         if observed(stamp) and date in days:
             day = days[date]
@@ -148,6 +193,11 @@ def archive_data(session_root, database, room_id, name, include_summaries=True):
             day['gift_count_unknown'] += count is None
             day['gift_amount_yuan'] += (amount or 0) / 1000
             day['gift_amount_unknown'] += amount is None
+            if share_label is not None and amount is not None:
+                if uid is None and amount > 0:
+                    share_amounts[date] = None
+                elif str(uid) in share_uids and share_amounts.get(date, 0) is not None:
+                    share_amounts[date] = share_amounts.get(date, 0) + amount / 1000
     points = sorted((epoch(at), packet['data']['fans']) for at, command, packet in source['raw']
                     if command == 'ROOM_REAL_TIME_MESSAGE_UPDATE' and isinstance(packet.get('data'), dict)
                     and nonnegative_integer(packet['data'].get('fans')) is not None)
@@ -181,16 +231,23 @@ def archive_data(session_root, database, room_id, name, include_summaries=True):
                     day['followers_partial'] = True
         day['followers_change'] = sum(changes) if changes else None
         day['gift_amount_yuan'] = round(day['gift_amount_yuan'], 3)
-        day['has_observations'] = (day['coverage_seconds'] > 0 or any(
+        day['has_message_observations'] = (any(
             observed(epoch(at)) and datetime.fromtimestamp(epoch(at), ZONE).date().isoformat() == date
             for at, _, _ in source['raw']) or any(
             observed(epoch(at)) and datetime.fromtimestamp(epoch(at), ZONE).date().isoformat() == date
             for _, at, _ in source['items']))
-        if not day['has_observations']:
+        day['has_observations'] = day['coverage_seconds'] > 0 or day['has_message_observations']
+        if not day['has_message_observations']:
             for field in ('danmaku', 'entries', 'gift_count', 'gift_amount_yuan'):
                 day[field] = None
-    return {'room_id': room_id, 'name': name, 'timezone': 'Asia/Shanghai',
+    from .period_overview import overall_share, period_overview
+    result = {'room_id': room_id, 'name': name, 'timezone': 'Asia/Shanghai',
             'sessions': sorted(sessions, key=lambda s: s['start'], reverse=True),
             'days': sorted(days.values(), key=lambda d: d['date'], reverse=True),
             'summaries': session_summaries, 'summary_source': 'recorded',
-            'warnings': warnings, 'updated_at': max(s['end'] for s in sessions)}
+             'warnings': warnings, 'updated_at': iso(max([b for _, b in windows] +
+                                                         [epoch(s['end']) for s in sessions]))}
+    result['periods'] = period_overview(result['days'], now=now, share_amounts=share_amounts, share_label=share_label)
+    if share_label is not None:
+        result['gift_share'] = overall_share(result['days'], share_amounts, share_label)
+    return result
