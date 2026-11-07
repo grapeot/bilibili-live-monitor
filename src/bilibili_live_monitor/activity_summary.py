@@ -1,7 +1,7 @@
 """按已标注的唱歌/杂谈区间汇总观测值，不将时间相关性解释为因果。"""
 from bisect import bisect_left, bisect_right
 
-from .live_share import epoch, iso
+from .time_utils import epoch, iso
 
 
 def content_blocks(activity, *, include_segments=False):

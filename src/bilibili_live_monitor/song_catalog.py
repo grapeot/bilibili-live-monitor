@@ -12,7 +12,7 @@ from urllib.parse import urlencode, urljoin, urlsplit
 from zoneinfo import ZoneInfo
 
 from .activity_summary import content_blocks
-from .live_share import epoch
+from .time_utils import epoch
 
 
 def key(value):

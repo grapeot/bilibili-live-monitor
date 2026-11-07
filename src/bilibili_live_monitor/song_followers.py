@@ -5,7 +5,7 @@ from bisect import bisect_left, bisect_right
 from pathlib import Path
 
 from .activity_summary import nonnegative_integer
-from .live_share import epoch, iso
+from .time_utils import epoch, iso
 
 
 def merged_windows(windows):

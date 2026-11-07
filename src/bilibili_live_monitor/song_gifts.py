@@ -5,7 +5,7 @@ import time
 from pathlib import Path
 
 from .activity_summary import gift_observations
-from .live_share import epoch, iso
+from .time_utils import epoch, iso
 
 
 def summarize(events, windows, coverage):
