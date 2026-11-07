@@ -1,0 +1,9 @@
+.archive-header .archive-navigation{display:flex;align-items:center;gap:12px 20px;flex-wrap:wrap;align-content:flex-start}
+.archive-navigation a{display:inline-block;white-space:nowrap;line-height:1.6;padding:4px 0}
+.archive-header .archive-session-count{display:flex;align-items:center;gap:12px;flex-wrap:wrap;color:#63728a;font-size:13px}
+.published-archive{font:14px/1.7 -apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif}
+.published-archive *{box-sizing:border-box}
+.published-archive .archive-panel h2{margin-top:0}
+.published-archive .archive-header p{color:#63728a}
+.session-summary .archive-row-state{display:block;margin-top:5px;font-size:12px;color:#2563eb}
+@media(max-width:600px){.archive-header .archive-navigation{width:100%;gap:10px 20px}.room-archive.published-archive{padding:16px 12px}}
