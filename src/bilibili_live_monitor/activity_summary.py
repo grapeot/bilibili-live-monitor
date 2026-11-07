@@ -49,7 +49,7 @@ def gift_amount(gift):
     return None
 
 
-def gift_observations(source):
+def gift_observations(source, *, platform_uid=False):
     gifts, seen = [], set()
     for index, (kind, at, data) in enumerate(source['items']):
         gift = data.get('gift')
@@ -67,6 +67,11 @@ def gift_observations(source):
         from .identity import analysis_key
         uid = (analysis_key(data) if data.get('analysis_identity_basis') == 'nickname'
                else gift.get('sender_uid') or data.get('sender_uid'))
+        if platform_uid:
+            uid = gift.get('sender_uid') or data.get('sender_uid')
+            if (data.get('sender_hidden') or data.get('identity_status') == 'unresolved'
+                    or not str(uid).isdigit() or int(uid) <= 0):
+                uid = None
         gifts.append((epoch(at), count, gift_amount(gift), uid, str(data.get('author') or '')[:200]))
     return gifts
 

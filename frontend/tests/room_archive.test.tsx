@@ -15,7 +15,7 @@ test('按日期筛选场次、保留跨日场次且不把累计看过汇成日�
  const fetch=vi.fn(async()=>({ok:true,json:async()=>value}));vi.stubGlobal('fetch',fetch);
  render(<RoomArchive base="/instances/guest/" roomId="1"/>);
   await screen.findByText('测试主播');
- expect(screen.getByText('匿名监控 · 北京时间 · 每30秒刷新')).toBeTruthy();
+ expect(screen.getByText('近期数据概览 · 北京时间')).toBeTruthy();
  expect(screen.getAllByText('进房次数')).toHaveLength(1);
  expect(screen.getByText('累计看过（分场）')).toBeTruthy();
  expect(screen.getAllByText('22')).toHaveLength(2);

@@ -167,3 +167,30 @@ def test_archive_allowlist_and_session_backlink(tmp_path):
         page = client.get(f'/instances/guest/sessions/{key}/')
         assert page.status_code == 200 and '/instances/guest/rooms/1/' in page.text
         assert str(tmp_path) not in page.text
+
+
+def test_read_only_history_root_serves_existing_reports_without_private_metadata(tmp_path):
+    current = tmp_path/'current'
+    history = tmp_path/'history'
+    current.mkdir()
+    key = 'e'*24
+    target = history/key
+    (target/'public').mkdir(parents=True)
+    (target/'config.json').write_text('{"room_id":"1","archive_only":true}')
+    (target/'public/index.html').write_text('<html><main>历史报告</main></html>')
+    (target/'public/snapshot.json').write_text('{"phase":"completed"}')
+    (target/'public/data.json').write_text('{"legacy":true}')
+    config = {'instances':[{'id':'account','label':'账号','url':'http://127.0.0.1:8765',
+        'session_root':str(current),'archive':{'historical_root':str(history),'rooms':{'1':'测试'}}}]}
+    with TestClient(create_gateway(config)) as client:
+        response = client.get(f'/instances/account/sessions/{key}/')
+        assert response.status_code == 200 and '历史报告' in response.text
+        assert '/instances/account/rooms/1/' in response.text
+        assert str(tmp_path) not in response.text
+        assert client.get(f'/instances/account/sessions/{key}/data.json').json()=={'legacy':True}
+        assert client.get(f'/instances/account/sessions/{key}/config.json').status_code==404
+        outside = tmp_path/'secret.html'
+        outside.write_text('PRIVATE')
+        (target/'public/index.html').unlink()
+        (target/'public/index.html').symlink_to(outside)
+        assert client.get(f'/instances/account/sessions/{key}/').status_code==404

@@ -155,3 +155,123 @@ def test_missing_watched_value_is_unknown_not_zero(tmp_path):
     root, db = fixture(tmp_path)
     data = archive_data(root, db, '1', '测试')
     assert all(s['value'] is None for d in data['days'] for s in d['watched_sessions'])
+
+
+def test_private_multi_uid_share_is_opt_in_and_never_serialized(tmp_path):
+    from datetime import datetime
+    root, db = fixture(tmp_path)
+    with sqlite3.connect(db) as conn:
+        conn.execute("UPDATE timeline SET data=replace(data,'PRIVATE_UID','999001') WHERE kind='gift'")
+        conn.execute("UPDATE timeline SET data=replace(data,'999001','999002') WHERE kind='gift' AND data LIKE '%\"B\"%'")
+    now = datetime.fromisoformat('2026-01-01T16:30:00+00:00')
+    config = {'enabled': True, 'label': '测试观众', 'uids': ['999001', '999002']}
+    data = archive_data(root, db, '1', '测试', gift_share=config, now=now)
+    assert data['periods'][0]['gift_amount_yuan'] == 8
+    assert data['periods'][0]['entries_daily_mean'] == .5
+    assert data['gift_share']['percentage'] is None  # unknown price in second session
+    assert '999001' not in json.dumps(data) and '999002' not in json.dumps(data)
+    with sqlite3.connect(db) as conn:
+        conn.execute("DELETE FROM timeline WHERE data LIKE '%\"C\"%'")
+    data = archive_data(root, db, '1', '测试', gift_share=config, now=now)
+    assert data['periods'][0]['gift_share']['percentage'] == 100
+    assert 'gift_share' not in archive_data(root, db, '1', '测试', gift_share={**config, 'enabled': False})
+
+
+def test_historical_windows_include_legacy_day_without_inventing_sessions(tmp_path):
+    from datetime import datetime
+    root, db = fixture(tmp_path)
+    with sqlite3.connect(db) as conn:
+        conn.execute('INSERT INTO timeline(room_id,kind,at_utc,data) VALUES (?,?,?,?)',
+                     ('1', 'entry', '2025-12-31T02:00:00+00:00', '{}'))
+        conn.execute('INSERT INTO timeline(room_id,kind,at_utc,data) VALUES (?,?,?,?)',
+                     ('1', 'gift', '2025-12-31T02:00:00+00:00', json.dumps({'gift': {
+                         'event_type': 'SEND_GIFT', 'num': 1, 'coin_type': 'gold', 'total_coin': 3000}})))
+    windows = [{'start':'2025-12-31T01:00:00+00:00', 'end':'2025-12-31T03:00:00+00:00'}]
+    data = archive_data(root, db, '1', '测试', historical_windows=windows,
+                        now=datetime.fromisoformat('2026-01-02T00:30:00+08:00'))
+    old = next(day for day in data['days'] if day['date'] == '2025-12-31')
+    assert old['entries'] == 1 and old['gift_amount_yuan'] == 3
+    assert old['session_keys'] == [] and len(data['sessions']) == 2
+    assert data['periods'][0]['observed_days'] == 3
+
+
+def test_zero_duration_session_remains_readable(tmp_path):
+    root, db = fixture(tmp_path)
+    for directory in root.iterdir():
+        snapshot_path = directory/'public/snapshot.json'
+        snapshot = json.loads(snapshot_path.read_text())
+        snapshot['updated_at'] = snapshot['session_start']
+        snapshot_path.write_text(json.dumps(snapshot))
+    assert len(archive_data(root, db, '1', '测试')['sessions']) == 2
+
+
+def test_legacy_entries_recover_missing_timeline_without_duplicates(tmp_path):
+    from bilibili_live_monitor.danmaku import entry_message
+    root, db = fixture(tmp_path)
+    stamp = '2025-12-31T02:00:00+00:00'
+    packet = {'cmd':'INTERACT_WORD','data':{'msg_type':1,'uid':999003,'uname':'测试'}}
+    existing = entry_message(packet, received_utc=stamp)
+    second = {'cmd':'INTERACT_WORD','data':{'msg_type':1,'uid':999004,'uname':'测试二'}}
+    with sqlite3.connect(db) as conn:
+        conn.execute('INSERT INTO timeline(room_id,kind,at_utc,data) VALUES (?,?,?,?)',
+                     ('1', 'entry', stamp, json.dumps(existing)))
+        for event in [packet, second, second]:
+            conn.execute('INSERT INTO raw_events(room_id,received_utc,command,data) VALUES (?,?,?,?)',
+                         ('1', stamp, 'INTERACT_WORD', json.dumps(event)))
+    data = archive_data(root, db, '1', '测试', historical_windows=[{
+        'start':'2025-12-31T01:00:00+00:00','end':'2025-12-31T03:00:00+00:00'}])
+    assert next(day for day in data['days'] if day['date']=='2025-12-31')['entries'] == 2
+    assert '999003' not in json.dumps(data) and '999004' not in json.dumps(data)
+
+
+def test_read_only_history_is_included_in_summary_and_days(tmp_path):
+    root, db = fixture(tmp_path)
+    history = tmp_path/'history'
+    history.mkdir()
+    (root/('a'*24)).rename(history/('a'*24))
+    data = archive_data(root, db, '1', '测试', historical_root=history)
+    assert len(data['sessions'])==2 and len(data['days'])==2
+    assert any(row['key']=='a'*24 and row['has_result'] for row in data['sessions'])
+    assert str(history) not in json.dumps(data)
+
+
+def test_nickname_analysis_uses_real_uid_for_opt_in_share(tmp_path):
+    from datetime import datetime
+    root, db = fixture(tmp_path)
+    with sqlite3.connect(db) as conn:
+        conn.execute("DELETE FROM timeline WHERE data LIKE '%\"C\"%'")
+        rows = conn.execute("SELECT id,data FROM timeline WHERE kind='gift'").fetchall()
+        for ident, raw in rows:
+            value = json.loads(raw)
+            value.update(analysis_identity_basis='nickname', room_id='1', author='合成昵称')
+            value['gift']['sender_uid'] = '999001'
+            conn.execute('UPDATE timeline SET data=? WHERE id=?',(json.dumps(value),ident))
+    config = {'enabled':True,'label':'测试','uids':['999001','999002']}
+    kwargs = {'gift_share':config,'now':datetime.fromisoformat('2026-01-02T01:00:00+08:00')}
+    data = archive_data(root,db,'1','测试',**kwargs)
+    assert data['periods'][0]['gift_share']['percentage']==100
+    with sqlite3.connect(db) as conn:
+        conn.execute("UPDATE timeline SET data=json_set(data,'$.sender_hidden',json('true')) WHERE kind='gift'")
+    data = archive_data(root,db,'1','测试',**kwargs)
+    assert data['periods'][0]['gift_share']['percentage'] is None
+    assert '999001' not in json.dumps(data) and '合成昵称' not in json.dumps(data)
+
+
+def test_asr_only_days_do_not_become_zero_message_days(tmp_path):
+    from datetime import datetime
+    root, db = fixture(tmp_path)
+    with sqlite3.connect(db) as conn:
+        conn.execute('DELETE FROM timeline')
+        conn.execute('DELETE FROM raw_events')
+    kwargs = {'now':datetime.fromisoformat('2026-01-02T01:00:00+08:00')}
+    data = archive_data(root,db,'1','测试',**kwargs)
+    assert data['periods'][0]['observed_days']==0
+    assert data['periods'][0]['entries_daily_mean'] is None
+    assert data['periods'][0]['gift_amount_yuan'] is None
+    with sqlite3.connect(db) as conn:
+        conn.execute('INSERT INTO timeline(room_id,kind,at_utc,data) VALUES (?,?,?,?)',
+                     ('1','entry','2026-01-01T16:00:30+00:00','{}'))
+    data = archive_data(root,db,'1','测试',**kwargs)
+    assert data['periods'][0]['observed_days']==1
+    assert data['periods'][0]['entries_daily_mean']==1
+    assert data['periods'][0]['gift_amount_yuan']==0
