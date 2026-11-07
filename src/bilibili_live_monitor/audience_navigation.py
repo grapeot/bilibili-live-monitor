@@ -4,19 +4,19 @@ import re
 from urllib.parse import urlsplit
 
 NAVIGATION = r'''<script id="audience-navigation">
-(()=>{const base=new URL(__URL__),names=new Map();
+(()=>{const base=new URL(__URL__),names=new Map();let ready=false;
 function fill(){if(!document.getElementById('audience-entry')){
 const a=document.createElement('a');a.id='audience-entry';a.href=base.href;a.textContent='观众备忘';
 const songs=[...document.querySelectorAll('header a,nav a')].find(link=>link.textContent.trim()==='歌曲搜索');
 if(songs)songs.after(a);else{const nav=document.createElement('nav');nav.append(a);(document.querySelector('main')||document.body).prepend(nav);}}
-for(const cell of document.querySelectorAll('#gift-summary tbody tr td:first-child')){
+if(!ready)return;for(const cell of document.querySelectorAll('#gift-summary tbody tr td:first-child')){
 if(cell.querySelector('a'))continue;const name=cell.textContent.trim(),ids=names.get(name)||[];
 const a=document.createElement('a');a.textContent=name;const url=new URL(ids.length===1?ids[0]+'/':'',base);
 if(ids.length!==1)url.searchParams.set('q',name);a.href=url.href;cell.replaceChildren(a);}}
 fill();new MutationObserver(fill).observe(document.body,{childList:true,subtree:true});
 fetch(new URL('index.json',base),{cache:'no-cache'}).then(r=>{if(!r.ok)throw Error();return r.json();}).then(data=>{
 for(const p of data.people||[]){if(!/^[a-f0-9]{32}$/.test(p.id))continue;for(const name of new Set(p.names||[])){
-const list=names.get(name)||[];list.push(p.id);names.set(name,list);}}fill();}).catch(()=>{});
+const list=names.get(name)||[];list.push(p.id);names.set(name,list);}}ready=true;fill();}).catch(()=>{});
 })();</script>'''
 
 

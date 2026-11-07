@@ -6,27 +6,47 @@ import {waitFor} from '@testing-library/react';
 let observer:MutationObserver|undefined;
 afterEach(()=>{observer?.disconnect();document.body.innerHTML='';vi.unstubAllGlobals()});
 
-test.each([true,false])('实时main替换后恢复唯一观众入口，目录请求成功=%s',async success=>{
+function runNavigation(){
   const NativeObserver=MutationObserver;
   const TrackingObserver=class extends NativeObserver{
     constructor(callback:MutationCallback){super(callback);observer=this}
   };
+  const source=readFileSync(resolve(process.cwd(),'../src/bilibili_live_monitor/audience_navigation.py'),'utf8');
+  const script=source.split("NAVIGATION = r'''")[1].split("'''")[0]
+    .replace(/^<script[^>]*>/,'').replace(/<\/script>$/,'')
+    .replace('__URL__',JSON.stringify('https://example.com/audience/'));
+  new Function('MutationObserver',script)(TrackingObserver);
+}
+
+test.each([true,false])('实时main替换后恢复唯一观众入口，目录请求成功=%s',async success=>{
   vi.stubGlobal('fetch',vi.fn(async()=>{
     if(!success)throw new Error('offline');
     return {ok:true,json:async()=>({people:[]})};
   }));
   const markup='<main><nav><a href="/songs/">歌曲搜索</a></nav></main>';
   document.body.innerHTML=markup;
-  const source=readFileSync(resolve(process.cwd(),'../src/bilibili_live_monitor/audience_navigation.py'),'utf8');
-  const script=source.split("NAVIGATION = r'''")[1].split("'''")[0]
-    .replace(/^<script[^>]*>/,'').replace(/<\/script>$/,'')
-    .replace('__URL__',JSON.stringify('https://example.com/audience/'));
-  new Function('MutationObserver',script)(TrackingObserver);
+  runNavigation();
   expect(document.querySelectorAll('#audience-entry')).toHaveLength(1);
   document.querySelector('main')!.outerHTML=markup;
   await waitFor(()=>expect(document.querySelectorAll('#audience-entry')).toHaveLength(1));
   expect(document.querySelector('#audience-entry')!.getAttribute('href')).toBe('https://example.com/audience/');
   document.querySelector('main')!.append(document.createElement('p'));
   await new Promise(resolve=>setTimeout(resolve,0));
+  expect(document.querySelectorAll('#audience-entry')).toHaveLength(1);
+});
+
+test('目录延迟加载后仍生成唯一观众的个人页面链接',async()=>{
+  let complete!:(response:unknown)=>void;
+  vi.stubGlobal('fetch',vi.fn(()=>new Promise(resolve=>{complete=resolve})));
+  const markup='<main><section id="gift-summary"><table><tbody><tr><td>Alice</td></tr></tbody></table></section></main>';
+  document.body.innerHTML=markup;
+  runNavigation();
+  expect(document.querySelector('#audience-entry')).not.toBeNull();
+  expect(document.querySelector('#gift-summary td a')).toBeNull();
+  complete({ok:true,json:async()=>({people:[{id:'a'.repeat(32),names:['Alice']}]})});
+  const href='https://example.com/audience/'+'a'.repeat(32)+'/';
+  await waitFor(()=>expect(document.querySelector('#gift-summary td a')?.getAttribute('href')).toBe(href));
+  document.querySelector('main')!.outerHTML=markup;
+  await waitFor(()=>expect(document.querySelector('#gift-summary td a')?.getAttribute('href')).toBe(href));
   expect(document.querySelectorAll('#audience-entry')).toHaveLength(1);
 });
