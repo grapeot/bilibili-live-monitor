@@ -1,4 +1,5 @@
 import React, {useEffect, useState} from 'react';
+import {useInstance} from './Instance';
 
 type Scope = {room_id:string;session_id:string;since:string;source_session:string};
 type Ref = {id:string;version:number};
@@ -18,8 +19,7 @@ type Snapshot = {config:Scope;cards:Card[];evidence:{id:string;version:number;la
     trace?:{at:number;tool:string;reason:string;error?:string|null;cached?:boolean}[]};
   worker:{status?:string;last_error?:string;calls?:number;cursor?:number;ai_cursor?:number;
     pending_observations?:number;last_observation?:number;last_analysis?:number}};
-const base = import.meta.env.BASE_URL;
-async function api(path:string, init?:RequestInit){
+async function callApi(base:string,path:string, init?:RequestInit){
   const response=await fetch(base+'api/assistant/'+path,init);
   const result=await response.json();
   if(!response.ok)throw new Error(typeof result.detail==='string'?result.detail:'操作失败');
@@ -37,6 +37,8 @@ function conciseReading(pronunciation:Card['pronunciation']){
 }
 
 export function Assistant(){
+  const {base}=useInstance();
+  const api=(path:string,init?:RequestInit)=>callApi(base,path,init);
   const [sessions,setSessions]=useState<Scope[]>([]);
   const [session,setSession]=useState('');
   const [data,setData]=useState<Snapshot|null>(null);

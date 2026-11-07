@@ -14,6 +14,9 @@ class Accounts:
     def __init__(self, settings, config):
         self.settings = settings
         self.profiles = config.get('profiles', {})
+        for profile in self.profiles.values():
+            if profile.get('mode', 'account') not in ('account', 'anonymous'):
+                raise ValueError('profile mode需为account或anonymous')
         self.path = settings.data_dir / 'active_account.json'
         saved = json.loads(self.path.read_text()) if self.path.exists() else {}
         self.active = saved.get('active', config.get('active_profile'))
@@ -25,9 +28,15 @@ class Accounts:
         self.switching = False
         self.identity = {'logged_in': False, 'uid': None, 'name': None}
 
+    @property
+    def anonymous(self):
+        return self.profiles.get(self.active, {}).get('mode', 'account') == 'anonymous'
+
     def summary(self):
         return {'managed': bool(self.profiles), 'active': self.active,
-                'profiles': [{'id': key, 'label': value['label']} for key, value in self.profiles.items()],
+                'mode': 'anonymous' if self.anonymous else 'account',
+                'profiles': [{'id': key, 'label': value['label'], 'mode': value.get('mode', 'account')}
+                             for key, value in self.profiles.items()],
                 'switching': self.switching, **self.identity}
 
     async def start(self):
@@ -58,14 +67,31 @@ class Accounts:
                 raise RuntimeError('账号Chrome启动失败')
             with socket.socket() as probe:
                 if probe.connect_ex((endpoint.hostname, endpoint.port or 9222)) == 0:
+                    if self.anonymous:
+                        from .browser import Browser
+                        browser = Browser(self.settings.cdp_url)
+                        try:
+                            await self.refresh(browser)
+                        finally:
+                            await browser.close()
                     return
             await asyncio.sleep(.1)
         raise RuntimeError('等待账号Chrome超时')
 
     async def refresh(self, browser):
-        context = await browser.connect()
-        response = await context.request.get('https://api.bilibili.com/x/web-interface/nav', timeout=10000)
-        data = (await response.json()).get('data', {})
+        try:
+            context = await browser.connect()
+            response = await context.request.get('https://api.bilibili.com/x/web-interface/nav', timeout=10000)
+            payload = await response.json()
+            data = payload.get('data') or {}
+            if self.anonymous:
+                if (response.status != 200 or payload.get('code') not in (0, -101)
+                        or not isinstance(data, dict) or data.get('isLogin') is not False):
+                    raise RuntimeError('无法确认匿名登录态，或anonymous profile意外登录')
+        except BaseException:
+            if self.anonymous:
+                await self.close()
+            raise
         identity = {'logged_in': data.get('isLogin') is True,
                     'uid': str(data.get('mid')) if data.get('isLogin') else None,
                     'name': data.get('uname') if data.get('isLogin') else None}
@@ -75,6 +101,8 @@ class Accounts:
         return self.summary()
 
     async def login(self, browser):
+        if self.anonymous:
+            raise ValueError('匿名profile不支持登录，请切换账号profile')
         context = await browser.connect()
         page = await context.new_page()
         await page.goto('https://passport.bilibili.com/login', wait_until='domcontentloaded')

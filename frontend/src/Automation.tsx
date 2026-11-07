@@ -1,11 +1,11 @@
 import React, {useEffect, useState} from 'react';
 import {WelcomeCopy} from './WelcomeCopy';
+import {useInstance} from './Instance';
 
 type Room = {room_id:string;label:string;intro:string;enabled:boolean;confirmed:string|null;delivery:string;error?:string};
 type Like = {id:string;room_id:string;requested:number;triggered:number;status:string};
-type State = {account:{managed:boolean;active:string;profiles:{id:string;label:string}[];logged_in:boolean;name?:string;switching:boolean};rooms:Room[];likes:Like[];notifications:{id:string;label:string;event:string;status:string}[]};
-const base=import.meta.env.BASE_URL;
-async function api(path:string,body?:unknown,method='POST'){
+type State = {account:{mode?:string;managed:boolean;active:string;profiles:{id:string;label:string}[];logged_in:boolean;name?:string;switching:boolean};rooms:Room[];likes:Like[];notifications:{id:string;label:string;event:string;status:string}[]};
+async function api(base:string,path:string,body?:unknown,method='POST'){
   const response=await fetch(base+'api/automation'+path,body===undefined?undefined:{method,headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
   const value=await response.json();
   if(!response.ok)throw new Error(typeof value.detail==='string'?value.detail:JSON.stringify(value.detail));
@@ -13,20 +13,22 @@ async function api(path:string,body?:unknown,method='POST'){
 }
 
 export function AutomationControls(){
+  const {base}=useInstance();
   const [state,setState]=useState<State|null>(null);
   const [error,setError]=useState('');
   const [busy,setBusy]=useState(false);
   const [profile,setProfile]=useState('');
   const [counts,setCounts]=useState<Record<string,number>>({});
   useEffect(()=>{let alive=true;let timer:ReturnType<typeof setTimeout>;
-    async function refresh(){try{const next=await api('');if(alive)setState(next)}catch(e){if(alive)setError((e as Error).message)}
+    async function refresh(){try{const next=await api(base,'');if(alive)setState(next)}catch(e){if(alive)setError((e as Error).message)}
       finally{if(alive)timer=setTimeout(()=>void refresh(),2000)}}
     void refresh();return()=>{alive=false;clearTimeout(timer)}},[]);
   async function act(path:string,body:unknown,method='POST'){
-    setBusy(true);setError('');try{await api(path,body,method);setState(await api(''))}
+    setBusy(true);setError('');try{await api(base,path,body,method);setState(await api(base,''))}
     catch(e){setError((e as Error).message)}finally{setBusy(false)}
   }
   if(!state?.rooms.length)return error?<p role="alert">自动化状态：{error}</p>:null;
+  if(state.account.mode==='anonymous')return <section className="automation-panel" aria-label="匿名监控模式"><h2>匿名监控</h2><p>未登录 · 欢迎与点赞关闭 · 实时 ASR 和定期分析按房间配置运行</p></section>;
   return <section className="automation-panel" aria-label="直播自动化控制">
     <h2>自动欢迎与账号</h2>
     <p>下播只结束本房间采集，看板持续保留。自动欢迎开关不影响录制、通知或 AI 分析开关。</p>

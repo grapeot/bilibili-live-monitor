@@ -41,6 +41,8 @@ def _strip_cdn_beacon(match):
 
 
 def verify_remote(config):
+    if config.get('local_only', False):
+        return
     for name in ('index.html', 'snapshot.json'):
         local = (Path(config['workspace']) / 'public' / name).read_bytes()
         req = urllib.request.Request(config['url'] + name,
@@ -98,7 +100,7 @@ def advance(config, state, now):
         if uses_ai and not state.get('ai_preflight'):
             ai_control(config, 'preflight', model=config['model'])
             state['ai_preflight'] = True
-        if not state.get('remote_prepared'):
+        if not config.get('local_only', False) and not state.get('remote_prepared'):
             host, directory = config['remote'].split(':', 1)
             subprocess.run(['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', host,
                             'mkdir -p -- ' + shlex.quote(directory)],
@@ -278,6 +280,8 @@ def run(path):
         fcntl.flock(publisher, fcntl.LOCK_EX | fcntl.LOCK_NB)
         status_path = workspace / 'workflow.json'
         state = json.loads(status_path.read_text()) if status_path.exists() else {'stage': 'created'}
+        # 首次健康任务可能在AI预检完成前启动，先发布可读取的初始状态。
+        atomic_json(status_path, state)
         next_health_check = 0
         while state['stage'] not in ('completed', 'attention'):
             started = time.time()

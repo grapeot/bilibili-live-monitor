@@ -1,0 +1,2 @@
+.room-links{display:flex;gap:12px;flex-wrap:wrap;padding:9px 0 3px;font-size:12px}
+.room-links a{color:#2563eb;text-decoration:none;padding:3px 8px;border:1px solid #dbe6fb;border-radius:5px;background:#f5f8ff}.room-links a:hover{text-decoration:underline}.room-links a:focus-visible{outline:2px solid #2563eb;outline-offset:2px}

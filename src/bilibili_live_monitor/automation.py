@@ -191,13 +191,33 @@ class Automation:
                     async with self.lock:
                         # 等待锁时可能已经由显式账号切换恢复，不能再启动第二个Chrome。
                         if self.accounts.process is None or self.accounts.process.poll() is not None:
-                            await self.accounts.close()
-                            await self.accounts.start()
+                            self.platform.suspended = True
+                            async with self.platform.reconcile_lock:
+                                launching = list(self.platform.launching.values())
+                                for task in launching:
+                                    task.cancel()
+                                await asyncio.gather(*launching, return_exceptions=True)
+                                self.platform.launching.clear()
+                                # capture自己的重连不经过Platform；先等待它们退出，
+                                # 才能启动尚未完成匿名验证的新Chrome。
+                                for rid in list(self.platform.monitor.tasks):
+                                    await self.platform.monitor.stop(rid)
+                                self.platform.active.clear()
+                                await self.browser.close()
+                                self.browser.pw = self.browser.browser = self.browser.anchor = None
+                                await self.accounts.close()
+                                self.platform.store.nickname_identity = (
+                                    self.accounts.profiles.get(self.accounts.active, {}).get('mode') == 'anonymous')
+                                await self.accounts.start()
+                                self.platform.suspended = False
                 if time.monotonic() >= next_identity:
                     try:
                         await self.accounts.refresh(self.browser)
                     except Exception:
                         self.accounts.identity['logged_in'] = False
+                        if self.accounts.profiles.get(self.accounts.active, {}).get('mode') == 'anonymous':
+                            self.platform.suspended = True
+                            raise
                     next_identity = time.monotonic()+10
                 for key, task in list(self.tasks.items()):
                     if task.done():
@@ -446,6 +466,7 @@ class Automation:
             self.platform.revision += 1
             self.platform.save()
             acquired = False
+            succeeded = False
             try:
                 await self.platform.reconcile_lock.acquire()
                 acquired = True
@@ -467,19 +488,23 @@ class Automation:
                 self.browser.pw = self.browser.browser = self.browser.anchor = None
                 await self.accounts.close()
                 self.accounts.active = name
+                anonymous = self.accounts.profiles[name].get('mode', 'account') == 'anonymous'
+                self.platform.store.nickname_identity = anonymous
                 await self.accounts.start()
                 await self.accounts.refresh(self.browser)
-                await self.accounts.login(self.browser)
+                if not anonymous:
+                    await self.accounts.login(self.browser)
                 self.platform.next_status_check = 0
                 # 不清空跨场通知去重、已见UID或欢迎冷却。
                 for row in self.state['rooms'].values():
                     row['pending'] = []
+                succeeded = True
                 return self.summary()
             finally:
                 if acquired:
                     self.platform.reconcile_lock.release()
                 self.accounts.switching = False
-                self.platform.suspended = False
+                self.platform.suspended = not succeeded
                 self.save()
 
     async def close(self):

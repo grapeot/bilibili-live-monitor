@@ -6,11 +6,15 @@ import {transcriptLabel} from './transcripts';
 import {Assistant} from './Assistant';
 import {AutomationControls} from './Automation';
 import {RoomIssue} from './RoomIssue';
+import {InstanceProvider, useApi, useInstance, type Instance} from './Instance';
+import {RoomArchive} from './RoomArchive';
+import {RoomLinks} from './RoomLinks';
 
 type Segment = {seq:number; start_utc:string; end_utc:string; text:string; status:string;
   queue_wait_ms:number; infer_ms:number; rms_dbfs:number; error:string|null; coverage_ratio?:number|null};
 type LikeSummary = {reported_total?:number|null;observed_utc?:string|null;notifications:number;identified_users:number};
 type Room = {room_id:string; title:string; url:string; cover_url:string; status:string;
+  instance_label?:string;account_mode?:string;result_url?:string;workflow_stage?:string;home_url?:string;
   like_summary?:LikeSummary|null;
   reconnect_attempts?:number;next_retry_utc?:string|null;
   record_mode:'none'|'audio'|'video';asr_enabled:boolean;preview_enabled:boolean;
@@ -31,14 +35,7 @@ type State = {rooms:Room[]; queue_depth:number; queue_capacity:number; asr_ready
   asr_restarts:number;asr_retries:number;asr_error:string|null};
 const labels:Record<string,string> = {
   starting:'启动中',capturing:'采集中',queued:'排队中',transcribing:'转写中',stopped:'已停止',
-  error:'异常',silent:'静音跳过',done:'已转写',empty:'未识别到文字',cancelled:'已取消',truncated:'识别截断',reconnecting:'正在重连'
-};
-const base = import.meta.env.BASE_URL;
-const api = async(path:string, init?:RequestInit) => {
-  const response = await fetch(base + 'api/' + path, init);
-  const result = await response.json();
-  if(!response.ok) throw new Error(typeof result.detail === 'string' ? result.detail : JSON.stringify(result.detail));
-  return result;
+  error:'异常',silent:'静音跳过',done:'已转写',empty:'未识别到文字',cancelled:'已取消',truncated:'识别截断',reconnecting:'正在重连',waiting:'守候中'
 };
 const time = (iso:string) => new Date(iso).toLocaleTimeString('zh-CN',{hour12:false});
 
@@ -57,6 +54,7 @@ function validResources(value:unknown):value is Resources{
 }
 
 function ResourceMetrics(){
+  const {base}=useInstance();
   const [data,setData]=useState<Resources|null>(null);
   const [now,setNow]=useState(Date.now());
   useEffect(()=>{
@@ -90,6 +88,7 @@ type WatchSummary = {policy:{mode:string;enabled:boolean;fixed_rooms?:string[]};
   message_health:Record<string,{state?:string;last_message_utc?:string}>};
 
 function WatchStatus(){
+  const api=useApi();
   const [summary,setSummary]=useState<WatchSummary|null>(null);
   const [failed,setFailed]=useState(false);
   useEffect(()=>{let alive=true;let timer:ReturnType<typeof setTimeout>;
@@ -115,6 +114,7 @@ function WatchStatus(){
 }
 
 function RoomPreview({room}:{room:Room}){
+  const {base}=useInstance();
   const container=useRef<HTMLDivElement>(null);
   const [visible,setVisible]=useState(false);
   const [image,setImage]=useState('');
@@ -138,6 +138,7 @@ function RoomPreview({room}:{room:Room}){
 }
 
 const RoomCard = React.memo(function RoomCard({room,status,onError}:{room:Room;status:string;onError:(s:string)=>void}){
+  const api=useApi();const {base}=useInstance();
   const scroller=useRef<HTMLDivElement>(null);
   const [following,setFollowing]=useState(true);
   const latest=room.segments.at(-1);
@@ -147,7 +148,9 @@ const RoomCard = React.memo(function RoomCard({room,status,onError}:{room:Room;s
   return <article className="card">
     <RoomPreview room={room}/>
     <div className="card-body"><div className="room-heading"><a href={room.url} target="_blank" rel="noreferrer">{room.title.replace(/ - 哔哩哔哩直播.*$/,'')}</a><span className={'badge '+status}>{labels[status]||status}</span></div>
-    <div className="room-sub"><span>房间 {room.room_id} · 流式输入 5 秒 · 上下文 ≤30 秒</span><button className="text-button" disabled={room.status==='stopped'} onClick={()=>api(`rooms/${room.room_id}/stop`,{method:'POST'}).catch(e=>onError(e.message))}>停止监控</button></div>
+    <RoomLinks liveUrl={room.url} archiveUrl={room.home_url?base+room.home_url:undefined}/>
+    <div className="room-sub"><span>房间 {room.room_id}{room.instance_label?` · ${room.instance_label}`:''} · 流式输入 5 秒 · 上下文 ≤30 秒</span><button className="text-button" disabled={room.status==='stopped'||room.status==='waiting'} onClick={()=>api(`rooms/${room.room_id}/stop`,{method:'POST'}).catch(e=>onError(e.message))}>停止监控</button></div>
+    {room.result_url&&<p className="room-sub"><a href={base+room.result_url} target="_blank" rel="noreferrer">{room.workflow_stage==='completed'?'查看本场最终结果':'查看本场结果（处理中）'}</a></p>}
     <RoomIssue status={room.status} error={room.error} updatedAt={room.updated_at}/>
     {!!room.reconnect_attempts&&<p className="room-sub">连续失败 {room.reconnect_attempts} 次{room.next_retry_utc?` · 下次重试 ${time(room.next_retry_utc)}`:''}</p>}
     <p className="room-sub">保存：{({none:'关闭',audio:'原始音频',video:'原始音视频'})[room.record_mode]} · ASR：{room.asr_enabled?'启用':'禁用'} · 弹幕 / 礼物 / 入场 / 点赞：保存并显示</p>
@@ -168,6 +171,7 @@ const RoomCard = React.memo(function RoomCard({room,status,onError}:{room:Room;s
 });
 
 function SnapshotApp(){
+  const {base,label}=useInstance();const api=useApi();
   const [state,setState] = useState<State>({rooms:[],queue_depth:0,queue_capacity:20,asr_ready:false,asr_enabled:false,overload_count:0,inflight:null,active_count:0,pending_count:0,asr_restarts:0,asr_retries:0,asr_error:null});
   const [recordMode,setRecordMode]=useState('audio');
   const [asrEnabled,setAsrEnabled]=useState(false);
@@ -204,7 +208,8 @@ function SnapshotApp(){
     const events = new EventSource(base + 'api/events');
     events.onopen=()=>setConnected(true);
     events.onerror=()=>setConnected(false);
-    events.addEventListener('snapshot',e=>{changes.current=[];setState(JSON.parse((e as MessageEvent).data))});
+    events.addEventListener('snapshot',e=>{changes.current=[];setConnected(true);setState(JSON.parse((e as MessageEvent).data))});
+    events.addEventListener('unavailable',()=>setConnected(false));
     for(const kind of ['room','segment','item','likes'] as const)events.addEventListener(kind,e=>enqueue({kind,data:JSON.parse((e as MessageEvent).data)}));
     events.addEventListener('metrics',e=>setState(s=>({...s,...JSON.parse((e as MessageEvent).data)})));
     return ()=>{alive=false;events.close();if(timer.current)clearTimeout(timer.current);timer.current=null;changes.current=[]};
@@ -216,7 +221,7 @@ function SnapshotApp(){
   }
   const active=state.active_count+state.pending_count;
   return <main>
-    <header><div><div className="eyebrow">本地 CDP 静音捕获 · Qwen3-ASR</div><h1>B站多路直播监控看板</h1><p>多路直播语音、弹幕与礼物混合时间线。</p></div>
+    <header><div><div className="eyebrow">本地 CDP 静音捕获 · Qwen3-ASR</div><h1>B站多路直播监控看板{label?` · ${label}`:''}</h1><p>多路直播语音、弹幕与礼物混合时间线。</p></div>
       <div className="header-actions"><button className="secondary" onClick={async()=>{try{if(document.fullscreenElement)await document.exitFullscreen();else await document.documentElement.requestFullscreen()}catch(e){setError((e as Error).message)}}}>{fullscreen?'退出全屏':'进入全屏'}</button><span className={'connection '+(connected?'online':'')}><i/>{connected?'实时连接正常':'正在重连'}</span></div></header>
     <section className="metrics">
       <div><span>监控任务（含重连 / 启动）</span><strong>{active}<small> 路</small></strong></div>
@@ -246,11 +251,26 @@ function SnapshotApp(){
     <p className="footnote">每房间显示最近80条弹幕、礼物与转写；完整时间线保存于本地SQLite，可导出JSONL。付费金额统一显示电池（100金瓜子＝1电池，1元＝10电池）；免费礼物仍显示银币。盲盒花费与抽中礼物单价分列，均不代表主播净收入；导出保留协议原始单位。游戏声和背景音乐可能造成误识别。</p>
   </main>;
 }
-export function App(){
+function SingleApp(){
+  const instance=useInstance();
   const [page,setPage]=useState<'snapshot'|'assistant'>('snapshot');
+  if(instance.mode==='anonymous')return <><AutomationControls/><SnapshotApp/></>;
   return <><nav className="top-nav" aria-label="页面">
     <button aria-pressed={page==='snapshot'} onClick={()=>setPage('snapshot')}>快照</button>
     <button aria-pressed={page==='assistant'} onClick={()=>setPage('assistant')}>直播助手</button>
    </nav><AutomationControls/><div hidden={page!=='snapshot'}><SnapshotApp/></div>{page==='assistant'&&<main><Assistant/></main>}</>;
 }
-createRoot(document.getElementById('root')!).render(<React.StrictMode><App/></React.StrictMode>);
+export function App(){
+  const [instances,setInstances]=useState<Instance[]|null>(null);
+  useEffect(()=>{let alive=true;fetch(import.meta.env.BASE_URL+'api/dashboard/instances')
+    .then(r=>{if(!r.ok)throw new Error('single');return r.json()})
+    .then((rows:Instance[])=>{if(alive)setInstances(rows.map(row=>({...row,base:import.meta.env.BASE_URL+row.base})))})
+    .catch(()=>{if(alive)setInstances([])});return()=>{alive=false}},[]);
+  if(instances===null)return <main>正在连接监控实例…</main>;
+  if(!instances.length)return <SingleApp/>;
+  return <>{instances.map(instance=><section key={instance.id} aria-label={instance.label}>
+    <InstanceProvider instance={instance}><SingleApp/></InstanceProvider></section>)}</>;
+}
+const archiveRoute=window.location.pathname.match(/^(.*\/instances\/[^/]+\/)rooms\/(\d+)\/$/);
+createRoot(document.getElementById('root')!).render(<React.StrictMode>{archiveRoute?
+  <RoomArchive base={archiveRoute[1]} roomId={archiveRoute[2]}/>:<App/>}</React.StrictMode>);

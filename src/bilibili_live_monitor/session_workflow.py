@@ -88,6 +88,9 @@ class SessionWorkflows:
         path = directory / 'config.json'
         if path.exists() and json.loads(path.read_text()).get('workflow_key') == record['key']:
             current = json.loads(path.read_text())
+            if current.get('local_only') != self.config.get('local_only', False):
+                current['local_only'] = self.config.get('local_only', False)
+                atomic_json(path, current)
             if (record.get('stage') not in ('completed', 'attention')
                     and self.automation.rooms[record['room_id']].get('content_mode', 'music') == 'talk'
                     and current.get('content_mode', 'music') != 'talk'):
@@ -114,6 +117,7 @@ class SessionWorkflows:
         if config['content_mode'] == 'talk':
             config.update(ai_enabled=False, talk_finalize=True)
         config.update(model=cfg['model'], opencode_python=cfg['opencode_python'],
+            local_only=cfg.get('local_only', False),
             opencode_cwd=cfg['opencode_cwd'], opencode_project=cfg['opencode_project'],
             recording_root=str(settings.data_dir / 'recordings' / rid),
             recording_segment_seconds=settings.recording_segment_seconds,

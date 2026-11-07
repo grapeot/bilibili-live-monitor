@@ -82,8 +82,8 @@ def snapshot(dbpath, room, since, until, display_zone, width, gap_seconds, title
             t = instant(data['received_utc'])
             if not lo <= t < hi:
                 continue
-            uid = str(data.get('sender_uid') or '')
-            uid = uid if re.fullmatch(r'[1-9][0-9]*', uid) else None
+            from .identity import analysis_key
+            uid = analysis_key(data)
             if kind == 'entry':
                 entries.append({'id': ident, 't': t, 'uid': uid})
             else:

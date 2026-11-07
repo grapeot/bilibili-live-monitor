@@ -103,6 +103,8 @@ class TimelineItem(BaseModel):
     like: dict | None = Field(default=None, description='个人点赞通知；无可靠单条点击次数，时间为接收时钟')
     sender_uid: str | None = None
     identity_status: Literal['uid', 'unresolved'] | None = None
+    analysis_identity_basis: Literal['nickname'] | None = None
+    sender_hidden: bool = False
     guard_level: int | None = None
     guard_source: str | None = None
     medal: dict | None = None
