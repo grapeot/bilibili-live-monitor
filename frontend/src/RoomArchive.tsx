@@ -1,8 +1,11 @@
 import React,{useEffect,useState} from 'react';
 import './room_archive.css';
-import {SessionSummaryTable,type SummaryRow} from './SessionSummaryTable';
-import {SessionOverviewChart} from './SessionOverviewChart';
-import {PeriodOverview,type PeriodSummary,type GiftShare} from './PeriodOverview';
+import type {SummaryRow} from './SessionSummaryTable';
+import type {PeriodSummary,GiftShare} from './PeriodOverview';
+import {ArchiveOverview} from './ArchiveOverview';
+import {ArchiveHeader} from './ArchiveHeader';
+import {useArchiveData} from './useArchiveData';
+import {remoteArchiveUrl} from './remoteArchive';
 
 type Summary={followers_change:number|null;gift_count:number|null;gift_amount_yuan:number|null;watched:number|null};
 type Session={key:string;start:string;end:string;status:string;has_result:boolean;summary:Summary;dates:string[]};
@@ -16,12 +19,9 @@ const hours=(n:number)=>(n/3600).toFixed(2)+' 小时';
 const status:Record<string,string>={completed:'已完成',live:'直播中',created:'准备中',running:'处理中',stopping:'收尾中',sealing:'收尾中',offline_asr:'离线转写',offline_review:'最终分析',finalizing:'生成最终结果',attention:'需处理'};
 
 export function RoomArchive({base,roomId}:{base:string;roomId:string}){
- const [data,setData]=useState<Archive|null>(null),[error,setError]=useState(''),[date,setDate]=useState('');
- useEffect(()=>{let alive=true;let timer:ReturnType<typeof setTimeout>;async function refresh(){try{
-  const r=await fetch(base+'api/rooms/'+roomId+'/archive',{cache:'no-store'});if(!r.ok)throw Error('归档暂时无法读取');
-  const value=await r.json();if(alive){setData(value);setError('');}
- }catch(e){if(alive)setError((e as Error).message);}finally{if(alive)timer=setTimeout(refresh,30000);}}
- void refresh();return()=>{alive=false;clearTimeout(timer);};},[base,roomId]);
+ const remoteUrl=remoteArchiveUrl(roomId);
+ const {data,error}=useArchiveData<Archive>(base+'api/rooms/'+roomId+'/archive',30000);
+ const [date,setDate]=useState('');
   useEffect(()=>{if(!data)return;document.title=data.name+' · 直播场次汇总';
    for(const [key,value] of [['description',data.name+'的直播场次汇总：平均在线、峰值在线、累计看过、关注变化与礼物统计。'],['robots','noindex,nofollow']]){
     let meta=document.querySelector<HTMLMetaElement>('meta[name="'+key+'"]');
@@ -32,14 +32,11 @@ export function RoomArchive({base,roomId}:{base:string;roomId:string}){
  const sessions=data?.sessions.filter(s=>selected?.session_keys.includes(s.key))||[];
  return <main className="room-archive">
    <a href={import.meta.env.BASE_URL}>← 返回直播看板</a>
-    <header><div><p className="archive-eyebrow">近期数据概览 · 北京时间</p><h1>{data?.name||'房间 '+roomId}</h1><p>最近 7 天与 30 天的来访、礼物和每场直播。</p></div>
-   <a href={'https://live.bilibili.com/'+roomId} target="_blank" rel="noreferrer">打开直播间 ↗</a></header>
+    <ArchiveHeader title={data?.name||'房间 '+roomId} links={[{label:'打开直播间 ↗',href:'https://live.bilibili.com/'+roomId,external:true},...(remoteUrl?[{label:'远程逐日看板 ↗',href:remoteUrl,external:true}]:[])]} rows={data?.summaries}/>
   {error&&<p role="alert">{error}；已有内容保留，稍后自动重试。</p>}
   {!data&&!error&&<p>正在读取历史场次…</p>}
      {data&&<>
-     <PeriodOverview periods={data.periods||[]} giftShare={data.gift_share}/>
-    <SessionOverviewChart rows={data.summaries||[]}/>
-    <SessionSummaryTable rows={data.summaries||[]} base={base} shared={data.summary_source==='shared'}/>
+    <ArchiveOverview data={data} rows={data.summaries||[]} base={base}/>
    {selected&&<>
     <div className="archive-section-title"><h2>{selected.date}</h2><label>选择日期 <select aria-label="选择日期" value={selected.date} onChange={e=>setDate(e.target.value)}>{data.days.map(d=><option key={d.date}>{d.date}</option>)}</select></label></div>
     <section className="archive-stats">
