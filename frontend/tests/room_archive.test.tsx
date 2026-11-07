@@ -3,7 +3,7 @@ import {afterEach,expect,test,vi} from 'vitest';
 import {cleanup,fireEvent,render,screen} from '@testing-library/react';
 import {RoomArchive} from '../src/RoomArchive';
 
-afterEach(()=>{cleanup();vi.unstubAllGlobals()});
+afterEach(()=>{cleanup();vi.unstubAllGlobals();vi.unstubAllEnvs()});
 test('按日期筛选场次、保留跨日场次且不把累计看过汇成日独立人数',async()=>{
  const day=(date:string,keys:string[])=>({date,session_keys:keys,observed_seconds:3600,coverage_seconds:1800,
   danmaku:3,entries:4,gift_count:2,gift_amount_yuan:3,gift_count_unknown:0,gift_amount_unknown:0,followers_change:null,followers_partial:true,has_observations:true,
@@ -25,4 +25,21 @@ test('按日期筛选场次、保留跨日场次且不把累计看过汇成日�
  expect(screen.queryByText('查看本场实时结果 →')).toBeNull();
  expect(screen.getByText('跨日场次 · 本页汇总仅计入所选日期')).toBeTruthy();
  expect(fetch.mock.calls[0][0]).toBe('/instances/guest/api/rooms/1/archive');
+ expect(screen.queryByRole('link',{name:'远程逐日看板 ↗'})).toBeNull();
+});
+
+test.each([
+ ['{"1":"https://example.test/archive/"}',true],
+ ['{"2":"https://example.test/archive/"}',false],
+ ['{"1":"javascript:alert(1)"}',false],
+ ['{"1":"https://user:password@example.test/"}',false],
+ ['invalid-json',false],
+])('远程看板只显示本房间已配置的 HTTPS 地址：%s',async(configured,visible)=>{
+ vi.stubEnv('VITE_ROOM_ARCHIVE_URLS',configured);
+ vi.stubGlobal('fetch',vi.fn(async()=>({ok:true,json:async()=>({name:'测试主播',days:[],sessions:[],warnings:0,updated_at:null})})));
+ render(<RoomArchive base="/instances/account/" roomId="1"/>);
+ await screen.findByText('测试主播');
+ const link=screen.queryByRole('link',{name:'远程逐日看板 ↗'});
+ expect(!!link).toBe(visible);
+ if(link){expect(link.getAttribute('href')).toBe('https://example.test/archive/');expect(link.getAttribute('target')).toBe('_blank');expect(link.getAttribute('rel')).toContain('noopener');}
 });

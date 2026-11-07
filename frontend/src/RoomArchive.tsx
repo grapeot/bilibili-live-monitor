@@ -5,6 +5,7 @@ import type {PeriodSummary,GiftShare} from './PeriodOverview';
 import {ArchiveOverview} from './ArchiveOverview';
 import {ArchiveHeader} from './ArchiveHeader';
 import {useArchiveData} from './useArchiveData';
+import {remoteArchiveUrl} from './remoteArchive';
 
 type Summary={followers_change:number|null;gift_count:number|null;gift_amount_yuan:number|null;watched:number|null};
 type Session={key:string;start:string;end:string;status:string;has_result:boolean;summary:Summary;dates:string[]};
@@ -18,6 +19,7 @@ const hours=(n:number)=>(n/3600).toFixed(2)+' 小时';
 const status:Record<string,string>={completed:'已完成',live:'直播中',created:'准备中',running:'处理中',stopping:'收尾中',sealing:'收尾中',offline_asr:'离线转写',offline_review:'最终分析',finalizing:'生成最终结果',attention:'需处理'};
 
 export function RoomArchive({base,roomId}:{base:string;roomId:string}){
+ const remoteUrl=remoteArchiveUrl(roomId);
  const {data,error}=useArchiveData<Archive>(base+'api/rooms/'+roomId+'/archive',30000);
  const [date,setDate]=useState('');
   useEffect(()=>{if(!data)return;document.title=data.name+' · 直播场次汇总';
@@ -30,7 +32,7 @@ export function RoomArchive({base,roomId}:{base:string;roomId:string}){
  const sessions=data?.sessions.filter(s=>selected?.session_keys.includes(s.key))||[];
  return <main className="room-archive">
    <a href={import.meta.env.BASE_URL}>← 返回直播看板</a>
-   <ArchiveHeader title={data?.name||'房间 '+roomId} links={[{label:'打开直播间 ↗',href:'https://live.bilibili.com/'+roomId,external:true}]} rows={data?.summaries}/>
+    <ArchiveHeader title={data?.name||'房间 '+roomId} links={[{label:'打开直播间 ↗',href:'https://live.bilibili.com/'+roomId,external:true},...(remoteUrl?[{label:'远程逐日看板 ↗',href:remoteUrl,external:true}]:[])]} rows={data?.summaries}/>
   {error&&<p role="alert">{error}；已有内容保留，稍后自动重试。</p>}
   {!data&&!error&&<p>正在读取历史场次…</p>}
      {data&&<>
