@@ -26,6 +26,7 @@ def with_audience_links(text, url):
     script = NAVIGATION.replace('__URL__', json.dumps(url.rstrip('/') + '/').replace('<', r'\u003c'))
     if 'id="audience-navigation"' in text:
         return re.sub(r'<script id="audience-navigation">.*?</script>', lambda _: script, text, flags=re.S)
-    if '</body>' not in text:
-        raise ValueError('页面缺少body结束标签')
-    return text.replace('</body>', script + '</body>')
+    closing = '</body>' if '</body>' in text else '</html>'
+    if closing not in text:
+        raise ValueError('页面缺少body或html结束标签')
+    return text.replace(closing, script + closing, 1)
