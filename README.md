@@ -1,10 +1,23 @@
 # bilibili-live-monitor
 
-面向 Apple Silicon Mac 的多路 B 站直播录制与弹幕监控工具，语音转写可选。
+面向 Apple Silicon Mac 的多路 B 站直播记录、单场跟进与跨场归档工具。
 
-系统将每路直播的主播语音转写与观众弹幕按事件时间合并为可追溯的房间时间线，供巡检与归档使用。每条弹幕、每段转写各为一个 item，区分来源与状态。
+系统将主播语音转写、观众弹幕、礼物和点赞通知按事件时间组织为可追溯的房间时间线。基础采集之外，可按需启用单场分析、历史场次与歌曲归档、观众备忘及授权互动。代码具备某项能力不代表每个房间或部署都已启用。
 
 为什么要在这条时间线上构建面向主播的观众记忆与实时转化副驾、漏斗各层如何推进引流与营收转化，见 [Motivation](docs/motivation.md)。
+
+## 按任务找到入口
+
+| 要完成的任务 | 现有能力与操作入口 |
+|---|---|
+| 开始盯房间并保留记录 | 添加/停止房间，默认音频录制、弹幕与礼物时间线、JSONL导出；视频、ASR、缩略图可独立开启，见下方安装与运行 |
+| 长期守候和查看多个实例 | 候选轮转或固定名单、账号/匿名实例隔离、统一看板，见[平台运维](skills/bilibili-live-monitor/platform-operations.md)与[网关示例](docs/dashboard.example.json) |
+| 在播跟进，下播继续看结果 | 可选四图、活动分类、歌名登记与点歌跟进，见[单场看板](skills/bilibili-live-monitor/live-share.md)；自动建场、离线转写与终审默认关闭，见[逐场工作流](skills/bilibili-live-monitor/session-workflow.md) |
+| 跨场回看场次、歌曲和观众 | 整场汇总、自然日入口、曲库与歌曲礼物/关注分析、[观众备忘](skills/bilibili-live-monitor/session-workflow.md#观众当前备忘与下播更新)；这些产物按配置生成和发布 |
+| 授权互动与助手操作 | 欢迎、点赞、账号切换见[持久自动化](docs/persistent_automation.md)；已有助手卡片修改、撤销、注音与AI控制见[专项设计](docs/live_assistant_design.md)，不代表主播已实际使用 |
+| 处理已有素材 | [离线ASR](skills/bilibili-live-monitor/offline-asr.md)、[趋势](skills/bilibili-live-monitor/trends.md)、[活动时间轴](skills/bilibili-live-monitor/activity.md)、[预告片](skills/bilibili-live-monitor/trailer.md)、[录像归档](skills/bilibili-live-monitor/archive.md) |
+
+[PRD](docs/prd.md)说明用户任务与能力边界，[RFC](docs/rfc.md)说明当前实现与数据契约，[测试说明](docs/test.md)说明验证和数字差异的判定。AI操作者从[根skill](skills/bilibili-live-monitor/SKILL.md)按任务加载操作手册；具体运行配置与证据留在本地。
 
 ## 核心机制与边界
 
@@ -12,7 +25,7 @@
 - 监听同一网页已有的 WebSocket，解码普通、zlib 与 Brotli 弹幕包，不另建弹幕连接。
 - 全宽布局，支持全屏、新消息向下跟随、上翻暂停跟随。每房间保留最近接收或更新的80条记录，再按事件时间显示；完整历史保存SQLite，可导出JSONL。
 - 不做视频图像理解；可选按需缩略图。ASR临时音频处理后删除，原始录制文件独立保留。
-- 无需付费识别API，但消耗本机算力、内存与网络带宽。当前不提供告警、语义摘要或多平台支持，不承诺全量弹幕零丢失。
+- 本地ASR无需付费识别API，但消耗本机算力、内存与网络带宽。可选AI复核与观众备忘使用各自配置的模型，可能产生外部调用费用。现有通知与专项分析不等于通用关键词告警或任意语义问答；不承诺多平台支持或全量弹幕零丢失。
 
 旧独立切片实现曾验证30路；该容量结论不适用于新的流式实现。当前流式容量与长跑稳定性须重新测量。定位与边界见 [Formulation](docs/formulation.md)。
 
@@ -65,7 +78,7 @@ Tailscale内访问可使用 `tailscale serve --bg --https=8447 http://127.0.0.1:
 环境默认是 `RECORD_MODE=audio`、`ASR_ENABLED=0`、`PREVIEW_ENABLED=0`、`RECORDING_SEGMENT_SECONDS=300`。
 默认保存并渲染弹幕。录制位于 `DATA_DIR/recordings/<room_id>/`：`audio` 将网页实际播放的16kHz、16bit单声道 PCM 分段保存为 `.wav`，与实时 ASR 共享采集，不额外请求媒体下载地址；关闭 ASR 仍会播放并采集音频。`video` 由 FFmpeg 复制原始音视频压缩包到 `.mkv`；仅此模式在 ASR 和缩略图关闭时暂停网页视频。每次监控会话独立统计，正常停止会保留在途音频、排空缓冲并收尾文件。
 
-当ASR与缩略图均关闭时，原始录制不再等待HTML `video`就绪或调用 `play`。初次导航和重连均以网页成功响应捕获的媒体地址为录制输入，媒体发现阶段名义等待上限30秒，保留弹幕监听。启用ASR或缩略图时仍要求网页播放器就绪；导航或重载收到403/412/429则立即停止该源。
+`audio`模式依赖网页PCM，即使ASR与缩略图关闭也要等待播放器并保持播放。`video`模式且ASR与缩略图均关闭时，不等待HTML `video`播放，使用网页成功响应捕获的媒体地址交给FFmpeg录制，并暂停网页视频以降低渲染；`none`模式不生成媒体文件。启用ASR或缩略图时仍要求播放器就绪。导航或重载收到403/412/429则停止该源。
 
 ```json
 {"url":"123456","record_mode":"audio","asr_enabled":false,"preview_enabled":false}
@@ -87,6 +100,7 @@ SQLite完整存储 `segments`、`timeline` 和SSE事件，不因页面显示窗�
 ```bash
 pytest
 ruff check src tests scripts
+npm test --prefix frontend
 npm run build --prefix frontend
 python scripts/verify_isolation.py
 python scripts/live_smoke.py --rooms 30 --segments 2 --wait-seconds 180 --output .local/result.json

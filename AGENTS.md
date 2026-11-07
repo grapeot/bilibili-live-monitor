@@ -1,7 +1,7 @@
 # bilibili-live-monitor
 
 ## 项目定位与工作语言
-- B 站多直播间静音实时转写看板，目标为公开 GitHub 仓库。
+- B站多直播间记录、单场跟进与跨场归档工具，包含可选实时转写与授权互动；公开GitHub仓库。
 - 默认工作语言：中文，覆盖文档、注释、UI 和变更记录。
 
 ## 目录
@@ -9,7 +9,7 @@
 - `frontend/`：React + Vite + TypeScript。
 - `scripts/`：启动与构建入口，均从项目根目录执行。
 - `skills/bilibili-live-monitor/SKILL.md`：唯一根 skill。
-- `docs/`：需求、架构、测试与工作记录；`tests/`：离线测试。
+- `docs/`：`prd.md`维护用户任务与能力，`rfc.md`维护当前架构和数据契约，`test.md`维护实用验收方法，`working.md`记录变更与验证；`tests/`为离线测试。
 - `.local/`：运行数据与验收证据，禁止提交。
 
 ## 环境与维护
