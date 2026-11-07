@@ -4,17 +4,19 @@ import re
 from urllib.parse import urlsplit
 
 NAVIGATION = r'''<script id="audience-navigation">
-(()=>{const base=new URL(__URL__),names=new Map();
-function fill(){for(const cell of document.querySelectorAll('#gift-summary tbody tr td:first-child')){
+(()=>{const base=new URL(__URL__),names=new Map();let ready=false;
+function fill(){if(!document.getElementById('audience-entry')){
+const a=document.createElement('a');a.id='audience-entry';a.href=base.href;a.textContent='观众备忘';
+const songs=[...document.querySelectorAll('header a,nav a')].find(link=>link.textContent.trim()==='歌曲搜索');
+if(songs)songs.after(a);else{const nav=document.createElement('nav');nav.append(a);(document.querySelector('main')||document.body).prepend(nav);}}
+if(!ready)return;for(const cell of document.querySelectorAll('#gift-summary tbody tr td:first-child')){
 if(cell.querySelector('a'))continue;const name=cell.textContent.trim(),ids=names.get(name)||[];
 const a=document.createElement('a');a.textContent=name;const url=new URL(ids.length===1?ids[0]+'/':'',base);
 if(ids.length!==1)url.searchParams.set('q',name);a.href=url.href;cell.replaceChildren(a);}}
-const a=document.createElement('a');a.id='audience-entry';a.href=base.href;a.textContent='观众备忘';
-const songs=[...document.querySelectorAll('header a,nav a')].find(link=>link.textContent.trim()==='歌曲搜索');
-if(songs)songs.after(a);else{const nav=document.createElement('nav');nav.append(a);(document.querySelector('main')||document.body).prepend(nav);}
+fill();new MutationObserver(fill).observe(document.body,{childList:true,subtree:true});
 fetch(new URL('index.json',base),{cache:'no-cache'}).then(r=>{if(!r.ok)throw Error();return r.json();}).then(data=>{
 for(const p of data.people||[]){if(!/^[a-f0-9]{32}$/.test(p.id))continue;for(const name of new Set(p.names||[])){
-const list=names.get(name)||[];list.push(p.id);names.set(name,list);}}fill();new MutationObserver(fill).observe(document.body,{childList:true,subtree:true});}).catch(()=>{});
+const list=names.get(name)||[];list.push(p.id);names.set(name,list);}}ready=true;fill();}).catch(()=>{});
 })();</script>'''
 
 
@@ -26,6 +28,7 @@ def with_audience_links(text, url):
     script = NAVIGATION.replace('__URL__', json.dumps(url.rstrip('/') + '/').replace('<', r'\u003c'))
     if 'id="audience-navigation"' in text:
         return re.sub(r'<script id="audience-navigation">.*?</script>', lambda _: script, text, flags=re.S)
-    if '</body>' not in text:
-        raise ValueError('页面缺少body结束标签')
-    return text.replace('</body>', script + '</body>')
+    closing = '</body>' if '</body>' in text else '</html>'
+    if closing not in text:
+        raise ValueError('页面缺少body或html结束标签')
+    return text.replace(closing, script + closing, 1)
