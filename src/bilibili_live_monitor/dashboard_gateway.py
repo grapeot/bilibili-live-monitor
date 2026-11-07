@@ -139,9 +139,15 @@ def create_gateway(config, *, transport=None):
                 return cached[1]
             try:
                 from .room_archive import archive_data
+                summary_file = archive.get('summary_files', {}).get(room_id)
                 data = await asyncio.to_thread(archive_data, row['session_root'], archive['database'],
-                                               room_id, archive['rooms'][room_id])
+                                               room_id, archive['rooms'][room_id], not bool(summary_file))
                 data['mode'] = row.get('mode', 'account')
+                if summary_file:
+                    from .archive_summary import shared_summaries
+                    data['summaries'] = await asyncio.to_thread(shared_summaries, summary_file,
+                                                               [{**s, 'start_utc': s['start']} for s in data['sessions']])
+                    data['summary_source'] = 'shared'
             except (OSError, ValueError, TypeError) as error:
                 raise HTTPException(503, '暂时无法读取房间归档，请稍后刷新') from error
             archive_cache[ident, room_id] = time.monotonic(), data
@@ -190,7 +196,8 @@ def create_gateway(config, *, transport=None):
         if not path.is_relative_to(root) or not path.is_file():
             raise HTTPException(404, '结果尚未生成')
         if asset == 'index.html' and row.get('archive'):
-            from .room_archive import read_json
+            from .room_archive import read_json, read_object
+            from .session_overview import session_overview
             try:
                 config = read_json(root, root / key / 'config.json')
                 rid = str(config.get('room_id'))
@@ -198,7 +205,12 @@ def create_gateway(config, *, transport=None):
                     label = html.escape(row['archive']['rooms'][rid])
                     link = f'/instances/{ident}/rooms/{rid}/'
                     nav = f'<nav style="max-width:1120px;margin:12px auto"><a href="{link}">← {label} · 按日归档</a></nav>'
-                    return HTMLResponse(path.read_text().replace('<main', nav + '<main', 1))
+                    try:
+                        snapshot = read_object(root, root / key / 'public/snapshot.json')
+                    except (OSError, ValueError, TypeError):
+                        snapshot = {}
+                    page = session_overview(path.read_text(), row['archive']['rooms'][rid], snapshot)
+                    return HTMLResponse(page.replace('<main', nav + '<main', 1))
             except (OSError, ValueError, TypeError):
                 pass
         return FileResponse(path)

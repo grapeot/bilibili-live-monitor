@@ -45,7 +45,7 @@ def day_windows(start, end):
         start = upper
 
 
-def archive_data(session_root, database, room_id, name):
+def archive_data(session_root, database, room_id, name, include_summaries=True):
     root = Path(session_root).resolve()
     sessions, windows, coverage, offline_keys = [], [], [], set()
     warnings = 0
@@ -103,6 +103,8 @@ def archive_data(session_root, database, room_id, name):
         return {'room_id': room_id, 'name': name, 'timezone': 'Asia/Shanghai',
                 'sessions': [], 'days': [], 'warnings': warnings, 'updated_at': None}
     source = read_source(Path(database), room_id, min(s['start'] for s in sessions))
+    from .archive_summary import summaries
+    session_summaries = summaries(source, sessions) if include_summaries else []
     windows = merged_windows(windows)
 
     def observed(at):
@@ -189,4 +191,5 @@ def archive_data(session_root, database, room_id, name):
     return {'room_id': room_id, 'name': name, 'timezone': 'Asia/Shanghai',
             'sessions': sorted(sessions, key=lambda s: s['start'], reverse=True),
             'days': sorted(days.values(), key=lambda d: d['date'], reverse=True),
+            'summaries': session_summaries, 'summary_source': 'recorded',
             'warnings': warnings, 'updated_at': max(s['end'] for s in sessions)}

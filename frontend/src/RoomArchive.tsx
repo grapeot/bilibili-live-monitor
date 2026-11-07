@@ -1,12 +1,13 @@
 import React,{useEffect,useState} from 'react';
 import './room_archive.css';
+import {SessionSummaryTable,type SummaryRow} from './SessionSummaryTable';
 
 type Summary={followers_change:number|null;gift_count:number|null;gift_amount_yuan:number|null;watched:number|null};
 type Session={key:string;start:string;end:string;status:string;has_result:boolean;summary:Summary;dates:string[]};
 type Day={date:string;session_keys:string[];observed_seconds:number;coverage_seconds:number;danmaku:number|null;entries:number|null;
   gift_count:number|null;gift_amount_yuan:number|null;gift_count_unknown:number;gift_amount_unknown:number;followers_change:number|null;followers_partial:boolean;has_observations:boolean;
   watched_sessions?:{key:string;start:string;value:number|null;observed_at:string|null}[]};
-type Archive={room_id:string;name:string;mode?:string;timezone:string;sessions:Session[];days:Day[];warnings:number;updated_at:string|null};
+type Archive={room_id:string;name:string;mode?:string;timezone:string;sessions:Session[];summaries?:SummaryRow[];summary_source?:string;days:Day[];warnings:number;updated_at:string|null};
 const clock=(value:string)=>new Date(value).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false});
 const number=(n:number|null|undefined)=>n==null?'—':n.toLocaleString('zh-CN');
 const hours=(n:number)=>(n/3600).toFixed(2)+' 小时';
@@ -19,7 +20,12 @@ export function RoomArchive({base,roomId}:{base:string;roomId:string}){
   const value=await r.json();if(alive){setData(value);setError('');}
  }catch(e){if(alive)setError((e as Error).message);}finally{if(alive)timer=setTimeout(refresh,30000);}}
  void refresh();return()=>{alive=false;clearTimeout(timer);};},[base,roomId]);
- useEffect(()=>{if(data)document.title=data.name+' · 按日归档';},[data?.name]);
+  useEffect(()=>{if(!data)return;document.title=data.name+' · 直播场次汇总';
+   for(const [key,value] of [['description',data.name+'的直播场次汇总：平均在线、峰值在线、累计看过、关注变化与礼物统计。'],['robots','noindex,nofollow']]){
+    let meta=document.querySelector<HTMLMetaElement>('meta[name="'+key+'"]');
+    if(!meta){meta=document.createElement('meta');meta.name=key;document.head.append(meta);}meta.content=value;
+   }
+  },[data?.name]);
  const selected=data?.days.find(d=>d.date===date)||data?.days[0];
  const sessions=data?.sessions.filter(s=>selected?.session_keys.includes(s.key))||[];
  const days=data?.days.slice(0,30).reverse()||[];
@@ -30,7 +36,8 @@ export function RoomArchive({base,roomId}:{base:string;roomId:string}){
    <a href={'https://live.bilibili.com/'+roomId} target="_blank" rel="noreferrer">打开直播间 ↗</a></header>
   {error&&<p role="alert">{error}；已有内容保留，稍后自动重试。</p>}
   {!data&&!error&&<p>正在读取历史场次…</p>}
-  {data&&<>
+   {data&&<>
+    <SessionSummaryTable rows={data.summaries||[]} base={base} shared={data.summary_source==='shared'}/>
    <section className="archive-panel"><div className="archive-section-title"><h2>每日趋势</h2><select aria-label="趋势指标" value={metric} onChange={e=>setMetric(e.target.value as typeof metric)}>
     <option value="gift_amount_yuan">礼物平台金额（元）</option><option value="danmaku">弹幕条数</option><option value="entries">进房次数</option><option value="coverage_seconds">转写覆盖时长</option></select></div>
     {days.length?<div className="archive-bars">{days.map(d=><button key={d.date} className={'archive-bar '+(d===selected?'selected':'')} onClick={()=>setDate(d.date)} aria-label={d.date+' 查看当天'}>
