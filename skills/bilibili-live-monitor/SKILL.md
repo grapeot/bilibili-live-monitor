@@ -80,7 +80,7 @@ python -m bilibili_live_monitor run --until 2030-01-01T22:00:00-08:00
 
 临时断流默认按2秒起指数退避，300秒封顶，连续第20次失败后停止自动重试并标为人工处理；连续有效采集60秒才重置。`MAX_RECONNECTS=20`、`RETRY_DELAY=2`、`RETRY_MAX_DELAY=300`为对应配置。房间状态包含`reconnect_attempts`与`next_retry_utc`。明确403/412/429不走持续重试，仍须人工确认后resume。专用Chrome保留`about:blank#live-monitor-anchor`空白页供查播与下一次开播复用，不要把它当作无用标签页关闭。
 
-每房间独立Page并静音。仅启用ASR时，video.captureStream音轨经AudioContext(16000Hz)与AudioWorklet收PCM，Worklet输出置0不外放。ASR与缩略图都关闭时暂停网页视频，后台录制独立进行。复用网页已有WebSocket采集弹幕，不另建连接。缩略图仅显式启用、卡片可见且页面前台时请求。
+每房间独立Page并静音。audio录制或启用ASR时，video.captureStream音轨经AudioContext(16000Hz)与AudioWorklet收PCM，Worklet输出置0不外放。audio模式关闭ASR也必须播放；只有不需要audio/ASR/预览时才暂停网页视频，video录制由FFmpeg独立进行，none不保存媒体。复用网页已有WebSocket采集弹幕，不另建连接。缩略图仅显式启用、卡片可见且页面前台时请求。
 
 仅录制模式同时对顶层与子frame启用低渲染：根元素透明，并监听新增视频/自动播放以维持暂停。Chrome直播页不再显示画面，dashboard仍正常；页面布局、动画时序、脚本和WebSocket保留，ffmpeg继续独立录制。不全局冻结CSS动画，以免淡入式验证码始终透明而漏报。ASR或预览开启时不安装低渲染守卫，选项改变由平台关闭旧页再创建。`python scripts/verify_low_render.py --cdp-url <本机CDP>`可在独立合成页验证播放防护、静态/淡入验证码判据及非pause路径，不访问真实直播。
 
@@ -111,7 +111,7 @@ python scripts/live_smoke.py --rooms 30 --segments 2 --wait-seconds 180 --output
 
 真实直播测试须显式启动，使用本机算力与网络；失败记录不能覆盖或改记为通过。--resume可沿用同次运行序号基线继续等待，输出另存以保留前一份证据。
 
-有效窗口要求源音轨live/enabled/非mute、覆盖率90%～120%、媒体进度至少墙钟80%、缺输入≤1600样本、源mute≤100ms、无缓冲丢样。低RMS不等于语音检测；游戏和音乐仍可能误识别。队列过载显式记录，默认连续重连5次、有效采集后归零；ASR进程/通信失败同段重启重试一次。
+有效窗口要求源音轨live/enabled/非mute、覆盖率90%～120%、媒体进度至少墙钟80%、缺输入≤1600样本、源mute≤100ms、无缓冲丢样。低RMS不等于语音检测；游戏和音乐仍可能误识别。队列过载显式记录；重连预算与重置条件见上文“临时断流”，不采用旧独立切片的5次预算。ASR恢复按当前流式上下文规则处理，不能跨缺口拼接。
 
 30路各两个有效窗口已短测验证，包含恢复，不保证无间隙、弹幕全量或长期稳定。可选的持久欢迎、开下播通知、账号与点赞控制见`docs/persistent_automation.md`；未配置时不启用这些外发能力。
 
@@ -119,7 +119,7 @@ python scripts/live_smoke.py --rooms 30 --segments 2 --wait-seconds 180 --output
 
 多个账号/匿名实例可用统一看板汇总：`python -m bilibili_live_monitor.dashboard_gateway --config /PRIVATE/dashboard.json --port 8767`。配置为 `{"instances":[{"id":"account","label":"账号监控","url":"http://127.0.0.1:8765"},{"id":"guest","label":"匿名监控","mode":"anonymous","url":"http://127.0.0.1:8766","session_root":"/PRIVATE/sessions"}]}`。仅接收明确配置的本机HTTP上游，前端按实例隔离实时状态与操作；固定名单未开播房间仍显示守候卡。可选session_root只提供各场public下的index.html和snapshot.json，房间卡可打开本地最终结果，不开放原始数据目录。网关不接管或重启采集进程。
 
-实例可加 `"archive":{"database":"/PRIVATE/monitor.sqlite3","rooms":{"123456":"示例主播"}}` 启用只读房间主页，入口为 `/instances/<id>/rooms/<room_id>/`。按北京时间自然日汇总，跨日场次保留完整详情；无观测的日期显示未知。主页扫描session_root下的历史场次，不受实时API最近场次条数限制；每30秒刷新，只开放配置名单，不返回数据库路径、原始消息或观众标识。
+实例可加 `"archive":{"database":"/PRIVATE/monitor.sqlite3","rooms":{"123456":"示例主播"}}` 启用只读房间主页，入口为 `/instances/<id>/rooms/<room_id>/`。主页包含按开播日期归属的整场汇总、平均在线/每场礼物总金额双轴图，以及北京时间自然日明细；跨日场次保留完整详情，无观测显示未知。可配置summary_files投影已有汇总，summary_origins只用于受限的历史详情来源回退，字段形状见示例配置及 `archive_summary.py`。扫描session_root下的历史场次不受实时API最近条数限制；每30秒刷新，只开放配置名单，不返回数据库路径、原始消息或观众标识。
 
 账号配置 `profiles.<id>.mode` 支持 `account`（默认）与 `anonymous`。匿名 profile 使用独立、持久的未登录 Chrome 目录，保留设备 Cookie，不复制其他账号 Cookie。切换沿用现有账号接口；匿名模式不打开登录页、不发送欢迎或点赞，实时 ASR、采集与独立程序/内容 AI 巡检继续按配置运行。登录态核验发现匿名目录意外登录时关闭该 Chrome。
 
