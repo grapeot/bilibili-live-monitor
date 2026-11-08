@@ -25,24 +25,26 @@ def window(start, end, title=None):
 def gift(second, ident, count=1, amount=1000, **extra):
     return ('gift', at(second), {'source_key': str(ident), 'gift': {
         'event_type': 'SEND_GIFT', 'event_id': str(ident), 'sender_uid': 'private-uid',
-        'num': count, 'coin_type': 'gold', 'total_coin': amount, **extra}})
+        'num': count, 'coin_type': 'gold', 'total_coin': amount,
+        'time_source': 'event', 'event_at_utc': at(second), **extra}})
 
 
 def fan(second, count):
     return (at(second), 'ROOM_REAL_TIME_MESSAGE_UPDATE', {'data': {'fans': count}})
 
 
-def test_song_tail_window_and_overall_do_not_sum_overlapping_rows():
+def test_boundary_gifts_belong_to_one_content_interval():
     source = {'raw': [fan(0, 100), fan(30, 101), fan(119, 105), fan(120, 109)], 'segments': [],
               'items': [gift(30, 'a', 2, 2000), gift(119, 'b', 3, 6000), gift(120, 'c')]}
     rows = summarize_activity(source, [window(0, 30), window(30, 90, '测试歌'), window(90, 150)], epoch(at(200)))
-    assert [r['kind'] for r in rows] == ['talk', 'song', 'talk']
-    assert rows[1]['followers_change'] == 4
-    assert rows[1]['gift_count'] == 5 and rows[1]['gift_amount_yuan'] == 8
-    assert rows[1]['window_end'] == at(120) and rows[1]['status'] == 'complete'
+    assert [r['kind'] for r in rows] == ['talk', 'song', 'talk', 'unclassified']
+    assert rows[1]['followers_change'] == 0
+    assert rows[1]['gift_count'] == 2 and rows[1]['gift_amount_yuan'] == 2
+    assert rows[1]['window_end'] == at(90) and rows[1]['status'] == 'complete'
     total = summarize_session(source)
     assert total['gift_count'] == 6 and total['gift_amount_yuan'] == 9
-    assert total['gift_count'] < sum(r['gift_count'] for r in rows)
+    assert total['gift_count'] == sum(r['gift_count'] for r in rows)
+    assert total['gift_amount_yuan'] == sum(r['gift_amount_yuan'] for r in rows)
 
 
 def test_displayed_other_content_separates_but_time_gaps_do_not():
@@ -93,17 +95,17 @@ def test_recovery_gap_summary_recomputes_gifts_without_overlap_double_count():
     source = {'raw': [fan(0, 10), fan(80, 12)], 'segments': [],
               'items': [gift(50, 'once'), gift(100, 'tail')]}
     rows = summarize_activity(source, [window(0, 30), window(65, 95)], epoch(at(150)))
-    assert len(rows) == 1
-    assert rows[0]['gift_count'] == 2 and rows[0]['gift_amount_yuan'] == 2
-    assert rows[0]['followers_change'] == 2
+    assert [r['kind'] for r in rows] == ['talk', 'unclassified', 'talk', 'unclassified']
+    assert [r['gift_count'] for r in rows] == [0, 1, 0, 1]
+    assert sum(r['gift_amount_yuan'] for r in rows) == 2
 
 
 def test_missing_followers_and_unfinished_tail_are_explicit():
     source = {'raw': [fan(40, 1)], 'segments': [], 'items': []}
     row = summarize_activity(source, [window(30, 90, '测试歌')], epoch(at(100)))[0]
     assert row['followers_change'] is None and row['status'] == 'collecting'
-    assert row['window_end'] == at(100)
-    assert summarize_activity(source, [window(30, 90, '测试歌')], epoch(at(100)), completed=True)[0]['status'] == 'partial'
+    assert row['window_end'] == at(90)
+    assert summarize_activity(source, [window(30, 90, '测试歌')], epoch(at(100)), completed=True)[0]['status'] == 'complete'
 
 
 @pytest.mark.parametrize('label,music_source', [('singing', 'recording'), ('unknown', 'uncertain')])
@@ -112,9 +114,9 @@ def test_excluded_following_content_still_closes_previous_song(label, music_sour
     activity = [window(0, 30, '测试歌'), following]
     source = {'raw': [fan(0, 100), fan(50, 101)], 'items': [], 'segments': []}
     rows = summarize_activity(source, activity, epoch(at(90)))
-    assert len(rows) == 1 and rows[0]['status'] == 'complete'
-    assert rows[0]['window_end'] == at(60)
-    assert summarize_activity(source, activity, epoch(at(45)))[0]['status'] == 'collecting'
+    assert len(rows) == 2 and rows[0]['status'] == 'complete'
+    assert rows[0]['window_end'] == at(30)
+    assert summarize_activity(source, activity, epoch(at(45)))[0]['status'] == 'complete'
 
 
 def test_session_scope_watched_and_public_html_module_order():

@@ -222,13 +222,14 @@ def make_snapshot(source: dict, *, start: str, now: str, label: str, phase: str,
     for key in ('latest_transcript_at', 'latest_message_at'):
         safe_health[key] = safe_time(health.get(key))
     from .activity_summary import summarize_activity, summarize_gifters, summarize_session
-    return {'schema_version': 1, 'label': label, 'session_start': start, 'updated_at': now,
+    return {'schema_version': 1, 'activity_accounting_version': 2,
+            'label': label, 'session_start': start, 'updated_at': now,
             'phase': phase, 'series': {k: sorted(v.values()) for k, v in buckets.items()},
             'latest': latest, 'counts': counts, 'health': safe_health,
             'activity': activity, 'ai_updated_at': safe_time(annotations.get('updated_at')),
             'coverage': [[s['start_utc'], s['end_utc']] for s in segments.values()],
             'followups': public_followups(source, start, annotations, followup_overrides, approved_songs, followup_rules),
-            'activity_summary': summarize_activity(source, activity, upper, completed=phase == 'completed'),
+            'activity_summary': summarize_activity(source, activity, upper, completed=phase == 'completed', start=lower),
             'session_summary': summarize_session(source),
             'gift_summary': summarize_gifters(source),
             'notes': ['在线人数为平台上报口径；入场、礼物为本系统收到的事件数。',
@@ -323,17 +324,22 @@ def render_snapshot(snapshot: dict, *, navigation=None) -> str:
               (followups or '<li>暂无灯牌或盲盒点歌记录</li>') + '</ul></section>')
     rows = []
     for item in snapshot.get('activity_summary', []):
-        title = (item['title'] or '歌名待确认') if item['kind'] == 'song' else '杂谈'
+        title = ((item['title'] or '歌名待确认') if item['kind'] == 'song' else
+                 '杂谈' if item['kind'] == 'talk' else '未分类／无内容记录')
+        if item.get('time_unknown'):
+            title = '未分类／礼物事件时间不明'
         song_attr = f' data-song-catalog-title="{esc(title)}"' if item['kind'] == 'song' else ''
         change = item['followers_change']
         fans = '—' if change is None else f'{change:+d}' if change else '0'
         count = str(item['gift_count']) + ('+' if item['gift_count_unknown'] else '')
         amount = f'{item["gift_amount_yuan"]:.2f}' + ('+' if item['gift_amount_unknown'] else '')
         state = {'complete': '', 'collecting': '统计中', 'partial': '尾窗未满'}[item['status']]
-        rows.append(f'<tr><td>{clock(epoch(item["start"]))}–{clock(epoch(item["end"]))}</td>'
+        period = '—' if item.get('time_unknown') else f'{clock(epoch(item["start"]))}–{clock(epoch(item["end"]))}'
+        rows.append(f'<tr><td>{period}</td>'
                     f'<td{song_attr}>{esc(title)}</td><td>{fans}</td><td>{count}</td><td>{amount}</td><td>{state}</td></tr>')
     footer += ('<section id="activity-summary"><h2>歌曲与杂谈</h2>'
-               '<p>统计至每段结束后30秒；相邻段可能重叠。涨粉为净变化，金额为平台报告金额，非主播实收。'
+               '<p>按礼物发生时间归入互不重叠的内容区间；每笔仅计一次，缺口或内容不明列为未分类。'
+               '涨粉为区间内观测净变化，金额为平台报告金额，非主播实收。'
                '“+”表示另有金额或数量未知的礼物。</p><div class="activity-table"><table>'
                '<thead><tr><th>时间段</th><th>内容</th><th>涨粉</th><th>礼物数</th><th>金额（元）</th><th>状态</th></tr></thead>'
                '<tbody>' + (''.join(rows) or '<tr><td colspan="6">暂无已识别的内容片段</td></tr>') +
