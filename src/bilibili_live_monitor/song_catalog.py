@@ -11,8 +11,8 @@ from pathlib import Path
 from urllib.parse import urlencode, urljoin, urlsplit
 from zoneinfo import ZoneInfo
 
-from .activity_summary import content_blocks
-from .time_utils import epoch
+from .activity_summary import content_blocks, content_spans
+from .time_utils import epoch, iso
 
 
 def key(value):
@@ -60,6 +60,7 @@ class SongHits(HTMLParser):
 
 def performances(session):
     """现代页读已发布快照；历史页只读已显示的歌曲命中区，不读私有歌词。"""
+    cutoff = None
     if session.get('snapshot'):
         snapshot = json.loads(Path(session['snapshot']).read_text())
         if snapshot.get('phase') != 'completed':
@@ -67,6 +68,8 @@ def performances(session):
         if session.get('start') and epoch(snapshot['session_start']) != epoch(session['start']):
             raise ValueError('场次起始时间与快照不一致')
         rows = snapshot.get('activity', [])
+        if snapshot.get('updated_at'):
+            cutoff = epoch(snapshot['updated_at'])
     else:
         parser = SongHits()
         parser.feed(Path(session['html']).read_text())
@@ -80,7 +83,15 @@ def performances(session):
                  'end': datetime.fromtimestamp(b, ZoneInfo('UTC')).isoformat(),
                  'song': title, 'label': 'singing', 'music_source': 'probable_live'}
                 for a, b, title in sorted(parser.hits)]
-    return [r for r in content_blocks(rows, include_segments=True) if r['kind'] == 'song' and r['title']]
+    spans = content_spans(rows)
+    rows = [{'start': iso(r['start']), 'end': iso(r['end']), 'song': r['title'],
+             'label': 'singing' if r['kind'] == 'song' else 'speaking',
+             'music_source': ('probable_live' if r['kind'] == 'song' else
+                              'none' if r['kind'] == 'talk' else 'recording')} for r in spans]
+    result = [r for r in content_blocks(rows, include_segments=True) if r['kind'] == 'song' and r['title']]
+    for row in result:
+        row['include_end'] = row['end'] == cutoff
+    return result
 
 
 def catalog(config, previous=None):
@@ -136,7 +147,8 @@ def catalog(config, previous=None):
                           else dict(identity) for identity in identities]
             used.update([pid, *aliases])
             row = {'id': pid, 'song_id': song_id, 'session_id': sid, 'session': session['label'],
-                   'title': title, 'start': start, 'end': end, 'segments': block['segments'],
+                    'title': title, 'start': start, 'end': end, 'segments': block['segments'],
+                    'include_end': block['include_end'],
                    'aliases': aliases, 'identities': identities,
                    'url': url + '#' + urlencode({'song': title, 'at': start})}
             group = result.setdefault(song_id, {'id': song_id, 'title': title, 'performances': []})
@@ -208,7 +220,7 @@ def render(data):
             f'<h1>{esc(song["title"])}</h1><p>{esc(data["label"])} · {song["count"]} 次出现</p>'
             + '<p class="muted">歌曲片段可能是主播演唱，也可能是播放的音乐，目前尚未具备可靠区分两者的功能。</p>'
             + render_gifts(song.get('gifts')) + render_followers(song.get('followers_change'))
-            + '<p class="muted">每次歌曲片段开始前30秒至结束后2分钟；同歌重叠窗口按礼物事件去重，人数跨次去重。金额为平台标价，非主播实收；“+”表示另有未知记录。净增关注为窗口内关注总数之差，可能为负，同歌重叠窗口只计一次；观测不足时不记作0，不代表歌曲带来的新增人数。</p>'
+            + '<p class="muted">礼物仅统计歌曲实际片段内有事件时间的记录，不延伸到片段前后或缺口；人数跨次去重。金额为平台标价，非主播实收；“+”表示另有未知记录。净增关注仍按片段前30秒至结束后2分钟的关注总数之差统计，可能为负，同歌重叠窗口只计一次；观测不足时不记作0，不代表歌曲带来的新增人数。</p>'
             + f'<ul>{"".join(rows)}</ul>')
     script = '''<script>const q=document.querySelector('#search'),cards=[...document.querySelectorAll('.card')];
 const grid=document.querySelector('.cards'),buttons=[...document.querySelectorAll('[data-sort-key]')];

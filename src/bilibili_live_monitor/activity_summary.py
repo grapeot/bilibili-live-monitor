@@ -1,7 +1,48 @@
 """按已标注的唱歌/杂谈区间汇总观测值，不将时间相关性解释为因果。"""
 from bisect import bisect_left, bisect_right
+from collections import Counter
 
 from .time_utils import epoch, iso
+
+
+def content_spans(activity, *, start=None, end=None):
+    """将内容标签规范为互斥区间；冲突、隐藏内容和缺口不猜归属。"""
+    rows = [(epoch(r['start']), epoch(r['end']), r) for r in activity
+            if epoch(r['end']) > epoch(r['start'])]
+    if start is None:
+        start = min((a for a, _, _ in rows), default=end)
+    if end is None:
+        end = max((b for _, b, _ in rows), default=start)
+    if start is None or end is None or end <= start:
+        return []
+    events = {}
+    for index, (a, b, row) in enumerate(rows):
+        a, b = max(a, start), min(b, end)
+        if b <= a:
+            continue
+        if row.get('music_source') == 'recording':
+            key = ('unclassified', None)
+        elif row.get('label') == 'singing' and row.get('music_source') == 'probable_live':
+            key = ('song', row.get('song'))
+        elif row.get('label') == 'speaking' and row.get('music_source') in ('none', 'probable_live'):
+            key = ('talk', None)
+        else:
+            key = ('unclassified', None)
+        events.setdefault(a, []).append((1, index, b, key))
+        events.setdefault(b, []).append((-1, index, b, key))
+    # 分片粒度不决定归属；任意同时覆盖的矛盾标签均保守归为未分类。
+    active, spans = Counter(), []
+    points = sorted({start, end, *events})
+    for a, b in zip(points, points[1:]):
+        for action, index, stop, key in events.get(a, []):
+            active[key] += action
+        keys = {key for key, count in active.items() if count > 0}
+        kind, title = next(iter(keys)) if len(keys) == 1 else ('unclassified', None)
+        if spans and (spans[-1]['kind'], spans[-1]['title']) == (kind, title):
+            spans[-1]['end'] = b
+        else:
+            spans.append({'start': a, 'end': b, 'kind': kind, 'title': title})
+    return spans
 
 
 def content_blocks(activity, *, include_segments=False):
@@ -49,7 +90,7 @@ def gift_amount(gift):
     return None
 
 
-def gift_observations(source, *, platform_uid=False):
+def gift_observations(source, *, platform_uid=False, event_time_only=False):
     gifts, seen = [], set()
     for index, (kind, at, data) in enumerate(source['items']):
         gift = data.get('gift')
@@ -72,7 +113,14 @@ def gift_observations(source, *, platform_uid=False):
             if (data.get('sender_hidden') or data.get('identity_status') == 'unresolved'
                     or not str(uid).isdigit() or int(uid) <= 0):
                 uid = None
-        gifts.append((epoch(at), count, gift_amount(gift), uid, str(data.get('author') or '')[:200]))
+        observed_at = epoch(at)
+        if event_time_only:
+            event_at = gift.get('event_at_utc')
+            try:
+                observed_at = epoch(event_at) if event_at and gift.get('time_source') != 'received' else None
+            except (ValueError, TypeError, AttributeError):
+                observed_at = None
+        gifts.append((observed_at, count, gift_amount(gift), uid, str(data.get('author') or '')[:200]))
     return gifts
 
 
@@ -119,20 +167,23 @@ def render_gifters(rows):
             '“+”表示另有金额或数量未知的礼物。</p></section>')
 
 
-def summarize_activity(source, activity, cutoff, *, completed=False):
-    blocks = content_blocks(activity)
-    reviewed_until = max((epoch(item['end']) for item in activity), default=0)
+def summarize_activity(source, activity, cutoff, *, completed=False, start=None):
+    blocks = content_spans(activity, start=start, end=cutoff)
+    starts = sorted(epoch(item['start']) for item in activity)
     stocks, gifts = observations(source)
+    gifts = [item[:3] for item in gift_observations(source, event_time_only=True)]
     times = [time for time, _ in stocks]
     result = []
     for block in blocks:
         start, end = block['start'], block['end']
-        target = end + 30
+        target = end
         observed_end = min(target, cutoff)
         start_index, end_index = bisect_right(times, start) - 1, bisect_left(times, observed_end) - 1
         change = stocks[end_index][1] - stocks[start_index][1] if start_index >= 0 and end_index >= 0 else None
-        selected = [(count, amount) for at, count, amount in gifts if start <= at < observed_end]
-        closed = completed or reviewed_until > end
+        selected = [(count, amount) for at, count, amount in gifts if at is not None and
+                    (start <= at < observed_end or at == cutoff == end)]
+        next_start = bisect_left(starts, end)
+        closed = completed or (end < cutoff and next_start < len(starts) and starts[next_start] <= cutoff)
         result.append({'kind': block['kind'], 'title': block['title'], 'start': iso(start), 'end': iso(end),
                        'window_end': iso(observed_end), 'followers_change': change,
                        'gift_count': sum(count for count, _ in selected if count is not None),
@@ -140,7 +191,17 @@ def summarize_activity(source, activity, cutoff, *, completed=False):
                        'gift_amount_yuan': sum(amount for _, amount in selected if amount is not None) / 1000,
                        'gift_amount_unknown': sum(amount is None for _, amount in selected),
                        'status': 'complete' if closed and cutoff >= target else
-                       'partial' if completed else 'collecting'})
+                        'partial' if completed else 'collecting'})
+    uncertain = [(count, amount) for at, count, amount in gifts if at is None]
+    if uncertain:
+        result.append({'kind': 'unclassified', 'title': None, 'time_unknown': True,
+                       'start': result[0]['start'] if result else iso(cutoff), 'end': iso(cutoff),
+                       'window_end': iso(cutoff), 'followers_change': None,
+                       'gift_count': sum(count for count, _ in uncertain if count is not None),
+                       'gift_count_unknown': sum(count is None for count, _ in uncertain),
+                       'gift_amount_yuan': sum(amount for _, amount in uncertain if amount is not None) / 1000,
+                       'gift_amount_unknown': sum(amount is None for _, amount in uncertain),
+                       'status': 'complete' if completed else 'collecting'})
     return result
 
 
@@ -155,3 +216,17 @@ def summarize_session(source):
             'gift_amount_yuan': sum(amount for _, _, amount in gifts if amount is not None) / 1000,
             'gift_amount_unknown': sum(amount is None for _, _, amount in gifts),
             'watched': watched[-1][1] if watched else None}
+
+
+def accounting_errors(snapshot):
+    """新版金额分区必须守恒，旧快照在回填前不冒充新版数据。"""
+    if snapshot.get('activity_accounting_version') != 2:
+        return []
+    rows, total = snapshot['activity_summary'], snapshot['session_summary']
+    errors = []
+    for field in ('gift_count', 'gift_count_unknown', 'gift_amount_yuan', 'gift_amount_unknown'):
+        actual = sum(round(row[field] * 1000) for row in rows) if field == 'gift_amount_yuan' else sum(row[field] for row in rows)
+        expected = round(total[field] * 1000) if field == 'gift_amount_yuan' else total[field]
+        if actual != expected:
+            errors.append('activity_accounting_mismatch:' + field)
+    return errors

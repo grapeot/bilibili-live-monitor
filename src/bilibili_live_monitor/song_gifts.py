@@ -8,8 +8,17 @@ from .activity_summary import gift_observations
 from .time_utils import epoch, iso
 
 
-def summarize(events, windows, coverage):
-    selected = [event for event in events if any(a <= event[0] < b for a, b in windows)]
+def performance_windows(performance):
+    """展示可以合并同歌；礼物仅查询实际内容区间，不延伸到间隙。"""
+    segments = performance.get('segments')
+    if segments is None:
+        return [(performance['start'], performance['end'])]
+    return [(epoch(s['start']) if isinstance(s['start'], str) else s['start'],
+             epoch(s['end']) if isinstance(s['end'], str) else s['end']) for s in segments]
+
+
+def summarize(events, windows, coverage, *, inclusive_ends=()):
+    selected = [event for event in events if event[0] in inclusive_ends or any(a <= event[0] < b for a, b in windows)]
     return {'gift_count': sum(e[1] or 0 for e in selected),
             'gift_count_unknown': sum(e[1] is None for e in selected),
             'gift_users': len({str(e[3]) for e in selected if e[3]}),
@@ -29,8 +38,8 @@ def add_gift_stats(data, sessions):
             session_sources[str(session['id'])] = source_id
             sources[source_id] = None
     for source_id in sources:
-        windows = [(p['start'] - 30, p['end'] + 120) for s in data['songs'] for p in s['performances']
-                   if session_sources.get(p['session_id']) == source_id]
+        windows = [w for s in data['songs'] for p in s['performances']
+                   if session_sources.get(p['session_id']) == source_id for w in performance_windows(p)]
         if not windows:
             sources[source_id] = ([], [])
             continue
@@ -51,24 +60,29 @@ def add_gift_stats(data, sessions):
                 coverage[-1][1] = at
             else:
                 coverage.append([at, at])
-        sources[source_id] = (gift_observations({'items': items}), coverage)
+        sources[source_id] = ([e for e in gift_observations({'items': items}, event_time_only=True)
+                               if e[0] is not None], coverage)
     for song in data['songs']:
         by_source = {}
+        inclusive_by_source = {}
         for performance in song['performances']:
             source_id = session_sources.get(performance['session_id'])
             if source_id is None:
                 performance['gifts'] = None
                 continue
-            window = (performance['start'] - 30, performance['end'] + 120)
+            windows = performance_windows(performance)
+            inclusive_ends = [performance['end']] if performance.get('include_end') else []
             events, coverage = sources[source_id]
-            performance['gifts'] = summarize(events, [window], coverage)
-            performance['gifts'].update(window_start=window[0], window_end=window[1])
-            by_source.setdefault(source_id, []).append(window)
+            performance['gifts'] = summarize(events, windows, coverage, inclusive_ends=inclusive_ends)
+            performance['gifts'].update(window_start=performance['start'], window_end=performance['end'])
+            by_source.setdefault(source_id, []).extend(windows)
+            inclusive_by_source.setdefault(source_id, []).extend(inclusive_ends)
         if len(by_source) != 1 or any(p['gifts'] is None for p in song['performances']):
             song['gifts'] = None
         else:
             source_id, windows = next(iter(by_source.items()))
-            song['gifts'] = summarize(sources[source_id][0], windows, sources[source_id][1])
+            song['gifts'] = summarize(sources[source_id][0], windows, sources[source_id][1],
+                                      inclusive_ends=inclusive_by_source[source_id])
 
 
 def render_gifts(stats):
@@ -78,4 +92,4 @@ def render_gifts(stats):
     users = str(stats['gift_users']) + ('+' if stats['gift_users_unknown_events'] else '')
     amount = f'{stats["gift_amount_yuan"]:,.2f}' + ('+' if stats['gift_amount_unknown'] else '')
     note = '' if stats['window_complete'] else ' · 统计窗口未完整覆盖'
-    return f'<p class="song-gifts">礼物 {count} 件 · 送礼 {users} 人 · ¥{amount}{note}</p>'
+    return f'<p class="song-gifts">片段内礼物 {count} 件 · 送礼 {users} 人 · ¥{amount}{note}</p>'

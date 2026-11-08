@@ -28,7 +28,7 @@ def test_grouped_talk_keeps_capture_gap_visible(monkeypatch):
          'music_source': 'none', 'song': None} for a, b in [(0, 30), (65, 95)]]
     result['coverage'] = [(r['start'], r['end']) for r in result['activity']]
     result['activity_summary'] = summarize_activity(source, result['activity'], start+120)
-    assert len(result['activity_summary']) == 1
+    assert [r['kind'] for r in result['activity_summary']] == ['talk', 'unclassified', 'talk', 'unclassified']
     rendered = {}
     def render(data, bands, songs, **kwargs):
         rendered.update(bands=bands, songs=songs)

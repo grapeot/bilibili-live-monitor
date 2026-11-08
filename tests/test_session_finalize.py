@@ -107,8 +107,9 @@ def test_finalization_automatically_groups_content_and_builds_linkable_catalog(t
     assert final.complete(config)
     snapshot = json.loads((workspace / 'public/snapshot.json').read_text())
     assert snapshot['phase'] == 'completed'
-    assert [r['kind'] for r in snapshot['activity_summary']] == ['song', 'talk', 'song']
-    assert snapshot['activity_summary'][0]['end'] == iso(start + 70)
+    classified = [r for r in snapshot['activity_summary'] if r['kind'] != 'unclassified']
+    assert [r['kind'] for r in classified] == ['song', 'song', 'song', 'talk', 'talk', 'song']
+    assert classified[0]['end'] == iso(start + 20)
     page = (workspace / 'public/index.html').read_text()
     assert 'id="song-catalog-links"' in page and '歌曲搜索</a>' in page
     data = catalog({'scope': 'test', 'label': '测试', 'home_url': 'https://example.test/archive/',

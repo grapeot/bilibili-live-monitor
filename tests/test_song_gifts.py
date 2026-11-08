@@ -21,7 +21,8 @@ def test_sqlite_backfill_deduplicates_events_and_aggregate_overlap(tmp_path):
         db.executescript('CREATE TABLE timeline(id INTEGER, room_id TEXT, kind TEXT, at_utc TEXT, data TEXT);'
                          'CREATE TABLE raw_events(room_id TEXT, received_utc TEXT);')
         gift = {'sender_uid': 'a', 'gift': {'sender_uid': 'a', 'event_type': 'SEND_GIFT',
-                'event_id': 'one', 'num': 2, 'coin_type': 'gold', 'total_coin': 6000}}
+                'event_id': 'one', 'num': 2, 'coin_type': 'gold', 'total_coin': 6000,
+                'time_source': 'event', 'event_at_utc': iso(start+100)}}
         for ident, room in [(1, '1'), (2, '1'), (3, '2')]:
             db.execute('INSERT INTO timeline VALUES (?,?,?,?,?)', (ident, room, 'gift', iso(start+100), json.dumps(gift)))
         db.execute('INSERT INTO raw_events VALUES (?,?)', ('1', iso(start+400)))
@@ -31,7 +32,7 @@ def test_sqlite_backfill_deduplicates_events_and_aggregate_overlap(tmp_path):
     add_gift_stats(data, [{'id': 's', 'gift_source': {'database': str(path), 'room_id': '1'}}])
     song = data['songs'][0]
     assert song['performances'][0]['gifts']['gift_count'] == 2
-    assert song['performances'][1]['gifts']['gift_count'] == 2
+    assert song['performances'][1]['gifts']['gift_count'] == 0
     assert song['gifts']['gift_count'] == 2 and song['gifts']['gift_users'] == 1
     assert song['gifts']['gift_amount_yuan'] == 6
     assert path.read_bytes() == original
