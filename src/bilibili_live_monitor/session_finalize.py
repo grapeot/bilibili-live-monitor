@@ -193,6 +193,8 @@ def submit(config, session, on_handoff=lambda: None):
 最后运行：{command} finish {flag}。若报缺失或未登记歌曲，在本会话解决后重试finish，成功后报告“AI复核完成，等待程序发布最终页”，不把AI完成说成页面已经发布。
 后台子任务尚未结束时不能finish，也不能把等待回执时的idle当作总任务结束。不要创建定时任务，不发直播消息，不访问凭据或控制API。
 '''
+    from .local_lyrics import agent_prompt
+    prompt += agent_prompt(config, final=True)
     prompt += correction_prompt(Path(config['workspace']))
     dispatch(config, session, prompt, root, on_handoff)
 
