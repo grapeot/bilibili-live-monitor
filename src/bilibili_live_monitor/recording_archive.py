@@ -157,8 +157,9 @@ def writer_lock(root):
 
 def check_source(item):
     source = Path(item['source'])
-    if json.loads(Path(item['workflow']).read_text()).get('stage') != 'completed':
-        raise ValueError('场次不再是completed')
+    for workflow in item.get('workflows', [item['workflow']]):
+        if json.loads(Path(workflow).read_text()).get('stage') != 'completed':
+            raise ValueError('场次不再是completed')
     if file_stat(source) != item['source_stat'] or time.time() - source.stat().st_mtime < 10:
         raise ValueError('原片改变或刚刚写入')
     no_writer(source)
@@ -187,7 +188,8 @@ def encode(item, lock_fd):
                  '-profile:v', 'main', '-pix_fmt', 'yuv420p', '-b:v', '2800k',
                  '-color_range', 'tv', '-colorspace', 'bt709', '-color_trc', 'bt709', '-color_primaries', 'bt709',
                   '-fps_mode', 'passthrough', '-enc_time_base:v', 'filter', '-video_track_timescale', '1000000',
-                  '-c:a', 'copy', '-tag:v', 'hvc1', str(temporary)], pass_fds=(lock_fd,))
+                   '-c:a', 'copy', '-tag:v', 'hvc1', str(temporary)],
+                pass_fds=(lock_fd,) if isinstance(lock_fd, int) else tuple(lock_fd))
         output_info = verify_output(source_info, temporary)
         check_source(item)
         if temporary.stat().st_size >= source.stat().st_size:
