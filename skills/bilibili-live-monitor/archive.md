@@ -45,4 +45,19 @@ python -m bilibili_live_monitor archive cleanup --sessions-root /PRIVATE/live_se
 
 先用隔离副本真实转码、移走或清理该副本，验证已有转写读取、归档解码、试听导出与剪辑输入解析。通过后才扩大到一场及历史批量。检查源变化、成品损坏、无音轨、同名输出、编码中断和并行启动都不会清理原片。
 
-未来可由独立周期任务重复执行 `run --execute --max-files 1`，只扫描新 completed 场次；不要把存储维护插进原 finalization，也不调用 CRM、发布或通知。启用周期任务与自动永久清理需要用户明确授权。先限制一个编码器，在低负载时验证对录制和 ASR 的影响，不以硬件编码推断零资源影响。
+## 独立周期任务与历史回填
+
+```bash
+# 默认只读盘点；sessions-root 可重复指定，跨目录同源只处理一次。
+python -m bilibili_live_monitor.archive_daily \
+  --sessions-root /PRIVATE/live_sessions --sessions-root /PRIVATE/guest_sessions \
+  --workers 2 --trash-originals
+# 每日调度与一次性历史回填使用同一个命令；先取得明确执行授权。
+python -m bilibili_live_monitor.archive_daily \
+  --sessions-root /PRIVATE/live_sessions --sessions-root /PRIVATE/guest_sessions \
+  --workers 2 --trash-originals --execute --report-dir /PRIVATE/archive_reports
+```
+
+`--workers` 仅支持1或2，默认2；`--max-files` 可限制一次验收的数量。执行前按固定顺序取得所有根目录的既有归档锁，编码子进程继承全部锁；与手动归档及重叠周期互斥。同源身份冲突或仍有未完成场次引用时跳过。仅处理清单内的 completed 视频，不修改直播收尾、ASR、发布或通知状态。
+
+每份成品先完成原有完整解码与规格验收，再检查旧清单身份和归档读取入口。仅显式 `--trash-originals` 才执行重验后Trash，不支持永久删除或清空废纸篓。失败逐文件记录并保留原片，其他作业继续；退出码1表示有失败，`complete=true`仅表示本轮结束，不代表全部成功。重复执行跳过已移走原片的归档，继续新录像或尚未成功的文件。每轮计划与进度保存在 `report-dir/<UTC时间>/`，`latest.json` 指向本轮状态。周期频率、真实路径及启用状态留在本机私有配置，新增调度须取得授权。

@@ -580,3 +580,10 @@
 ## 本地房间主页的远程入口
 
 - 部署通过 `VITE_ROOM_ARCHIVE_URLS` 注入房间号到远程主页 HTTPS 地址的 JSON 映射。本地房间导航按配置显示远程逐日看板；缺少配置时不显示，真实地址不进入源码。
+
+## 每日录像归档（2026-11-09）
+
+- 新入口：`python -m bilibili_live_monitor.archive_daily`。
+- 参数：可重复 `--sessions-root`、`--workers {1,2}`（默认2）、`--trash-originals`、`--execute`、`--report-dir`、可选 `--max-files`。
+- 执行：全部root共锁、跨root去重、未完成引用/身份冲突跳过、逐文件压缩/验收/Trash、JSON计划与进度、失败继续及非零退出；原直播收尾独立。
+- 验证：40项归档/每日任务定向测试、945项全套Python测试及Ruff通过；覆盖双worker实际并发、多root锁、恢复幂等、只读预演、失败保留与损坏成品拒绝清理。真实生产部署与回填状态保存在私有overlay。
