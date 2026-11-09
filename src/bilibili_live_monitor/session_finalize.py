@@ -196,7 +196,8 @@ def submit(config, session, on_handoff=lambda: None):
     from .local_lyrics import agent_prompt
     prompt += agent_prompt(config, final=True)
     prompt += correction_prompt(Path(config['workspace']))
-    dispatch(config, session, prompt, root, on_handoff)
+    dispatch({**config, 'model': config.get('final_model', config['model'])},
+             session, prompt, root, on_handoff)
 
 
 def dispatch(config, session, prompt, root, on_handoff):

@@ -45,11 +45,11 @@ def reload_plan(previous, incoming):
         workflow = result.get('session_workflow', {})
         if not isinstance(workflow, dict):
             raise ValueError('session_workflow必须是对象')
-        for key in ('publish', 'model', 'final_subagent', 'final_concurrency'):
+        for key in ('publish', 'model', 'final_model', 'final_subagent', 'final_concurrency'):
             workflow.pop(key, None)
         return result
     if fixed(previous) != fixed(incoming):
-        raise ValueError('热加载只支持rooms及未来场次的publish/model/final_subagent/final_concurrency；'
+        raise ValueError('热加载只支持rooms及未来场次的publish/model/final_model/final_subagent/final_concurrency；'
                          '其他设置需要重启')
     from .session_workflow import validate_settings
     workflow = incoming.get('session_workflow', {})

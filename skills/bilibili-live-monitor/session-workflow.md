@@ -26,6 +26,7 @@
     "opencode_cwd": "/PRIVATE/opencode",
     "opencode_project": "/PRIVATE/workspace",
     "model": "provider/model",
+    "final_model": "provider/final-model",
     "api": "http://127.0.0.1:8765",
     "launcher": "http://127.0.0.1:7997",
     "max_hours": 12,
@@ -154,11 +155,11 @@ python -m bilibili_live_monitor.audience_watch --config .local/example-watch.jso
 
 新增房间的欢迎弹幕默认关闭，`rooms.<id>.welcome_enabled` 为严格布尔值，默认 `false`；已有持久化界面开关在重启时保留。
 
-`POST /api/automation/reload` 无请求体，从启动时指定的 `AUTOMATION_CONFIG` 文件读取配置，校验全部成功后执行热加载。支持追加或更新 `rooms`，以及 `session_workflow` 的 `publish`、`model`、`final_subagent`、`final_concurrency`；拒绝删除已有房间，拒绝其他启动参数变化。显式配置 `welcome_enabled` 会在 reload 时更新运行开关，设为关闭会撤销待发送欢迎；未指定时不改变已有运行开关。
+`POST /api/automation/reload` 无请求体，从启动时指定的 `AUTOMATION_CONFIG` 文件读取配置，校验全部成功后执行热加载。支持追加或更新 `rooms`，以及 `session_workflow` 的 `publish`、`model`、`final_model`、`final_subagent`、`final_concurrency`；拒绝删除已有房间，拒绝其他启动参数变化。显式配置 `welcome_enabled` 会在 reload 时更新运行开关，设为关闭会撤销待发送欢迎；未指定时不改变已有运行开关。
 
-热加载保留已有场次目录、URL、通知、已见观众和冷却状态；更新 `publish` 及三个模型路由字段仅用于之后初始化的场次。已有 `config.json` 绑定场次身份后，实时会话、后续终审及冻结分片计划继续使用原路由，不重建或中断已提交任务；回切默认模型也只影响后续场次。空房间启动后，首次热加载可以启动自动化循环。
+热加载保留已有场次目录、URL、通知、已见观众和冷却状态；更新 `publish` 及四个模型路由字段仅用于之后初始化的场次。已有 `config.json` 绑定场次身份后，实时会话、后续终审及冻结分片计划继续使用原路由，不重建或中断已提交任务；回切默认模型也只影响后续场次。空房间启动后，首次热加载可以启动自动化循环。
 
-`model` 须为非空 `provider/model`，`final_subagent` 须为非空 agent 名，`final_concurrency` 须为1到10的整数（不能用布尔值）；即使工作流关闭也检查已配置的路由。热加载仅做配置校验，不发起模型请求；目标模型的可用性仍由新场预检核实。模型不可用时沿用既有失败处理，不自动切换 provider 或退回旧模型。
+`model` 与可选 `final_model` 须为非空 `provider/model`，`final_subagent` 须为非空 agent 名，`final_concurrency` 须为1到10的整数（不能用布尔值）；即使工作流关闭也检查已配置的路由。热加载仅做配置校验，不发起模型请求；目标模型的可用性仍由新场预检核实。模型不可用时沿用既有失败处理，不自动切换 provider 或退回旧模型。
 
 动态加房顺序：更新并原子保存配置文件后，调用 `POST /api/automation/reload`；再导入 candidate；最后 `PUT` 完整 fixed policy 加入新房间并提高 `target_rooms`。单独导入 candidate 不加入固定名单。`target_rooms` 不能超过 `MAX_ROOMS`；容量硬上限是启动参数，超过该上限才需要调整并重启。真实容量和房间名单只放本机私有配置。
 

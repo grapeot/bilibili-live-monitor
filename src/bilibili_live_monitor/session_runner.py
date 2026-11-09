@@ -256,7 +256,8 @@ def advance(config, state, now):
             raise ValueError('离线复核已到批次上限，尚有未审窗口')
         state['review_batches'] = state.get('review_batches', 0) + 1
         atomic_json(workspace / 'workflow.json', state)
-        final_config = {**config, 'ai_session': state['final_session']}
+        final_config = {**config, 'ai_session': state['final_session'],
+                        'model': config.get('final_model', config['model'])}
         watch.ai_once(final_config, {'cutoff': state['cutoff']}, source, now, final=True)
         return
     if phase == 'finalizing':

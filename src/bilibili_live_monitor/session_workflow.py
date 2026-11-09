@@ -25,11 +25,12 @@ def validate_settings(config, rooms):
     if type(config.get('enabled', False)) is not bool:
         raise ValueError('session_workflow.enabled须为布尔值')
     # 即使工作流关闭，热加载的路由值也须有效；不在这里发起模型请求或回退。
-    if 'model' in config:
-        model = config['model']
-        if (not isinstance(model, str) or model != model.strip() or '/' not in model
-                or any(not part.strip() for part in model.split('/', 1))):
-            raise ValueError('session_workflow.model须包含非空provider/model')
+    for key in ('model', 'final_model'):
+        if key in config:
+            model = config[key]
+            if (not isinstance(model, str) or model != model.strip() or '/' not in model
+                    or any(not part.strip() for part in model.split('/', 1))):
+                raise ValueError(f'session_workflow.{key}须包含非空provider/model')
     if type(config.get('final_concurrency', 10)) is not int or not 1 <= config.get('final_concurrency', 10) <= 10:
         raise ValueError('final_concurrency须为1到10的整数')
     if not isinstance(config.get('final_subagent', 'general'), str) or not config.get('final_subagent', 'general').strip():
@@ -134,6 +135,8 @@ class SessionWorkflows:
         config.update(final_timeline=True, finalize_parallel=cfg.get('finalize_parallel', True),
                       final_concurrency=cfg.get('final_concurrency', 10),
                       final_subagent=cfg.get('final_subagent', 'general'))
+        if 'final_model' in cfg:
+            config['final_model'] = cfg['final_model']
         audience = cfg.get('audience_crm', {}).get(rid)
         if audience:
             if not isinstance(audience, str) or not Path(audience).is_absolute():

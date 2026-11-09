@@ -84,11 +84,18 @@ def test_talk_prompt_prohibits_search_and_shared_writes(setup, monkeypatch):
     from bilibili_live_monitor import session_finalize
     config, _ = setup
     config['_config_path'] = '/synthetic/config.json'
+    config.update(model='realtime-provider/realtime', final_model='final-provider/final')
     prompts = []
-    monkeypatch.setattr(session_finalize, 'dispatch', lambda c, s, prompt, root, callback: prompts.append(prompt))
+    routed = []
+    def dispatch(c, s, prompt, root, callback):
+        prompts.append(prompt)
+        routed.append(c['model'])
+    monkeypatch.setattr(session_finalize, 'dispatch', dispatch)
     module.submit(config, 'synthetic-session')
     assert '禁止联网搜索' in prompts[0] and '不能自己编写SQL' in prompts[0]
     assert '上下文窗口只读不输出' in prompts[0]
+    assert routed == ['final-provider/final']
+    assert config['model'] == 'realtime-provider/realtime'
 
 
 def test_danmaku_is_time_scoped_frozen_and_evidence_persisted(setup, monkeypatch):

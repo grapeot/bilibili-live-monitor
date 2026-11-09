@@ -124,6 +124,8 @@ def test_only_future_publish_mapping_can_change():
 @pytest.mark.parametrize(('key', 'value'), [
     ('model', None), ('model', 1), ('model', 'bare-model'), ('model', '/model'),
     ('model', 'provider/'), ('model', ' provider/model'),
+    ('final_model', None), ('final_model', 1), ('final_model', 'bare-model'),
+    ('final_model', '/model'), ('final_model', 'provider/'), ('final_model', ' provider/model'),
     ('final_subagent', ''), ('final_subagent', None),
     ('final_concurrency', True), ('final_concurrency', 0), ('final_concurrency', 11),
 ])
