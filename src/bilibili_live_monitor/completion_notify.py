@@ -40,14 +40,18 @@ def final_report(config, record):
     if (local['room_id'] != config['room_id'] or local['start_utc'] != record['start']
             or Path(local['workspace']).resolve() != directory or local.get('workflow_key') != record['key']):
         raise ValueError('session_identity_mismatch')
-    if local.get('content_mode') != 'talk' or local.get('ai_enabled') is not False:
+    mode = local.get('content_mode')
+    modes = config.get('completion_notifications', {}).get('content_modes', ['talk'])
+    if mode not in modes or (mode == 'talk' and local.get('ai_enabled') is not False):
         raise ValueError('not_a_talk_session')
+    if mode not in ('talk', 'music'):
+        raise ValueError('unsupported_content_mode')
     state = load(directory / 'workflow.json')
     if (state.get('stage') != 'completed' or not state.get('ready') or not state.get('completed_at')
             or state.get('last_error')):
         raise ValueError('final_workflow_not_completed')
     snapshot = load(directory / 'public/snapshot.json')
-    if (snapshot.get('phase') != 'completed' or snapshot.get('content_mode') != 'talk'
+    if (snapshot.get('phase') != 'completed' or snapshot.get('content_mode') != mode
             or snapshot.get('session_start') != record['start']
             or epoch(snapshot['updated_at']) != state.get('cutoff')):
         raise ValueError('final_snapshot_mismatch')
@@ -57,20 +61,31 @@ def final_report(config, record):
             or parsed.username or parsed.password or parsed.query or parsed.fragment
             or not parsed.path.startswith(config.get('public_path', '/share/live-')) or not url.endswith('/')):
         raise ValueError('report_url_mismatch')
-    if not verify_snapshot(local)['valid']:
+    verification = verify_snapshot(local)
+    if not verification['valid']:
         raise ValueError('invalid_final_snapshot')
+    if mode == 'music' and (verification.get('unreviewed_windows', 0) or verification.get('unpublished_songs')):
+        raise ValueError('music_review_incomplete')
     from .session_offline import verify_offline
     offline = verify_offline(local, state['cutoff'])
     if local.get('final_timeline'):
         from .session_timeline import verify
         verify(local, state['cutoff'])
-    if local.get('talk_finalize'):
+    if mode == 'music':
+        from .session_finalize import complete
+        if not local.get('finalize_parallel') or not complete(local):
+            raise ValueError('music_finalization_not_completed')
+        artifacts = state.get('final_artifacts', {})
+        for name in ('public/index.html', 'public/snapshot.json', 'annotations.json', 'verified_songs.json'):
+            if artifacts.get(name) != hashlib.sha256((directory / name).read_bytes()).hexdigest():
+                raise ValueError('music_final_artifacts_changed')
+    if mode == 'talk' and local.get('talk_finalize'):
         from .talk_finalize import complete
         if not complete(local):
             raise ValueError('talk_revision_not_committed')
     verify_remote(local)
-    return {'url': url, 'completed_at': state['completed_at'], 'mode': 'talk', 'offline_files': offline['files'],
-            'transcript_refined': bool(local.get('talk_finalize')),
+    return {'url': url, 'completed_at': state['completed_at'], 'mode': mode, 'offline_files': offline['files'],
+            'transcript_refined': mode == 'talk' and bool(local.get('talk_finalize')),
             'hashes': {name: hashlib.sha256((directory / 'public' / name).read_bytes()).hexdigest()
                        for name in ('index.html', 'snapshot.json')}}
 
@@ -94,13 +109,27 @@ def notify(config, dry_run=False):
         records, notices = history(config)
         notices = list(notices)
         for record in records:
-            if (record.get('room_id') != config['room_id'] or record.get('stage') != 'completed'
+            if (record.get('room_id') != config['room_id']
                     or epoch(record['start']) < epoch(settings['not_before'])):
                 continue
             ident = 'talk-completed-' + record['key']
             previous = ledger.get(ident, {})
             if previous.get('status') in ('accepted', 'sending', 'unknown'):
                 results.append({'id': ident, 'status': previous['status'], 'skipped': True})
+                continue
+            if settings.get('reconcile_workflow_state') and record.get('room_id') == config['room_id']:
+                directory = Path(record['workspace']).resolve()
+                if directory.parent == Path(config['sessions_root']).resolve():
+                    try:
+                        state = load(directory / 'workflow.json')
+                    except (OSError, ValueError) as error:
+                        results.append({'id': ident, 'status': 'waiting', 'reason': type(error).__name__})
+                        continue
+                    # 独立恢复runner只写场次文件，不与常驻parent争写SQLite内存记录。
+                    if state.get('stage') == 'completed':
+                        record = {**record, 'stage': 'completed'}
+            if (record.get('room_id') != config['room_id'] or record.get('stage') != 'completed'
+                    or epoch(record['start']) < epoch(settings['not_before'])):
                 continue
             try:
                 proof = final_report(config, record)
@@ -120,7 +149,8 @@ def notify(config, dry_run=False):
                 name = html.escape(settings['display_name'])
                 payload = {'id': ident, 'subject': 'Re: ' + parent['subject'], 'in_reply_to': message_id,
                            'html': f'<p>{name}本场直播已收尾，最终统计页面已发布。</p>' +
-                                    ('<p>本场已完成已保存录音的离线转写及AI转写精修。</p>'
+                                     ('' if proof['mode'] == 'music' else
+                                      '<p>本场已完成已保存录音的离线转写及AI转写精修。</p>'
                                      if proof.get('transcript_refined') else
                                      '<p>本场已完成已保存录音的离线转写；杂谈模式不进行歌曲AI终审。</p>') +
                                    f'<p><a href="{html.escape(proof["url"], quote=True)}">打开最终看板</a></p>'}

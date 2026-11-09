@@ -20,7 +20,7 @@ from bilibili_live_monitor.live_share import (
     scope_source,
 )
 from bilibili_live_monitor.live_share_control import load_config, read_session_source
-from bilibili_live_monitor.session_snapshot import build_snapshot, write_page, write_snapshot
+from bilibili_live_monitor.session_snapshot import build_snapshot, write_snapshot
 from bilibili_live_monitor.song_sources import verified_titles
 from bilibili_live_monitor.transcript_corrections import correction_context, correction_prompt, review_window
 
@@ -105,6 +105,13 @@ def build(config, state, platform, api_state, now, upload=True):
     write_snapshot(snapshot, destination, navigation=Path(config['workspace']) / 'navigation.json')
     state['last_exported_at'] = iso(now)
     if upload and config.get('remote'):
+        # state.lock由cycle持有；先保存同一截止点，让验收读取本次版本。
+        atomic_json(Path(config['workspace']) / 'state.json', state)
+        from .live_share_control import verify_snapshot
+        report = verify_snapshot(config)
+        if not report['valid']:
+            raise RuntimeError('本地看板验收失败：' + ','.join(report['errors']))
+        atomic_json(Path(config['workspace']) / 'last_verified_snapshot.json', snapshot)
         publish(config, destination)
         state['last_published_at'] = iso(now)
     state['last_error'] = None
@@ -225,6 +232,7 @@ def dispatch_ai(config, config_path, state, now, local_only=False):
 
 
 def cycle(config, path, mode, upload=True):
+    upload = upload and not config.get('_defer_publish', False)
     workspace = Path(config['workspace'])
     with (workspace / 'state.lock').open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
@@ -257,16 +265,16 @@ def cycle(config, path, mode, upload=True):
             if state.get('stop_intent'):
                 # An unavailable API must not keep the task alive past its deadline.
                 # Freeze the last safe published data rather than pull a different broadcast.
-                saved = Path(config['workspace']) / 'public/snapshot.json'
+                saved = Path(config['workspace']) / 'last_verified_snapshot.json'
                 if saved.exists():
                     snapshot = json.loads(saved.read_text())
                     snapshot['phase'] = 'finalizing' if config.get('workflow_key') else 'completed'
                     snapshot['health']['recording'] = False
-                    atomic_json(saved, snapshot)
-                    write_page(snapshot, saved.parent, navigation=Path(config['workspace']) / 'navigation.json')
+                    destination = Path(config['workspace']) / 'public'
+                    write_snapshot(snapshot, destination, navigation=Path(config['workspace']) / 'navigation.json')
                     try:
                         if upload and config.get('remote'):
-                            publish(config, saved.parent)
+                            publish(config, destination)
                     except Exception as final_error:
                         state['final_publish_error'] = str(final_error)[:300]
                 state.update(phase='completed', completed_at=iso(now))
@@ -285,7 +293,17 @@ def main():
     config = load_config(args.config)
     path = Path(config['workspace']) / 'state.json'
     if args.mode != 'run':
-        state = cycle(config, path, args.mode, upload=not args.local_only)
+        if args.mode == 'ai-once':
+            # 内容任务只读页面输入、写独立分析结果，不争抢页面发布所有权。
+            with (Path(config['workspace']) / 'state.lock').open('a') as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX)
+                state = json.loads(path.read_text())
+                ai_once(config, state, read_session_source(config), time.time())
+                atomic_json(path, state)
+        else:
+            with (Path(config['workspace']) / 'publisher.lock').open('a') as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                state = cycle(config, path, args.mode, upload=not args.local_only)
         print(json.dumps(state))
         if state.get('last_error'):
             raise SystemExit(1)

@@ -302,7 +302,10 @@ def render_snapshot(snapshot: dict, *, navigation=None) -> str:
                           if item.get('request_song') else '') + '</li>'
                         for item in snapshot['followups'])
     status = {'completed': '本场已结束', 'finalizing': '本场已结束，正在整理最终版', 'live': '直播中'}[snapshot['phase']]
-    if snapshot['phase'] == 'live':
+    if snapshot.get('publication_status') == 'attention':
+        status = ('本场已结束，分析待恢复' if snapshot['phase'] != 'live' else
+                  '页面更新异常，直播状态以平台为准')
+    elif snapshot['phase'] == 'live':
         status = '<span class="live-pill">'+status+'</span>'
     header = (f'<p>{clock(lo)}—{clock(hi)}（北京时间） · {status}<br>'
                f'更新于 {clock(hi)}</p>')

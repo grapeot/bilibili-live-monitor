@@ -80,6 +80,22 @@ def verify_local(config):
     return report
 
 
+def mark_attention(config):
+    """只发布此前已验收的内容，并明确更新异常，不公开原始错误。"""
+    workspace = Path(config['workspace'])
+    saved = workspace / 'last_verified_snapshot.json'
+    if not saved.is_file():
+        return
+    snapshot = json.loads(saved.read_text())
+    snapshot['publication_status'] = 'attention'
+    state = json.loads((workspace / 'state.json').read_text())
+    if state.get('stop_intent'):
+        snapshot['phase'] = 'finalizing'
+    from .session_snapshot import write_snapshot
+    write_snapshot(snapshot, workspace / 'public', navigation=workspace / 'navigation.json')
+    watch.publish(config, workspace / 'public')
+
+
 def advance(config, state, now):
     workspace = Path(config['workspace'])
     config_path = workspace / 'config.json'
@@ -112,14 +128,19 @@ def advance(config, state, now):
         state['stage'] = 'live'
         return
     if phase == 'live':
-        live_state = watch.cycle(config, workspace / 'state.json', 'once')
+        live_state = watch.cycle({**config, '_defer_publish': True}, workspace / 'state.json', 'once')
         if live_state.get('phase') == 'completed':
+            # 采集终止不依赖最后一次页面构建成功；封口后统一重建、终审和验收。
             state.update(stage='stopping', cutoff=live_state['cutoff'],
                          finish_deadline=now + config.get('finish_timeout', 21600))
             return
         if live_state.get('last_error'):
             raise RuntimeError(live_state['last_error'])
         verify_local(config)
+        atomic_json(workspace / 'last_verified_snapshot.json',
+                    json.loads((workspace / 'public/snapshot.json').read_text()))
+        if config.get('remote'):
+            watch.publish(config, workspace / 'public')
         if not state.get('ready'):
             verify_remote(config)
             state['ready'] = True
@@ -269,7 +290,10 @@ def advance(config, state, now):
                 return
         watch.publish(config, workspace / 'public')
         verify_remote(config)
-        state.update(stage='completed', completed_at=iso(now), last_error=None)
+        state['final_artifacts'] = {name: hashlib.sha256((workspace / name).read_bytes()).hexdigest()
+                                   for name in ('public/index.html', 'public/snapshot.json', 'annotations.json', 'verified_songs.json')
+                                   if (workspace / name).is_file()}
+        state.update(stage='completed', completed_at=iso(now), last_error=None, ready=True)
 
 
 def run(path):
@@ -316,6 +340,10 @@ def run(path):
                                 stopped = False
                     if stopped:
                         state['stage'] = 'attention'
+                        try:
+                            mark_attention(config)
+                        except Exception as publication_error:
+                            state['attention_publish_error'] = type(publication_error).__name__
             state['updated_at'] = iso(time.time())
             atomic_json(status_path, state)
             if state['stage'] not in ('completed', 'attention'):
