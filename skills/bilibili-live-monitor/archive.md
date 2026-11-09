@@ -58,6 +58,6 @@ python -m bilibili_live_monitor.archive_daily \
   --workers 2 --trash-originals --execute --report-dir /PRIVATE/archive_reports
 ```
 
-`--workers` 仅支持1或2，默认2；`--max-files` 可限制一次验收的数量。执行前按固定顺序取得所有根目录的既有归档锁，编码子进程继承全部锁；与手动归档及重叠周期互斥。同源身份冲突或仍有未完成场次引用时跳过。仅处理清单内的 completed 视频，不修改直播收尾、ASR、发布或通知状态。
+`--workers` 支持1至5，默认2；增加并发前同时核查CPU解码/验收负载、VideoToolbox编码吞吐和实时采集健康，普通GPU利用率不能代表硬件编码器利用率。`--max-files` 可限制一次验收的数量。执行前按固定顺序取得所有根目录的既有归档锁，编码子进程继承全部锁；与手动归档及重叠周期互斥。CLI遇到已有归档持锁时返回 `skipped=true, reason=archive_writer_busy`，不重开一批；其他IO失败照常报错。同源身份冲突或仍有未完成场次引用时跳过。仅处理清单内的 completed 视频，不修改直播收尾、ASR、发布或通知状态。
 
 每份成品先完成原有完整解码与规格验收，再检查旧清单身份和归档读取入口。仅显式 `--trash-originals` 才执行重验后Trash，不支持永久删除或清空废纸篓。失败逐文件记录并保留原片，其他作业继续；退出码1表示有失败，`complete=true`仅表示本轮结束，不代表全部成功。重复执行跳过已移走原片的归档，继续新录像或尚未成功的文件。每轮计划与进度保存在 `report-dir/<UTC时间>/`，`latest.json` 指向本轮状态。周期频率、真实路径及启用状态留在本机私有配置，新增调度须取得授权。
