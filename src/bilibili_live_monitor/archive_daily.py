@@ -1,4 +1,4 @@
-"""独立每日录像维护；与手动归档共锁，最多两个并行作业，失败保留原片。"""
+"""独立周期录像维护；与手动归档共锁，最多五个并行作业，失败保留原片。"""
 import argparse
 import json
 import subprocess
@@ -12,6 +12,10 @@ from pathlib import Path
 from . import recording_archive as archive
 from .archive_media import archived_input, file_stat
 from .live_share import atomic_json
+
+
+class ArchiveWriterBusy(BlockingIOError):
+    """已有归档持锁；周期任务可明确skip，而非吞掉其他IO错误。"""
 
 
 def plan(roots):
@@ -68,8 +72,8 @@ def process(item, locks, *, trash_originals):
 
 
 def run(roots, *, execute=False, workers=2, trash_originals=False, report_dir=None, max_files=None):
-    if workers not in (1, 2) or max_files is not None and max_files < 1:
-        raise ValueError('workers只支持1或2；max-files须为正数')
+    if workers not in range(1, 6) or max_files is not None and max_files < 1:
+        raise ValueError('workers只支持1至5；max-files须为正数')
     roots = sorted({Path(root).resolve(strict=True) for root in roots})
     if not roots:
         raise ValueError('至少指定一个sessions-root')
@@ -77,7 +81,10 @@ def run(roots, *, execute=False, workers=2, trash_originals=False, report_dir=No
         raise ValueError('执行时必须指定report-dir')
     with ExitStack() as stack:
         # 先拿全部root锁再盘点；排序避免死锁，FFmpeg继承全部锁防止孤儿编码器重叠。
-        locks = tuple(stack.enter_context(archive.writer_lock(root)) for root in roots) if execute else ()
+        try:
+            locks = tuple(stack.enter_context(archive.writer_lock(root)) for root in roots) if execute else ()
+        except BlockingIOError as error:
+            raise ArchiveWriterBusy('已有归档作业持锁') from error
         items = plan(roots)
         pending = [item for item in items if item['action'] == 'encode'
                    or trash_originals and item['action'] == 'archived' and Path(item['source']).is_file()]
@@ -119,14 +126,18 @@ def run(roots, *, execute=False, workers=2, trash_originals=False, report_dir=No
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--sessions-root', type=Path, action='append', required=True)
-    parser.add_argument('--workers', type=int, choices=(1, 2), default=2)
+    parser.add_argument('--workers', type=int, choices=range(1, 6), default=2)
     parser.add_argument('--trash-originals', action='store_true')
     parser.add_argument('--execute', action='store_true')
     parser.add_argument('--report-dir', type=Path)
     parser.add_argument('--max-files', type=int)
     args = parser.parse_args()
-    result = run(args.sessions_root, execute=args.execute, workers=args.workers,
-                 trash_originals=args.trash_originals, report_dir=args.report_dir, max_files=args.max_files)
+    try:
+        result = run(args.sessions_root, execute=args.execute, workers=args.workers,
+                     trash_originals=args.trash_originals, report_dir=args.report_dir, max_files=args.max_files)
+    except ArchiveWriterBusy:
+        print(json.dumps({'skipped': True, 'reason': 'archive_writer_busy'}))
+        return 0
     print(json.dumps(result, ensure_ascii=False))
     return 1 if any(row['status'] == 'failed' for row in result['results']) else 0
 

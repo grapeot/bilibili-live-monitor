@@ -1,4 +1,5 @@
 import json
+import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
@@ -107,3 +108,50 @@ def test_overlap_does_not_launch_work(tmp_path, monkeypatch):
         with pytest.raises(BlockingIOError):
             task.result()
     assert not (tmp_path / 'reports').exists()
+
+
+def test_five_workers_really_overlap_and_bound_concurrency(tmp_path, monkeypatch):
+    root, _, _ = fixture(tmp_path)
+    items = [{'source': str(index), 'action': 'encode', 'source_stat': {'size': 1}} for index in range(10)]
+    monkeypatch.setattr(daily, 'plan', lambda _: items)
+    barrier = threading.Barrier(5)
+    mutex = threading.Lock()
+    active = peak = 0
+
+    def process(item, locks, *, trash_originals):
+        nonlocal active, peak
+        with mutex:
+            active += 1
+            peak = max(peak, active)
+        barrier.wait(timeout=5)
+        with mutex:
+            active -= 1
+        return {'source': item['source'], 'status': 'archived'}
+
+    monkeypatch.setattr(daily, 'process', process)
+    result = daily.run([root], execute=True, workers=5, report_dir=tmp_path / 'reports')
+    assert peak == 5 and active == 0
+    assert result['counts'] == {'archived': 10} and result['workers'] == 5
+
+
+@pytest.mark.parametrize('workers', [0, 6, -1])
+def test_reject_workers_outside_capacity(tmp_path, workers):
+    with pytest.raises(ValueError, match='1至5'):
+        daily.run([tmp_path], workers=workers)
+
+
+def test_hourly_cli_skips_lock_contention_without_starting_work(tmp_path, monkeypatch, capsys):
+    root, source, _ = fixture(tmp_path)
+    monkeypatch.setattr(sys, 'argv', ['archive_daily', '--sessions-root', str(root), '--workers', '5',
+                                    '--execute', '--report-dir', str(tmp_path / 'reports')])
+    with archive.writer_lock(root):
+        assert daily.main() == 0
+    assert json.loads(capsys.readouterr().out) == {'skipped': True, 'reason': 'archive_writer_busy'}
+    assert source.exists() and not (tmp_path / 'reports').exists()
+
+
+def test_cli_does_not_hide_non_lock_io_failures(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys, 'argv', ['archive_daily', '--sessions-root', str(tmp_path)])
+    monkeypatch.setattr(daily, 'run', lambda *_a, **_k: (_ for _ in ()).throw(BlockingIOError('report IO')))
+    with pytest.raises(BlockingIOError, match='report IO'):
+        daily.main()
