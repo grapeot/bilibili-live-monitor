@@ -27,6 +27,9 @@ def test_talk_created_and_live_never_preflight_create_or_dispatch(tmp_path, monk
     monkeypatch.setattr(runner.watch, 'cycle', lambda *a: {'phase': 'live'})
     monkeypatch.setattr(runner, 'verify_local', lambda *a: {})
     monkeypatch.setattr(runner, 'verify_remote', lambda *a: None)
+    monkeypatch.setattr(runner.watch, 'publish', lambda *a: None)
+    (tmp_path / 'public').mkdir()
+    (tmp_path / 'public/snapshot.json').write_text('{}')
     runner.advance(config, state, 301)
     assert state['ready'] and 'ai_slot' not in state
 
@@ -66,6 +69,7 @@ def test_talk_seals_and_transcribes_before_finalizing_without_agent(tmp_path, mo
     offline.assert_called_once()
     runner.advance(config,state,104)
     assert state['stage']=='completed'
+    assert state['ready'] is True
 
 
 def test_talk_cannot_publish_without_offline_completion(tmp_path, monkeypatch):

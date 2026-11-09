@@ -453,6 +453,7 @@ def test_stop_api_failure_rebuilds_visible_html(tmp_path, monkeypatch):
     public.mkdir()
     data = snapshot({'raw': [], 'items': [], 'segments': []})
     atomic_json(public / 'snapshot.json', data)
+    atomic_json(tmp_path / 'last_verified_snapshot.json', data)
     (public / 'index.html').write_text(render_snapshot(data))
     config = {'deadline': 1, 'workspace': str(tmp_path), 'start_utc': START, 'api': 'http://unused'}
     module.cycle(config, tmp_path / 'state.json', 'run', upload=False)
