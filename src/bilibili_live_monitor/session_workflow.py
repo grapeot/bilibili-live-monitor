@@ -24,14 +24,20 @@ def session_key(room, start):
 def validate_settings(config, rooms):
     if type(config.get('enabled', False)) is not bool:
         raise ValueError('session_workflow.enabled须为布尔值')
-    if not config.get('enabled'):
-        return
-    if type(config.get('finalize_parallel', True)) is not bool:
-        raise ValueError('finalize_parallel须为布尔值')
+    # 即使工作流关闭，热加载的路由值也须有效；不在这里发起模型请求或回退。
+    if 'model' in config:
+        model = config['model']
+        if (not isinstance(model, str) or model != model.strip() or '/' not in model
+                or any(not part.strip() for part in model.split('/', 1))):
+            raise ValueError('session_workflow.model须包含非空provider/model')
     if type(config.get('final_concurrency', 10)) is not int or not 1 <= config.get('final_concurrency', 10) <= 10:
         raise ValueError('final_concurrency须为1到10的整数')
     if not isinstance(config.get('final_subagent', 'general'), str) or not config.get('final_subagent', 'general').strip():
         raise ValueError('final_subagent须为非空agent名称')
+    if not config.get('enabled'):
+        return
+    if type(config.get('finalize_parallel', True)) is not bool:
+        raise ValueError('finalize_parallel须为布尔值')
     for key, default in (('max_hours', 12), ('seal_seconds', 300), ('finish_timeout', 21600)):
         value = config.get(key, default)
         if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
@@ -43,8 +49,8 @@ def validate_settings(config, rooms):
     for key in ('workspace_root', 'opencode_python', 'opencode_cwd', 'opencode_project'):
         if not isinstance(config.get(key), str) or not Path(config[key]).is_absolute():
             raise ValueError(f'session_workflow.{key}须为绝对路径')
-    if '/' not in config.get('model', ''):
-        raise ValueError('session_workflow.model须包含provider/model')
+    if 'model' not in config:
+        raise ValueError('session_workflow.model须包含非空provider/model')
     for rid in rooms:
         target = config.get('publish', {}).get('rooms', {}).get(rid) or config.get('publish', {}).get('default', {})
         if not target.get('remote', '').endswith('/') or not target.get('url', '').startswith('https://'):

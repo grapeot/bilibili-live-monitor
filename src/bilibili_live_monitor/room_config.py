@@ -1,4 +1,4 @@
-"""校验可信本地配置；热加载只允许房间及未来场次发布映射变化。"""
+"""校验可信本地配置；热加载房间及未来场次的发布、模型路由。"""
 from copy import deepcopy
 
 from .browser import room_url
@@ -45,10 +45,12 @@ def reload_plan(previous, incoming):
         workflow = result.get('session_workflow', {})
         if not isinstance(workflow, dict):
             raise ValueError('session_workflow必须是对象')
-        workflow.pop('publish', None)
+        for key in ('publish', 'model', 'final_subagent', 'final_concurrency'):
+            workflow.pop(key, None)
         return result
     if fixed(previous) != fixed(incoming):
-        raise ValueError('热加载只支持rooms和session_workflow.publish；其他设置需要重启')
+        raise ValueError('热加载只支持rooms及未来场次的publish/model/final_subagent/final_concurrency；'
+                         '其他设置需要重启')
     from .session_workflow import validate_settings
     workflow = incoming.get('session_workflow', {})
     publish = workflow.get('publish', {})
