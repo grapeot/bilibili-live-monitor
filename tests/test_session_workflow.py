@@ -3,6 +3,8 @@ import json
 import struct
 import sys
 import time
+from copy import deepcopy
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -64,6 +66,55 @@ def test_session_recovery_reuses_url_and_new_broadcast_gets_new_url(tmp_path):
     assert recovered.initialize(first) == path
     candidate['live_start'] = '2030-01-02 08:00:00'
     assert recovered.prepare('123456', candidate)['url'] != first['url']
+
+
+@pytest.mark.asyncio
+async def test_model_reload_applies_to_new_sessions_and_preserves_existing_finalization(tmp_path):
+    service, candidate = automation(tmp_path)
+    original = settings(tmp_path)
+    original.update(final_subagent='general', final_concurrency=10)
+    service.config['session_workflow'] = deepcopy(original)
+    service.workflows = SessionWorkflows(service, original)
+    service.start = AsyncMock()
+    manager = service.workflows
+    first = manager.prepare('123456', candidate)
+    path = manager.initialize(first)
+    old_config = path.read_bytes()
+    # 已冻结的终审计划与实时会话不随默认路由变更而重建。
+    final = path.parent / 'finalize'
+    final.mkdir()
+    (final / 'plan.json').write_text('{"subagent":"general","concurrency":10}')
+    old_plan = (final / 'plan.json').read_bytes()
+    old_records = deepcopy(manager.records)
+    service.row('123456').update(seen=['synthetic-viewer'], last_sent=123)
+    old_room = deepcopy(service.row('123456'))
+    incoming = deepcopy(service.config)
+    incoming['session_workflow'].update(model='new-provider/new-model', final_subagent='new-agent',
+                                       final_concurrency=2)
+    await service.reload_rooms(incoming)
+    assert manager is service.workflows
+    assert manager.records == old_records
+    assert service.row('123456') == old_room
+    assert manager.initialize(first) == path
+    assert path.read_bytes() == old_config
+    assert (final / 'plan.json').read_bytes() == old_plan
+    candidate['live_start'] = '2030-01-02 08:00:00'
+    second = manager.prepare('123456', candidate)
+    new_config = load_config(manager.initialize(second))
+    assert new_config['model'] == 'new-provider/new-model'
+    assert new_config['final_subagent'] == 'new-agent'
+    assert new_config['final_concurrency'] == 2
+    assert new_config['url'] != load_config(path)['url']
+    assert load_config(path)['model'] == original['model']
+    new_config_bytes = (Path(new_config['workspace']) / 'config.json').read_bytes()
+    # 回切同样只影响后续场次，不覆盖已创建的新模型场次。
+    await service.reload_rooms({**incoming, 'session_workflow': original})
+    assert manager.initialize(second).read_bytes() == new_config_bytes
+    assert load_config(manager.initialize(second))['model'] == 'new-provider/new-model'
+    candidate['live_start'] = '2030-01-03 08:00:00'
+    third = manager.prepare('123456', candidate)
+    assert load_config(manager.initialize(third))['model'] == original['model']
+    service.store.close()
 
 
 def test_initialization_recovers_after_base_files_before_workflow_config(tmp_path, monkeypatch):

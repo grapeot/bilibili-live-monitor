@@ -121,6 +121,41 @@ def test_only_future_publish_mapping_can_change():
     assert config['session_workflow']['publish']['default'] == {}
 
 
+@pytest.mark.parametrize(('key', 'value'), [
+    ('model', None), ('model', 1), ('model', 'bare-model'), ('model', '/model'),
+    ('model', 'provider/'), ('model', ' provider/model'),
+    ('final_subagent', ''), ('final_subagent', None),
+    ('final_concurrency', True), ('final_concurrency', 0), ('final_concurrency', 11),
+])
+@pytest.mark.asyncio
+async def test_invalid_model_reload_is_atomic_even_when_disabled(tmp_path, key, value):
+    service = make(tmp_path, {'123456': {'label': '测试', 'intro': '欢迎'}})
+    service.start = AsyncMock()
+    service.config['session_workflow'] = {'enabled': False}
+    before = deepcopy(service.config)
+    old_workflow = deepcopy(service.workflows.config)
+    incoming = deepcopy(before)
+    incoming['session_workflow'][key] = value
+    with pytest.raises(ValueError):
+        await service.reload_rooms(incoming)
+    assert service.config == before
+    assert service.workflows.config == old_workflow
+    service.start.assert_not_called()
+    service.store.close()
+
+
+@pytest.mark.parametrize(('key', 'value'), [
+    ('opencode_python', '/changed/python'), ('workspace_root', '/changed/sessions'),
+    ('finish_timeout', 123), ('finalize_parallel', False), ('enabled', True),
+])
+def test_model_reload_does_not_allow_other_workflow_changes(key, value):
+    before = {'rooms': {}, 'session_workflow': {'enabled': False}}
+    incoming = deepcopy(before)
+    incoming['session_workflow'].update(model='new/model', **{key: value})
+    with pytest.raises(ValueError, match='需要重启'):
+        reload_plan(before, incoming)
+
+
 def test_reload_api_uses_fixed_local_file(tmp_path):
     path = tmp_path/'automation.json'
     path.write_text('{"rooms":{}}')
