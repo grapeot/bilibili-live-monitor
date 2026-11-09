@@ -1,5 +1,12 @@
 # 工作记录
 
+## 本地复核歌词库索引与检索接线（2026-11-09）
+
+- 新增 `local_lyrics` 导出器与索引生成：支持将私有整理歌词导出为不可变目录版本（包含清单、`index.jsonl`、按作品 ID 分割的 `songs/*.txt` 及 `sources/*.json` 私有来源快照），格式校验覆盖不可变版本指纹、文件名合法性与 HTTPS 来源。条目区分 ready、partial、missing 与 pending 状态。
+- 提示词接线与工作流集成：`live_share_watch.py` 实时复核与 `session_finalize.py` 终审主协调提示词接入本地歌词库自主检索指引。全局默认路径指向 `~/.local/share/bilibili-live-monitor/lyrics/current`，支持通过单场配置 `lyric_library` 覆盖；库目录或索引不存在时平滑回退，保持原行为不变。
+- 来源登记与职责收敛：导出的来源快照无缝复用现有 `register-song` 契约与 `correction_context` 纠错链路；终审拆分子任务仅向父任务汇报作品 ID 与来源路径，由总协调统一执行来源登记与合并。
+- 验证与状态：全套 938 项 Python 测试及 Ruff 检查全部通过，覆盖导出校验、不可变目录保护、状态分级、提示词注入与终审计划不变性。真实 Agent 端到端评估与生产部署尚未执行，不宣称已上线。
+
 ## 歌杂模式迁移与发布恢复（2026-11-09）
 
 - 修复：talk 隐藏分类展示时保留未分类礼物分区，继续执行 v2 件数、金额与未知项守恒校验。

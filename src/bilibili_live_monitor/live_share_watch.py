@@ -201,6 +201,8 @@ human_status中的done不可撤回；尚未演唱时，awaiting_response表示�
 完成判断必须引用该项送礼之后的确切证据id；不复制对话。保留以前仍有效的完成项，并合并新项；没有完成就保留空数组。
 不要把原文、昵称或推理写入annotations。调查过程和未解决原因可另写本地 {workspace / 'investigation_notes.json'}，不公开。完成后简述复核窗口数、新歌名、实际追踪成功数及剩余缺哪条证据。外部负责调度，你不创建或延续任务。
 '''
+    from bilibili_live_monitor.local_lyrics import agent_prompt
+    prompt += agent_prompt({**config, '_config_path': config.get('_config_path', str(workspace / 'config.json'))})
     prompt += correction_prompt(workspace)
     if final:
         prompt += '\n本轮为下播后的离线全量转写复核，继续上述同场证据规则，优先处理所有尚未审阅窗口，每10–20项落盘；本轮结束必须完成input.windows中的实际复核，不创建定时任务。\n'
