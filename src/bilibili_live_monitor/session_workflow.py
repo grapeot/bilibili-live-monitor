@@ -95,8 +95,9 @@ class SessionWorkflows:
         path = directory / 'config.json'
         if path.exists() and json.loads(path.read_text()).get('workflow_key') == record['key']:
             current = json.loads(path.read_text())
-            if current.get('local_only') != self.config.get('local_only', False):
-                current['local_only'] = self.config.get('local_only', False)
+            local_only = self.automation.rooms[record['room_id']].get('local_only', self.config.get('local_only', False))
+            if current.get('local_only') != local_only:
+                current['local_only'] = local_only
                 atomic_json(path, current)
             if (record.get('stage') not in ('completed', 'attention')
                     and self.automation.rooms[record['room_id']].get('content_mode', 'music') == 'talk'
@@ -124,7 +125,7 @@ class SessionWorkflows:
         if config['content_mode'] == 'talk':
             config.update(ai_enabled=False, talk_finalize=True)
         config.update(model=cfg['model'], opencode_python=cfg['opencode_python'],
-            local_only=cfg.get('local_only', False),
+            local_only=self.automation.rooms[rid].get('local_only', cfg.get('local_only', False)),
             opencode_cwd=cfg['opencode_cwd'], opencode_project=cfg['opencode_project'],
             recording_root=str(settings.data_dir / 'recordings' / rid),
             recording_segment_seconds=settings.recording_segment_seconds,
@@ -150,7 +151,7 @@ class SessionWorkflows:
         process = None
         try:
             process = await asyncio.create_subprocess_exec(
-                *self.automation.notification_command, '--lookup-receipt', opening['receipt'],
+                *self.automation.notification_command_for(opening['room_id']), '--lookup-receipt', opening['receipt'],
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
             output, _ = await asyncio.wait_for(process.communicate(), 20)
             if process.returncode == 0:
@@ -176,7 +177,7 @@ class SessionWorkflows:
         if not opening or opening.get('status') != 'accepted':
             return False
         if not opening.get('message_id'):
-            command = self.automation.notification_command
+            command = self.automation.notification_command_for(record['room_id'])
             key = 'metadata:' + opening['id']
             task = self.automation.tasks.get(key)
             if ('bilibili_live_monitor.broadcast_email' in command and opening.get('receipt')

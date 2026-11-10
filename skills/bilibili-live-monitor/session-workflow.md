@@ -12,6 +12,8 @@
     "123456": {
       "label": "示例主播",
       "intro": "欢迎听歌",
+      "local_only": false,
+      "notification_command": ["/PRIVATE/notify-adapter"],
       "followup_rules": {"blind_gift_names": ["示例盲盒"]}
     }
   },

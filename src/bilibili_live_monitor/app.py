@@ -16,7 +16,7 @@ from .browser import room_url
 from .config import load_settings
 from .models import CandidateResponse, HealthResponse, RoomResponse, StateResponse
 from .monitor import Monitor
-from .platform import Candidate, Decision, Platform, Policy
+from .platform import Candidate, Decision, Platform, Policy, Unpark
 from .room_config import validate_rooms
 from .store import Store
 
@@ -259,6 +259,14 @@ def create_app(settings=None):
             return app.state.platform.resume_candidate(room_id)
         except (KeyError, ValueError) as error:
             raise HTTPException(404, '平台候选不存在') from error
+
+    @app.post('/api/platform/candidates/{room_id}/unpark', status_code=202,
+              summary='版本校验后仅解除操作者预留，不清除平台拒绝')
+    async def unpark_candidate(room_id: str, body: Unpark):
+        try:
+            return app.state.platform.unpark_candidate(room_id, body.revision)
+        except (KeyError, ValueError) as error:
+            raise HTTPException(409, str(error)) from error
 
     @app.get('/api/rooms/{room_id}/guards', summary='最新舰队榜单快照；非购买流水，complete表示本次覆盖')
     async def guards(room_id: str):
