@@ -187,7 +187,8 @@ input.danmaku是同场同期弹幕，含时间、昵称、内容。主动结合�
 最终运行{command}，程序会验证全部原文指纹和覆盖，并用单事务把带原文、时间及校正版的版本化记录写入数据库；不能自己编写SQL绕过验证。
 成功后报告“杂谈精修已入库，等待程序发布”，不把入库当发布完成。禁止定时任务、外发消息、歌曲分类或歌曲终审。不修改plan/input或完成凭证。
 '''
-    dispatch(config, session, prompt, root, on_handoff)
+    dispatch({**config, 'model': config.get('final_model', config['model'])},
+             session, prompt, root, on_handoff)
 
 
 def main():

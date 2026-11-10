@@ -97,6 +97,11 @@ def call_adapter(command, payload=None, extra=()):
 
 
 def notify(config, dry_run=False):
+    if config.get('sources'):
+        results = []
+        for source in config['sources']:
+            results.extend(notify({**config, **source, 'sources': []}, dry_run))
+        return results
     settings = config.get('completion_notifications', {})
     if not settings.get('enabled'):
         return []

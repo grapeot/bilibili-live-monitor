@@ -67,6 +67,9 @@ class Automation:
     def save(self):
         self.store.save_control('automation', self.state)
 
+    def notification_command_for(self, room_id):
+        return self.rooms[room_id].get('notification_command', self.notification_command)
+
     def row(self, room_id):
         if room_id not in self.rooms:
             raise KeyError('不在自动化房间配置中')
@@ -273,7 +276,7 @@ class Automation:
                 'id': key, 'room_id': rid, 'label': self.rooms[rid]['label'],
                 'event': current, 'observed_utc': datetime.now(timezone.utc).isoformat(),
                 'live_start': live_start,
-                'status': 'pending' if self.notification_command else 'not_configured'})
+                'status': 'pending' if self.notification_command_for(rid) else 'not_configured'})
 
     def consume(self, rid):
         row = self.row(rid)
@@ -392,7 +395,7 @@ class Automation:
             payload['html'] = f'<p>{html.escape(row["label"])} · 实时看板</p><p><a href="{html.escape(row["url"], quote=True)}">打开本场看板</a></p>'
         process = None
         try:
-            process = await asyncio.create_subprocess_exec(*self.notification_command,
+            process = await asyncio.create_subprocess_exec(*self.notification_command_for(row['room_id']),
                 stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
             output, _ = await asyncio.wait_for(process.communicate(json.dumps(payload).encode()), 90)
             row['status'] = 'accepted' if process.returncode == 0 else 'unknown'

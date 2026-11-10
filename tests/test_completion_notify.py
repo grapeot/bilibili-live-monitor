@@ -69,6 +69,14 @@ def test_talk_with_offline_asr_without_ai_artifacts_sends_once_and_threads(setup
     assert '离线转写' in sent[0]['html'] and '不进行歌曲AI终审' in sent[0]['html']
 
 
+def test_multiple_sources_preserve_shared_completion_ledger(setup):
+    config, record, folder, calls = setup
+    config['sources'] = [{'database': config['database'], 'sessions_root': config['sessions_root']}] * 2
+    results = module.notify(config)
+    assert results[0]['status'] == 'accepted' and results[1]['skipped'] is True
+    assert len([payload for payload, extra in calls if not extra]) == 1
+
+
 @pytest.mark.parametrize('name,field,value', [
     ('config.json', 'content_mode', 'music'), ('config.json', 'ai_enabled', True),
     ('config.json', 'room_id', '2'), ('workflow.json', 'stage', 'live'),

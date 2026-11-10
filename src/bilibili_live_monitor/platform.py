@@ -56,6 +56,11 @@ class Decision(BaseModel):
         return list(dict.fromkeys(room_url(value) for value in values))
 
 
+class Unpark(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    revision: int = Field(strict=True)
+
+
 def refused(error):
     return any(marker in error for marker in ('recording_refused', 'discover_refused')) or any(
         f'HTTP {code}' in error for code in (403, 412, 429))
@@ -203,6 +208,24 @@ class Platform:
         self.save()
         self.event('operator_resumed', url=url)
         return {'accepted': True, 'revision': self.revision, 'url': url}
+
+    def unpark_candidate(self, url, revision):
+        """仅解除有版本匹配的操作者预留；不清除全局或单房平台拒绝。"""
+        if revision != self.revision:
+            raise ValueError('过期交接：目标配置已改变')
+        matches = self.matching_candidates(url)
+        if (self.status_refused or any(not c['blocked'] or c.get('last_error') != 'operator_stopped'
+                                     or c.get('guard_refused') for c in matches)):
+            raise ValueError('不是纯操作者预留或出现平台拒绝')
+        for candidate in matches:
+            candidate.update(blocked=False, selected=False, next_attempt=0, last_error=None,
+                             watch_state='unknown', live_status=None, status_error=None,
+                             offline_checks=0, blocked_alias=False, alias_duplicate=False)
+        self.next_status_check = 0
+        self.revision += 1
+        self.save()
+        self.event('unpark_requested', url=room_url(url), revision=self.revision)
+        return {'accepted': True, 'revision': self.revision, 'url': room_url(url)}
 
     async def refresh_statuses(self):
         revision = self.revision

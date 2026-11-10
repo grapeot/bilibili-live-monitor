@@ -1,5 +1,18 @@
 # 工作记录
 
+## 下播跨实例交接与单房发布覆盖（2026-11-09）
+
+- `room_handoff --config ...` 默认只读，`--execute` 执行；外部周期调度可恢复推进，同一状态文件加锁。固定名单提前预留、目标候选先由操作者停用；只有原场身份一致、cutoff冻结、新鲜两次下播且无残留导航/采集时才退休源来源。
+- 交接使用带revision的既有decision停用全部已解析源别名，读回全部blocked并等待launching/pending清空后才unpark唯一的目标规范候选；不调用整份policy更新，不清空其他房间的本场ASR设置。新unpark接口原子核对revision和纯操作者预留状态，不清除全局或单房平台拒绝。源固定声明保留为停用的历史槽位，目标变为有效守候；原场配置、workflow、runner和URL不搬动。
+- `rooms.<id>.local_only` 与 `notification_command` 允许单个匿名房间沿用原发布/通知，其他匿名房间保持私有、无邮件；欢迎/点赞仍受未登录身份限制。完成通知支持多个显式database/sessions_root来源，共用原账本去重。
+- 验证：1005项Python测试与Ruff通过。独立初审发现整份policy的ASR副作用、异步launch交接竞态及别名问题，已改用预留停用/原子revision决策和启动排空，并增加实际Platform.apply_decision、别名、失败停用后恢复直播、条件unpark及HTTP接口测试。独立最终代码复审无阻断；另指出主页进程须实际加载多源完成通知模块，部署须验证其import路径与原账本，不能只重启匿名owner。
+
+## 独立终审模型路由（2026-11-09）
+
+- `session_workflow.final_model` 为可选热加载字段，新场初始化持久化该字段；未配置时终审沿用 `model`。已有场次继续冻结原配置，当前未提交终审的迁移由部署操作显式执行。
+- 并行歌曲/杂谈终审总协调与串行歌曲终审均选择 `final_model`；实时 `model`、实时会话和终审子代理/并发保持独立。原有已提交计划及回执不重置。
+- 验证：978项Python测试与Ruff通过；生产解释器76项定向测试通过。独立审阅发现共用派发器会覆盖CRM专用模型，已改为仅在歌曲/杂谈终审调用点选择模型，并增加回归测试；复审无剩余生产逻辑阻断项。
+
 ## 未来场次模型路由热加载（2026-11-09）
 
 - `reload_plan` 允许热加载 `session_workflow.model/final_subagent/final_concurrency`，其余启动字段继续拒绝；先完成全量校验，再沿用现有 Automation 原子替换流程。

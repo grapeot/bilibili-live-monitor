@@ -89,7 +89,8 @@ async def test_model_reload_applies_to_new_sessions_and_preserves_existing_final
     service.row('123456').update(seen=['synthetic-viewer'], last_sent=123)
     old_room = deepcopy(service.row('123456'))
     incoming = deepcopy(service.config)
-    incoming['session_workflow'].update(model='new-provider/new-model', final_subagent='new-agent',
+    incoming['session_workflow'].update(model='new-provider/new-model', final_model='final-provider/final-model',
+                                       final_subagent='new-agent',
                                        final_concurrency=2)
     await service.reload_rooms(incoming)
     assert manager is service.workflows
@@ -102,6 +103,7 @@ async def test_model_reload_applies_to_new_sessions_and_preserves_existing_final
     second = manager.prepare('123456', candidate)
     new_config = load_config(manager.initialize(second))
     assert new_config['model'] == 'new-provider/new-model'
+    assert new_config['final_model'] == 'final-provider/final-model'
     assert new_config['final_subagent'] == 'new-agent'
     assert new_config['final_concurrency'] == 2
     assert new_config['url'] != load_config(path)['url']
@@ -114,6 +116,7 @@ async def test_model_reload_applies_to_new_sessions_and_preserves_existing_final
     candidate['live_start'] = '2030-01-03 08:00:00'
     third = manager.prepare('123456', candidate)
     assert load_config(manager.initialize(third))['model'] == original['model']
+    assert 'final_model' not in load_config(manager.initialize(third))
     service.store.close()
 
 

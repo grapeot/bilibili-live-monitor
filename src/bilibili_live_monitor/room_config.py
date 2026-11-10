@@ -19,6 +19,11 @@ def validate_rooms(rooms):
             raise ValueError('content_mode必须是music或talk')
         if 'record_mode' in room and room['record_mode'] not in ('none', 'audio', 'video'):
             raise ValueError('record_mode必须是none、audio或video')
+        if 'local_only' in room and type(room['local_only']) is not bool:
+            raise ValueError('local_only必须是布尔值')
+        if 'notification_command' in room and (not isinstance(room['notification_command'], list)
+                or any(not isinstance(arg, str) or not arg.strip() for arg in room['notification_command'])):
+            raise ValueError('notification_command必须是命令字符串数组')
         greeting = room.get('greeting', '欢迎 {names} {suffix}')
         if not isinstance(greeting, str) or '{names}' not in greeting:
             raise ValueError('欢迎模板必须包含{names}')
@@ -45,11 +50,11 @@ def reload_plan(previous, incoming):
         workflow = result.get('session_workflow', {})
         if not isinstance(workflow, dict):
             raise ValueError('session_workflow必须是对象')
-        for key in ('publish', 'model', 'final_subagent', 'final_concurrency'):
+        for key in ('publish', 'model', 'final_model', 'final_subagent', 'final_concurrency'):
             workflow.pop(key, None)
         return result
     if fixed(previous) != fixed(incoming):
-        raise ValueError('热加载只支持rooms及未来场次的publish/model/final_subagent/final_concurrency；'
+        raise ValueError('热加载只支持rooms及未来场次的publish/model/final_model/final_subagent/final_concurrency；'
                          '其他设置需要重启')
     from .session_workflow import validate_settings
     workflow = incoming.get('session_workflow', {})
