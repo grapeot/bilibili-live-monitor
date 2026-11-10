@@ -1,6 +1,7 @@
 import React, {useEffect, useState} from 'react';
 import {WelcomeCopy} from './WelcomeCopy';
 import {useInstance} from './Instance';
+import {CopyLikeScript} from './CopyLikeScript';
 
 type Room = {room_id:string;label:string;intro:string;enabled:boolean;confirmed:string|null;delivery:string;error?:string};
 type Like = {id:string;room_id:string;requested:number;triggered:number;status:string};
@@ -49,6 +50,7 @@ export function AutomationControls(){
           <button aria-pressed={room.enabled} disabled={busy} onClick={()=>void act('/rooms/'+room.room_id,{enabled:!room.enabled},'PUT')}>{room.enabled?'关闭自动欢迎':'开启自动欢迎'}</button>
           <label>点赞次数 <input aria-label={room.label+'点赞次数'} type="number" min="1" max="1000" value={counts[room.room_id]??100} onChange={e=>setCounts({...counts,[room.room_id]:Number(e.target.value)})}/></label>
           <button disabled={busy||!!running||!state.account.logged_in||state.account.switching||room.confirmed!=='live'} onClick={()=>void act('/rooms/'+room.room_id+'/likes',{count:counts[room.room_id]??100,request_id:crypto.randomUUID()})}>执行点赞</button>
+          <CopyLikeScript roomId={room.room_id} count={counts[room.room_id]??100}/>
           {running&&<button disabled={busy} onClick={()=>void act('/likes/'+running.id+'/stop',{})}>停止点赞</button>}
         </div>
         <p>{room.intro}</p>

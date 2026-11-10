@@ -29,6 +29,7 @@ test('未登录不允许点赞，账号可选后显式切换',async()=>{
   render(<AutomationControls/>);
   await screen.findByText('合成文案');
   expect((screen.getByText('执行点赞') as HTMLButtonElement).disabled).toBe(true);
+  expect((screen.getByText('拷贝 JavaScript 代码') as HTMLButtonElement).disabled).toBe(false);
   fireEvent.change(screen.getByLabelText('账号资料'),{target:{value:'main'}});
   fireEvent.click(screen.getByText('切换账号'));
   await waitFor(()=>expect(fetch.mock.calls.length).toBeGreaterThan(1));
