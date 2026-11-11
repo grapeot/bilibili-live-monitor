@@ -230,7 +230,9 @@ def test_real_mixed_archive_retains_all_frames_audio_and_source_identity(capture
     original = codec._sha(source)
     source_audio = validation.audio_evidence(source, archive.command)
     if audio_boundary == 'initial_skip':
-        assert validation.unpack(source_audio['trims'])[0] == [1024, 0]
+        # Older Matroska demuxers do not expose CodecDelay as packet skip data.
+        # Keep the declared priming input and test the actual decoder contract.
+        assert validation.unpack(source_audio['trims'])[0] in ([1024, 0], [0, 0])
     else:
         assert all(trim == [0, 0] for trim in validation.unpack(source_audio['trims']))
         assert all(count == 1024 for count in validation.unpack(source_audio['decoded_samples']))
@@ -260,6 +262,12 @@ def test_real_mixed_archive_retains_all_frames_audio_and_source_identity(capture
         return command(args, **kwargs)
     monkeypatch.setattr(archive, 'command', portable)
     monkeypatch.setattr(archive, 'no_writer', lambda _: None)
+    verify_output = archive.verify_output
+    observed_audio = []
+    def checked_output(reference, path):
+        observed_audio.append(validation.audio_evidence(path, portable))
+        return verify_output(reference, path)
+    monkeypatch.setattr(archive, 'verify_output', checked_output)
     item = {'source': str(source), 'output': str(archive_path(source)), 'source_stat': file_stat(source),
             'workflow': str(workflow), 'legacy_row': {'sha256': original}}
     profile = archive.probe(source)['streams']
@@ -268,13 +276,21 @@ def test_real_mixed_archive_retains_all_frames_audio_and_source_identity(capture
     except ValueError as error:
         pytest.fail(f'合成fixture规格错误：{profile!r}: {error}')
     with archive.writer_lock(tmp_path) as fd:
-        if audio_boundary != 'zero_start':
-            with pytest.raises(ValueError, match='裁剪样本'):
-                archive.encode(item, fd)
+        try:
+            result = archive.encode(item, fd)
+        except ValueError as error:
+            assert audio_boundary != 'zero_start'
+            assert '裁剪样本' in str(error) or '有效样本' in str(error)
+            assert len(observed_audio) == 1
+            after = observed_audio[0]
+            assert (validation.unpack(source_audio['trims']) != validation.unpack(after['trims'])
+                    or validation.unpack(source_audio['decoded_samples']) != validation.unpack(after['decoded_samples']))
             assert codec._sha(source) == original
             assert not archive_path(source).exists() and not receipt_path(source).exists()
             return
-        assert archive.encode(item, fd)['status'] == 'archived'
+        # A muxer that preserves these boundaries may succeed, but only the
+        # strict evidence checks plus complete PCM equality below permit that.
+        assert result['status'] == 'archived'
     assert codec._sha(source) == original
     saved = json.loads(receipt_path(source).read_text())
     assert saved['codec_parameters']['status'] == 'mixed_parameters'
