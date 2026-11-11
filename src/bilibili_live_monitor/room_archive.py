@@ -46,19 +46,51 @@ def day_windows(start, end):
         start = upper
 
 
+def history_cutoffs(history_sources):
+    """跨实例交接前的数据来源；每项含database、session_root及交接截止until。"""
+    result = []
+    for item in history_sources or ():
+        if not isinstance(item, dict) or not all(isinstance(item.get(k), str) for k in ('database', 'session_root', 'until')):
+            raise ValueError('历史来源须含database、session_root与until')
+        until = epoch(item['until'])
+        if not math.isfinite(until):
+            raise ValueError('历史来源截止时间无效')
+        result.append({**item, 'until_epoch': until})
+    return result
+
+
+def merge_sources(main, extras, cutoff):
+    """截止前只用交接前来源，截止后只用当前来源，避免交接边界重复计数。"""
+    def keep(source, test):
+        return {'raw': [row for row in source['raw'] if test(epoch(row[0]))],
+                'items': [row for row in source['items'] if test(epoch(row[1]))],
+                'segments': [s for s in source['segments'] if test(epoch(s['start_utc']))]}
+    merged = keep(main, lambda at: at >= cutoff)
+    for source, until in extras:
+        part = keep(source, lambda at, until=until: at < until)
+        for key in merged:
+            merged[key].extend(part[key])
+    merged['raw'].sort(key=lambda row: epoch(row[0]))
+    merged['items'].sort(key=lambda row: epoch(row[1]))
+    merged['segments'].sort(key=lambda s: epoch(s['start_utc']))
+    return merged
+
+
 def archive_data(session_root, database, room_id, name, include_summaries=True, *, gift_share=None, now=None,
-                 historical_windows=(), historical_root=None):
+                 historical_windows=(), historical_root=None, history_sources=()):
     root = Path(session_root).resolve()
     sessions, windows, coverage, offline_keys = [], [], [], set()
     warnings = 0
     share_enabled = isinstance(gift_share, dict) and gift_share.get('enabled') is True
     share_uids = set(str(uid) for uid in gift_share.get('uids', []) if str(uid).isdigit()) if share_enabled else set()
     share_label = str(gift_share.get('label') or '指定观众')[:80] if share_enabled and share_uids else None
-    roots = [root]
+    sources = history_cutoffs(history_sources)
+    roots = [(root, None)]
     if historical_root and Path(historical_root).resolve() != root:
-        roots.append(Path(historical_root).resolve())
+        roots.append((Path(historical_root).resolve(), None))
+    roots += [(Path(item['session_root']).resolve(), item['until_epoch']) for item in sources]
     seen_keys = set()
-    for root, directory in [(r, d) for r in roots for d in sorted(r.iterdir())]:
+    for root, until, directory in [(r, u, d) for r, u in roots for d in sorted(r.iterdir())]:
         if not re.fullmatch(r'[a-f0-9]{24}', directory.name):
             continue
         if directory.name in seen_keys:
@@ -68,6 +100,8 @@ def archive_data(session_root, database, room_id, name, include_summaries=True, 
             if str(cfg.get('room_id')) != room_id:
                 continue
             start = epoch(cfg['start_utc'])
+            if until is not None and start >= until:
+                continue
             wf = read_object(root, directory / 'workflow.json')
             snap_path = within(root, directory / 'public/snapshot.json')
             snap = read_object(root, snap_path) if snap_path.is_file() else None
@@ -128,6 +162,9 @@ def archive_data(session_root, database, room_id, name, include_summaries=True, 
         return result
     earliest = min([a for a, _ in windows] + [epoch(s['start']) for s in sessions])
     source = read_source(Path(database), room_id, iso(earliest))
+    if sources:
+        source = merge_sources(source, [(read_source(Path(item['database']), room_id, iso(earliest)), item['until_epoch'])
+                                        for item in sources], max(item['until_epoch'] for item in sources))
     if history:
         # 早期归档可能只有原始进房报文；仅补足已授权历史窗口的缺失事件。
         from .danmaku import entry_message

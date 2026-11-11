@@ -25,6 +25,9 @@ def validate_instances(instances):
                 or parsed.scheme != 'http' or parsed.hostname not in ('127.0.0.1', 'localhost', '::1')
                 or parsed.username or parsed.password or parsed.path or parsed.query or parsed.fragment):
             raise ValueError('实例须为唯一ID及本机HTTP服务地址')
+        hidden = row.get('hidden_rooms', [])
+        if not isinstance(hidden, list) or not all(isinstance(r, str) and r.isdigit() for r in hidden):
+            raise ValueError('hidden_rooms须为数字房间号列表')
         result[ident] = {**row, 'url': url}
     if not result:
         raise ValueError('至少配置一个监控实例')
@@ -71,6 +74,9 @@ def room_snapshot(state, platform, automation, instance):
             room.update(status='error', error=candidate.get('last_error') or candidate.get('status_error') or '需要人工处理')
         elif candidate.get('status_error'):
             room.update(status='error', error=candidate['status_error'])
+    # 已移交其他实例的房间不在本实例首页显示；房间主页与历史场次链接仍可直接访问。
+    for rid in instance.get('hidden_rooms', []):
+        rooms.pop(rid, None)
     for rid, room in rooms.items():
         room.update(instance_id=instance['id'], instance_label=label, account_mode=mode)
         if rid in instance.get('archive', {}).get('rooms', {}):
@@ -107,6 +113,14 @@ def create_gateway(config, *, transport=None):
             yield
 
     app = FastAPI(title='B站统一监控看板', lifespan=lifespan)
+
+    @app.middleware('http')
+    async def revalidate_pages(request, call_next):
+        # 页面每次向服务器确认版本，部署后不会继续用缓存里的旧页面；带哈希的资源仍可缓存。
+        response = await call_next(request)
+        if response.headers.get('content-type', '').startswith('text/html'):
+            response.headers['Cache-Control'] = 'no-cache'
+        return response
     archive_cache = {}
     archive_lock = asyncio.Lock()
 
@@ -144,7 +158,8 @@ def create_gateway(config, *, transport=None):
                                                room_id, archive['rooms'][room_id], not bool(summary_file),
                                                gift_share=archive.get('gift_share', {}).get(room_id),
                                                historical_windows=archive.get('historical_windows', {}).get(room_id, []),
-                                               historical_root=archive.get('historical_root'))
+                                               historical_root=archive.get('historical_root'),
+                                               history_sources=archive.get('history_sources', {}).get(room_id, []))
                 data['mode'] = row.get('mode', 'account')
                 if summary_file:
                     from .archive_summary import shared_summaries
@@ -199,11 +214,14 @@ def create_gateway(config, *, transport=None):
         row = instance(ident)
         if not re.fullmatch(r'[a-f0-9]{24}', key) or asset not in ('index.html', 'snapshot.json', 'data.json') or not row.get('session_root'):
             raise HTTPException(404, '结果不存在')
-        root = Path(row['session_root']).resolve()
-        path = (root / key / 'public' / asset).resolve()
-        if not path.is_file() and row.get('archive', {}).get('historical_root'):
-            root = Path(row['archive']['historical_root']).resolve()
-            path = (root / key / 'public' / asset).resolve()
+        archive = row.get('archive', {})
+        # 依次查本实例、旧归档及跨实例交接前的场次目录；只返回其中已生成的公开文件。
+        roots = [row['session_root'], archive.get('historical_root')] + [
+            item.get('session_root') for items in archive.get('history_sources', {}).values() for item in items]
+        for candidate in [Path(r).resolve() for r in roots if isinstance(r, str) and r]:
+            root, path = candidate, (candidate / key / 'public' / asset).resolve()
+            if path.is_relative_to(root) and path.is_file():
+                break
         if not path.is_relative_to(root) or not path.is_file():
             raise HTTPException(404, '结果尚未生成')
         if asset == 'index.html' and row.get('archive'):
