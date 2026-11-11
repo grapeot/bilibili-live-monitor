@@ -28,10 +28,13 @@ def archive_receipt(source):
     return saved
 
 
-def resolve_media(source, *, expected_sha=None):
+def resolve_media(source, *, expected_sha=None, video=False):
     """原片优先；原片缺失时，只使用已验收的固定位置副本。"""
     source = Path(source).resolve()
     if source.is_file():
+        if video:
+            from .media_codec import prepare_video
+            return prepare_video(source, expected_sha=expected_sha)[0]
         return source
     saved = archive_receipt(source)
     if expected_sha is not None and saved['legacy_row'].get('sha256') != expected_sha:
@@ -54,7 +57,8 @@ def source_paths(root, suffixes, *, recursive=False):
     """扫描时把已迁移原片作为逻辑输入列一次，不重复列压缩副本。"""
     root = Path(root).resolve()
     files = root.rglob('*') if recursive else root.iterdir()
-    paths = {p for p in files if p.is_file() and p.suffix.lower() in suffixes}
+    paths = {p for p in files if p.is_file() and p.suffix.lower() in suffixes
+             and '.codec-media' not in p.relative_to(root).parts}
     pattern = '**/archive/*.mkv.json' if recursive else 'archive/*.mkv.json'
     for receipt in root.glob(pattern):
         # 只按固定文件名枚举，留给本场筛选后的读取去验收。

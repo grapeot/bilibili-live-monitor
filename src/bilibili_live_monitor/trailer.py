@@ -125,7 +125,7 @@ def validate(plan, subject):
     sources, normalized = {}, []
     for clip in clips:
         original = Path(clip['source']).resolve()
-        source = resolve_media(original, expected_sha=clip['sha256'])
+        source = resolve_media(original, expected_sha=clip['sha256'], video=True)
         if not source.is_file():
             raise ValueError('源必须是本地文件')
         if source not in sources:
