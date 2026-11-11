@@ -81,6 +81,13 @@ def test_wrong_per_frame_dimensions_and_pts_are_rejected():
 def test_real_mixed_archive_retains_all_frames_audio_and_source_identity(capture, tmp_path, monkeypatch):
     source = tmp_path / '01234567-20300101T000000Z-89abcdef-00000.mkv'
     data = (capture / source.name).read_bytes()
+    # FFmpeg 6's raw-H264/segment mux path can declare 25fps despite the
+    # explicitly generated 30fps packet timeline. Canonicalize this fixture's
+    # video DefaultDuration (40ms -> 33.333333ms), without changing any packet.
+    old_duration = b'\x23\xe3\x83\x84' + (40_000_000).to_bytes(4, 'big')
+    new_duration = b'\x23\xe3\x83\x84' + (33_333_333).to_bytes(4, 'big')
+    assert data[:65536].count(old_duration) <= 1
+    data = data[:65536].replace(old_duration, new_duration) + data[65536:]
     # Valid EBML Void padding makes savings independent of the tiny test picture.
     source.write_bytes(data + b'\xec' + (0x10000000 | 1048576).to_bytes(4, 'big') + b'\0' * 1048576)
     # The first AAC SimpleBlock is deliberately non-key, as in real segmented
