@@ -10,6 +10,8 @@ from .browser import Browser
 from .config import load_settings
 from .live_share_control import configure_parser as configure_live_share
 from .live_share_control import main as live_share_main
+from .media_codec import configure_parser as configure_media_codec
+from .media_codec import main as media_codec_main
 from .offline_asr import configure_parser
 from .offline_asr import main as offline_asr_main
 from .recording_archive import configure_parser as configure_archive
@@ -38,11 +40,14 @@ def main():
     configure_trailer(commands)
     configure_live_share(commands)
     configure_archive(commands)
+    configure_media_codec(commands)
     args = parser.parse_args()
     if args.command == 'offline-asr':
         return offline_asr_main(args)
     if args.command == 'archive':
         return archive_main(args)
+    if args.command == 'media-codec':
+        return media_codec_main(args)
     if args.command == 'rotate-live':
         return rotation_main(args)
     if args.command == 'trends':

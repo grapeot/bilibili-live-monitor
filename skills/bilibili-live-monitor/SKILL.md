@@ -17,6 +17,8 @@ description: 在Apple Silicon Mac运行B站常驻录制平台，通过AI控制�
 
 ## AI 操作者入口
 
+PK录屏花屏、视频剪辑读取及压缩前的参数检查见[PK编码参数感知的离线读取](media-codec.md)。先准备实际媒体输入，再剪辑/压缩；原片只读，恢复副本不重编码。
+
 常驻目标、重启恢复、健康摘要、开播巡检与补位见 [平台运维子skill](platform-operations.md)。`rotate-live`默认只读预演，显式`--execute`才停止已确认停播的来源并补位；定时频率与最终一次时间由外部调度器管理。只注册本根skill，子skill按任务加载；真实路径、端口、模型和运行状态从本机私有overlay读取。
 
 已有录制素材的盘点、可恢复本地转写与文本/能量判读边界见 [离线ASR子skill](offline-asr.md)。

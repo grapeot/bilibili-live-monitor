@@ -13,6 +13,7 @@ from pathlib import Path
 
 from .archive_media import archive_path, archive_receipt, file_stat, receipt_path
 from .live_share import atomic_json
+from .media_codec import prepare_video
 
 
 def command(args, **kwargs):
@@ -23,7 +24,10 @@ def probe(path, *, frames=False):
     args = ['ffprobe', '-v', 'error', '-show_format', '-show_streams', '-of', 'json']
     if frames:
         args += ['-count_frames', '-show_frames', '-show_entries', 'frame=media_type,best_effort_timestamp_time']
-    info = json.loads(command([*args, str(path)]).stdout)
+    result = command([*args, str(path)])
+    if frames and result.stderr:
+        raise ValueError('视频帧解码报错，保留原片：' + result.stderr.decode(errors='replace')[-1000:])
+    info = json.loads(result.stdout)
     if frames:
         # Retain only the bound, not thousands of frame records in the receipt.
         times = [f['best_effort_timestamp_time'] for f in info.pop('frames', []) if f['media_type'] == 'video']
@@ -168,8 +172,9 @@ def check_source(item):
 def encode(item, lock_fd):
     check_source(item)
     source, target = Path(item['source']), Path(item['output'])
-    check_profile(probe(source))
-    source_info = probe(source, frames=True)
+    media_source, codec_parameters = prepare_video(source)
+    check_profile(probe(media_source))
+    source_info = probe(media_source, frames=True)
     if source_info['timestamp_max_adjustment_us'] > 1000:
         raise ValueError('原片时间戳需要超过1毫秒修正，保留原片')
     # 留出录制余量；Trash并不释放空间，不能计入可用空间。
@@ -182,7 +187,7 @@ def encode(item, lock_fd):
         raise ValueError('归档目标已存在，先inspect，不覆盖')
     try:
         command(['nice', '-n', '10', 'ffmpeg', '-hide_banner', '-nostdin', '-v', 'error', '-xerror', '-n',
-                 '-threads', '2', '-i', str(source), '-map', '0:v:0', '-map', '0:a:0',
+                 '-threads', '2', '-i', str(media_source), '-map', '0:v:0', '-map', '0:a:0',
                  '-vf', 'settb=AVTB,setpts=if(eq(N\\,0)\\,PTS\\,max(PTS\\,PREV_OUTPTS+1))',
                  '-c:v', 'hevc_videotoolbox', '-allow_sw', '0', '-require_sw', '0',
                  '-profile:v', 'main', '-pix_fmt', 'yuv420p', '-b:v', '2800k',
@@ -198,7 +203,8 @@ def encode(item, lock_fd):
         os.link(temporary, target)
         saved = {'status': 'archived', 'source': str(source), 'source_stat': item['source_stat'],
                  'output': str(target), 'output_stat': file_stat(target), 'source_info': source_info,
-                 'legacy_row': item['legacy_row'],
+                  'legacy_row': item['legacy_row'],
+                  'media_input': str(media_source), 'codec_parameters': codec_parameters,
                   'output_duration': float(output_info['format']['duration']), 'video_bitrate': 2_800_000,
                   'timestamp_policy': 'source_timestamps_monotonic_1us',
                  'verified_at': datetime.now(timezone.utc).isoformat()}

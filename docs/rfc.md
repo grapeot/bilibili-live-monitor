@@ -67,3 +67,10 @@ SQLite保存房间、segments、timeline和递增SSE事件；timeline按 `(room_
 构建、运行编排、上传、通知有不同副作用。现有某些同步入口串联这些步骤，不能把build或dry-run名称当作离线保证。`audience_publish`包含目标文件白名单、版本化产物、hash读回和原子切换；不能将其保证泛化到所有发布器。验证时对各实际入口分别检查写入、网络、进程和通知，不递归发布私有工作目录。
 
 一次性欢迎脚本默认预演，持久自动化按明确配置和开关执行，点赞须明确目标与次数；各类账本及失败状态按对应操作手册处理，不把某一种发送状态机套到全部入口。采集、AI、发布与互动的启用状态分别保留，普通浏览不应开启其他能力。
+# PK视频参数感知读取
+
+`media_codec.inspect_video`：只读码流摘要；本录制器H264 MKV分片的容器avcC与实际in-band SPS/PPS分别处理。异常分片只在同capture有界历史中找实际参数，不注入旧容器参数作为新证据。
+
+`prepare_video`：正常分片返回原路径；可恢复分片写入私有内容寻址缓存，等长更新CodecPrivate并将祖先失效CRC声明替换为Void，不重编码、不移动容器偏移。完整解码与音视频包/PTS/DTS校验后接纳。来源与依赖stat、原片SHA、缓存SHA共同约束复用。内部参数变化分片明确拒绝固定画幅处理。
+
+`resolve_media(video=True)`供剪辑使用；归档encode在probe/计帧/转码之前调用prepare，归档receipt同时保存原清单身份、实际media_input和final_avcc，以支持前序原片归档后的参数读取。音频读取与inspect/plan保持既有只读契约。
