@@ -32,6 +32,18 @@ def test_configured_rooms_get_per_instance_daily_links_without_private_config():
     assert result['rooms'][0]['url'] == 'https://live.bilibili.com/123456'
 
 
+def test_hidden_rooms_leave_home_but_keep_daily_archive_route():
+    state = {'rooms': [{'room_id': '123456', 'status': 'waiting'}, {'room_id': '234567', 'status': 'waiting'}]}
+    platform = {'policy': {'fixed_rooms': ['https://live.bilibili.com/234567']},
+                'candidates': [{'url': 'https://live.bilibili.com/234567', 'room_id': '234567', 'blocked': True}]}
+    row = {'id': 'example', 'label': '示例', 'hidden_rooms': ['234567'],
+           'archive': {'database': 'PRIVATE_PATH', 'rooms': {'123456': '甲', '234567': '乙'}}}
+    result = room_snapshot(state, platform, {}, row)
+    assert [r['room_id'] for r in result['rooms']] == ['123456']
+    with pytest.raises(ValueError):
+        validate_instances([{'id': 'one', 'label': 'one', 'url': 'http://127.0.0.1:1', 'hidden_rooms': [234567]}])
+
+
 @pytest.mark.parametrize('url', ['https://example.org', 'http://127.0.0.1:1/api', 'http://user@127.0.0.1:1'])
 def test_only_explicit_local_instance_endpoints(url):
     with pytest.raises(ValueError):
@@ -194,3 +206,29 @@ def test_read_only_history_root_serves_existing_reports_without_private_metadata
         (target/'public/index.html').unlink()
         (target/'public/index.html').symlink_to(outside)
         assert client.get(f'/instances/account/sessions/{key}/').status_code==404
+
+
+def test_handoff_history_sessions_and_pages_revalidate(tmp_path):
+    current, previous = tmp_path/'current', tmp_path/'previous'
+    current.mkdir()
+    key = 'f'*24
+    (previous/key/'public').mkdir(parents=True)
+    (previous/key/'config.json').write_text('{"room_id":"1"}')
+    (previous/key/'public/index.html').write_text('<html><main>交接前报告</main></html>')
+    config = {'instances':[{'id':'guest','label':'匿名','url':'http://127.0.0.1:8766','session_root':str(current),
+        'archive':{'rooms':{'1':'测试'},'history_sources':{'1':[{'database':'PRIVATE_DB','session_root':str(previous),
+                                                                  'until':'2026-01-02T00:00:00+00:00'}]}}}]}
+    with TestClient(create_gateway(config)) as client:
+        response = client.get(f'/instances/guest/sessions/{key}/')
+        assert response.status_code == 200 and '交接前报告' in response.text
+        assert response.headers['cache-control'] == 'no-cache'
+        assert client.get(f'/instances/guest/sessions/{key}/config.json').status_code == 404
+        assert client.get('/instances/guest/sessions/' + 'a'*24 + '/').status_code == 404
+
+
+@pytest.mark.parametrize('sources', [[], {'1': {}}, {'x': []}, {'1': [{'database': 'd', 'session_root': 's'}]},
+                                     {'1': [{'database': 'd', 'session_root': 's', 'until': 'bad'}]}])
+def test_bad_history_sources_fail_at_startup(sources):
+    with pytest.raises(ValueError):
+        validate_instances([{'id': 'one', 'label': 'one', 'url': 'http://127.0.0.1:1',
+                             'archive': {'rooms': {}, 'history_sources': sources}}])

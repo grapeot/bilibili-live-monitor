@@ -46,19 +46,52 @@ def day_windows(start, end):
         start = upper
 
 
+def history_cutoffs(history_sources):
+    """跨实例交接前的数据来源；每项含database、session_root及交接截止until，按截止排序后各取相邻截止之间的区间。"""
+    result = []
+    for item in history_sources or ():
+        if not isinstance(item, dict) or not all(isinstance(item.get(k), str) for k in ('database', 'session_root', 'until')):
+            raise ValueError('历史来源须含database、session_root与until')
+        until = epoch(item['until'])
+        if not math.isfinite(until):
+            raise ValueError('历史来源截止时间无效')
+        result.append({**item, 'until_epoch': until})
+    result.sort(key=lambda item: item['until_epoch'])
+    for index, item in enumerate(result):
+        item['since_epoch'] = result[index - 1]['until_epoch'] if index else -math.inf
+    return result
+
+
+def merge_sources(main, parts, cutoff):
+    """每段只取自身区间，当前来源只取最后截止之后，避免交接边界重复计数。
+
+    各段按时间先后拼接，不重新排序，保留各库内原有的记录顺序。"""
+    def keep(source, lower, upper):
+        return {'raw': [row for row in source['raw'] if lower <= epoch(row[0]) < upper],
+                'items': [row for row in source['items'] if lower <= epoch(row[1]) < upper],
+                'segments': [s for s in source['segments'] if lower <= epoch(s['start_utc']) < upper]}
+    merged = {'raw': [], 'items': [], 'segments': []}
+    for part in [keep(source, lower, upper) for source, lower, upper in parts] + [keep(main, cutoff, math.inf)]:
+        for key in merged:
+            merged[key].extend(part[key])
+    return merged
+
+
 def archive_data(session_root, database, room_id, name, include_summaries=True, *, gift_share=None, now=None,
-                 historical_windows=(), historical_root=None):
+                 historical_windows=(), historical_root=None, history_sources=()):
     root = Path(session_root).resolve()
     sessions, windows, coverage, offline_keys = [], [], [], set()
     warnings = 0
     share_enabled = isinstance(gift_share, dict) and gift_share.get('enabled') is True
     share_uids = set(str(uid) for uid in gift_share.get('uids', []) if str(uid).isdigit()) if share_enabled else set()
     share_label = str(gift_share.get('label') or '指定观众')[:80] if share_enabled and share_uids else None
+    sources = history_cutoffs(history_sources)
     roots = [root]
     if historical_root and Path(historical_root).resolve() != root:
         roots.append(Path(historical_root).resolve())
+    roots = [(r, None) for r in roots] + [(Path(item['session_root']).resolve(), item) for item in sources]
     seen_keys = set()
-    for root, directory in [(r, d) for r in roots for d in sorted(r.iterdir())]:
+    for root, bounds, directory in [(r, b, d) for r, b in roots for d in sorted(r.iterdir())]:
         if not re.fullmatch(r'[a-f0-9]{24}', directory.name):
             continue
         if directory.name in seen_keys:
@@ -68,6 +101,8 @@ def archive_data(session_root, database, room_id, name, include_summaries=True, 
             if str(cfg.get('room_id')) != room_id:
                 continue
             start = epoch(cfg['start_utc'])
+            if bounds and not bounds['since_epoch'] <= start < bounds['until_epoch']:
+                continue
             wf = read_object(root, directory / 'workflow.json')
             snap_path = within(root, directory / 'public/snapshot.json')
             snap = read_object(root, snap_path) if snap_path.is_file() else None
@@ -128,6 +163,12 @@ def archive_data(session_root, database, room_id, name, include_summaries=True, 
         return result
     earliest = min([a for a, _ in windows] + [epoch(s['start']) for s in sessions])
     source = read_source(Path(database), room_id, iso(earliest))
+    if sources:
+        # 历史库只读到截止前（多读一秒，再按精确边界过滤）。
+        source = merge_sources(source, [(read_source(Path(item['database']), room_id, iso(earliest),
+                                                     iso(item['until_epoch'] + 1)),
+                                         item['since_epoch'], item['until_epoch']) for item in sources],
+                               sources[-1]['until_epoch'])
     if history:
         # 早期归档可能只有原始进房报文；仅补足已授权历史窗口的缺失事件。
         from .danmaku import entry_message

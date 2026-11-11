@@ -16,16 +16,18 @@ def scope_source(source: dict, start: str, end: float) -> dict:
     }
 
 
-def read_source(database: Path, room_id: str, start: str) -> dict:
+def read_source(database: Path, room_id: str, start: str, end: str = '9999') -> dict:
+    """读取[start, end)的记录；end为可选的粗上界，调用方仍按精确时间过滤。"""
     with sqlite3.connect(database.resolve().as_uri() + '?mode=ro', uri=True) as db:
         db.execute('PRAGMA query_only=ON')
         db.execute('BEGIN')
         raw = [(at, cmd, json.loads(data)) for at, cmd, data in db.execute(
-            'SELECT received_utc,command,data FROM raw_events WHERE room_id=? AND received_utc>=? ORDER BY id',
-            (room_id, start))]
+            'SELECT received_utc,command,data FROM raw_events WHERE room_id=? AND received_utc>=? AND received_utc<? '
+            'ORDER BY id', (room_id, start, end))]
         items = [(kind, at, {**json.loads(data), '_record_id': ident}) for ident, kind, at, data in db.execute(
-            'SELECT id,kind,at_utc,data FROM timeline WHERE room_id=? AND at_utc>=? ORDER BY id', (room_id, start))]
+            'SELECT id,kind,at_utc,data FROM timeline WHERE room_id=? AND at_utc>=? AND at_utc<? ORDER BY id',
+            (room_id, start, end))]
         segments = [json.loads(data) for data, in db.execute(
-            "SELECT data FROM segments WHERE room_id=? AND json_extract(data,'$.start_utc')>=? ORDER BY seq",
-            (room_id, start))]
+            "SELECT data FROM segments WHERE room_id=? AND json_extract(data,'$.start_utc')>=? "
+            "AND json_extract(data,'$.start_utc')<? ORDER BY seq", (room_id, start, end))]
     return {'raw': raw, 'items': items, 'segments': segments}

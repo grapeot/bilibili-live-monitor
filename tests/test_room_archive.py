@@ -324,3 +324,67 @@ def test_fans_club_day_without_push_is_skipped_as_baseline(tmp_path):
     days = {d['date']: d for d in data['days']}
     assert (days['2026-01-03']['fans_club_close'], days['2026-01-03']['fans_club_change']) == (None, None)
     assert (days['2026-01-04']['fans_club_change'], days['2026-01-04']['fans_club_change_since']) == (-5, '2026-01-02')
+
+
+def test_handoff_history_merges_two_databases_without_boundary_double_count(tmp_path):
+    from datetime import datetime
+    tables = '''CREATE TABLE raw_events(id INTEGER PRIMARY KEY,room_id TEXT,received_utc TEXT,command TEXT,data TEXT);
+        CREATE TABLE timeline(id INTEGER PRIMARY KEY,room_id TEXT,kind TEXT,at_utc TEXT,data TEXT);
+        CREATE TABLE segments(room_id TEXT,seq INTEGER,data TEXT);'''
+    cutoff = '2026-01-02T04:00:00+00:00'
+    plan = {'old': [('c' * 24, '2026-01-01T04:00:00+00:00', '2026-01-02T04:00:00+00:00')],
+            'new': [('d' * 24, '2026-01-02T04:00:00+00:00', '2026-01-02T06:00:00+00:00')]}
+    # 两边都在交接边界两侧各有一条进房和粉丝团推送；只保留旧库截止前、新库截止后的部分。
+    events = {'old': [('2026-01-01T05:00:00+00:00', 50), ('2026-01-02T03:00:00+00:00', 44),
+                      ('2026-01-02T05:00:00+00:00', 999)],
+              'new': [('2026-01-02T03:30:00+00:00', 888), ('2026-01-02T05:00:00+00:00', 40)]}
+    paths = {}
+    for side in ('old', 'new'):
+        root = tmp_path / side
+        root.mkdir()
+        db = tmp_path / f'{side}.sqlite3'
+        with sqlite3.connect(db) as conn:
+            conn.executescript(tables)
+            for at, n in events[side]:
+                conn.execute('INSERT INTO raw_events(room_id,received_utc,command,data) VALUES (?,?,?,?)',
+                    ('1', at, 'ROOM_REAL_TIME_MESSAGE_UPDATE', json.dumps({'data': {'fans': 1, 'fans_club': n}})))
+                conn.execute('INSERT INTO timeline(room_id,kind,at_utc,data) VALUES (?,?,?,?)', ('1', 'entry', at, '{}'))
+        for key, start, end in plan[side]:
+            d = root / key
+            (d / 'public').mkdir(parents=True)
+            (d / 'config.json').write_text(json.dumps({'room_id': '1', 'start_utc': start}))
+            (d / 'workflow.json').write_text('{"stage":"completed"}')
+            (d / 'public/snapshot.json').write_text(json.dumps({'session_start': start, 'updated_at': end}))
+        paths[side] = (root, db)
+    # 旧目录中截止后才开始的场次不纳入。
+    late = paths['old'][0] / ('e' * 24)
+    (late / 'public').mkdir(parents=True)
+    (late / 'config.json').write_text(json.dumps({'room_id': '1', 'start_utc': '2026-01-02T05:00:00+00:00'}))
+    (late / 'workflow.json').write_text('{"stage":"completed"}')
+    history = [{'database': str(paths['old'][1]), 'session_root': str(paths['old'][0]), 'until': cutoff}]
+    data = archive_data(*paths['new'], '1', '测试', now=datetime.fromisoformat('2026-01-02T18:00:00+08:00'),
+                        history_sources=history)
+    assert sorted(s['key'] for s in data['sessions']) == ['c' * 24, 'd' * 24]
+    days = {d['date']: d for d in data['days']}
+    assert (days['2026-01-01']['entries'], days['2026-01-01']['fans_club_close']) == (1, 50)
+    assert (days['2026-01-02']['entries'], days['2026-01-02']['fans_club_close']) == (2, 40)
+    assert (days['2026-01-02']['fans_club_change'], data['periods'][0]['fans_club_daily_mean']) == (-10, 45)
+    assert 'PRIVATE' not in json.dumps(data) and str(tmp_path) not in json.dumps(data)
+    with pytest.raises(ValueError):
+        archive_data(*paths['new'], '1', '测试', history_sources=[{'database': 'x', 'session_root': 'y'}])
+
+
+def test_chained_history_sources_take_only_their_own_interval_in_order():
+    from bilibili_live_monitor.room_archive import history_cutoffs, merge_sources
+    sources = history_cutoffs([{'database': 'b', 'session_root': 'b', 'until': '2026-01-03T00:00:00+00:00'},
+                               {'database': 'a', 'session_root': 'a', 'until': '2026-01-02T00:00:00+00:00'}])
+    assert [s['database'] for s in sources] == ['a', 'b']
+
+    def source(*days):
+        return {'raw': [(f'2026-01-0{d}T12:00:00+00:00', 'X', {'n': n}) for d, n in days], 'items': [], 'segments': []}
+    # 两个历史库在 01-01 都有数据（并行监控期），只应计入一次；库内乱序保持原顺序。
+    a, b, current = source((1, 'a1'), (2, 'a2')), source((1, 'b1'), (2, 'b2'), (1, 'b0')), source((2, 'c2'), (3, 'c3'))
+    merged = merge_sources(current, [(a, s['since_epoch'], s['until_epoch']) if s['database'] == 'a'
+                                     else (b, s['since_epoch'], s['until_epoch']) for s in sources],
+                           sources[-1]['until_epoch'])
+    assert [row[2]['n'] for row in merged['raw']] == ['a1', 'b2', 'c3']
