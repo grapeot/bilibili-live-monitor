@@ -92,7 +92,7 @@ def verify_output(source_info, target):
         raise ValueError('无法验证原片解码帧数，保留原片')
     if video.get('nb_read_frames') != original_frames:
         raise ValueError('归档帧数改变')
-    if source_info.get('validation_policy') == validation.POLICY:
+    if source_info.get('validation_policy') in validation.POLICIES:
         validation.verify_evidence(source_info, info, target, command)
     command(['ffmpeg', '-nostdin', '-v', 'error', '-xerror', '-threads', '2', '-i', str(target),
              '-map', '0:v:0', '-map', '0:a:0', '-f', 'null', '-'])
@@ -205,7 +205,8 @@ def encode(item, lock_fd):
                  '-profile:v', 'main', '-pix_fmt', 'yuv420p', '-b:v', '2800k',
                  '-color_range', 'tv', '-colorspace', 'bt709', '-color_trc', 'bt709', '-color_primaries', 'bt709',
                   '-fps_mode', 'passthrough', '-enc_time_base:v', 'filter', '-video_track_timescale', '1000000',
-                    '-c:a', 'copy', '-copyinkf:a', '-avoid_negative_ts', 'disabled', '-tag:v', 'hvc1', str(temporary)],
+                    '-c:a', 'copy', '-copyinkf:a', *validation.audio_tail_filter(source_info['audio_evidence']),
+                    '-avoid_negative_ts', 'disabled', '-tag:v', 'hvc1', str(temporary)],
                 pass_fds=(lock_fd,) if isinstance(lock_fd, int) else tuple(lock_fd))
         output_info = verify_output(source_info, temporary)
         check_source(item)
