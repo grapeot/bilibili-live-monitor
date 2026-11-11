@@ -372,3 +372,19 @@ def test_handoff_history_merges_two_databases_without_boundary_double_count(tmp_
     assert 'PRIVATE' not in json.dumps(data) and str(tmp_path) not in json.dumps(data)
     with pytest.raises(ValueError):
         archive_data(*paths['new'], '1', '测试', history_sources=[{'database': 'x', 'session_root': 'y'}])
+
+
+def test_chained_history_sources_take_only_their_own_interval_in_order():
+    from bilibili_live_monitor.room_archive import history_cutoffs, merge_sources
+    sources = history_cutoffs([{'database': 'b', 'session_root': 'b', 'until': '2026-01-03T00:00:00+00:00'},
+                               {'database': 'a', 'session_root': 'a', 'until': '2026-01-02T00:00:00+00:00'}])
+    assert [s['database'] for s in sources] == ['a', 'b']
+
+    def source(*days):
+        return {'raw': [(f'2026-01-0{d}T12:00:00+00:00', 'X', {'n': n}) for d, n in days], 'items': [], 'segments': []}
+    # 两个历史库在 01-01 都有数据（并行监控期），只应计入一次；库内乱序保持原顺序。
+    a, b, current = source((1, 'a1'), (2, 'a2')), source((1, 'b1'), (2, 'b2'), (1, 'b0')), source((2, 'c2'), (3, 'c3'))
+    merged = merge_sources(current, [(a, s['since_epoch'], s['until_epoch']) if s['database'] == 'a'
+                                     else (b, s['since_epoch'], s['until_epoch']) for s in sources],
+                           sources[-1]['until_epoch'])
+    assert [row[2]['n'] for row in merged['raw']] == ['a1', 'b2', 'c3']

@@ -28,6 +28,13 @@ def validate_instances(instances):
         hidden = row.get('hidden_rooms', [])
         if not isinstance(hidden, list) or not all(isinstance(r, str) and r.isdigit() for r in hidden):
             raise ValueError('hidden_rooms须为数字房间号列表')
+        sources = row.get('archive', {}).get('history_sources', {})
+        if not isinstance(sources, dict) or not all(isinstance(k, str) and k.isdigit() and isinstance(v, list)
+                                                    for k, v in sources.items()):
+            raise ValueError('history_sources须为房间号到来源列表的映射')
+        from .room_archive import history_cutoffs
+        for items in sources.values():
+            history_cutoffs(items)
         result[ident] = {**row, 'url': url}
     if not result:
         raise ValueError('至少配置一个监控实例')

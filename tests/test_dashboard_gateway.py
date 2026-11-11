@@ -224,3 +224,11 @@ def test_handoff_history_sessions_and_pages_revalidate(tmp_path):
         assert response.headers['cache-control'] == 'no-cache'
         assert client.get(f'/instances/guest/sessions/{key}/config.json').status_code == 404
         assert client.get('/instances/guest/sessions/' + 'a'*24 + '/').status_code == 404
+
+
+@pytest.mark.parametrize('sources', [[], {'1': {}}, {'x': []}, {'1': [{'database': 'd', 'session_root': 's'}]},
+                                     {'1': [{'database': 'd', 'session_root': 's', 'until': 'bad'}]}])
+def test_bad_history_sources_fail_at_startup(sources):
+    with pytest.raises(ValueError):
+        validate_instances([{'id': 'one', 'label': 'one', 'url': 'http://127.0.0.1:1',
+                             'archive': {'rooms': {}, 'history_sources': sources}}])
