@@ -6,6 +6,7 @@
 import fcntl
 import hashlib
 import json
+import logging
 import os
 import re
 import shutil
@@ -95,8 +96,10 @@ def _decode(path, *, short=False):
     args = ['ffmpeg', '-nostdin', '-v', 'error', '-xerror', '-threads', '2', '-i', str(path)]
     if short:
         args += ['-t', '1']
-    result = subprocess.run([*args, '-map', '0:v:0', '-map', '0:a?', '-f', 'null', '-'],
+    result = subprocess.run([*args, '-map', '0:v:0', '-map', '0:a?', '-fps_mode', 'passthrough', '-f', 'null', '-'],
                             capture_output=True, timeout=180)
+    if result.returncode or result.stderr:
+        logging.getLogger(__name__).warning('解码检查失败：%s', result.stderr.decode(errors='replace')[-1000:])
     return result.returncode == 0 and not result.stderr
 
 
