@@ -160,3 +160,36 @@ def test_archive_uses_normalized_source_and_keeps_original_identity(source, monk
     assert receipt['codec_parameters'] == parameters
     assert receipt['media_input'] == str(output)
     assert receipt['legacy_row']['sha256'] == codec._sha(source)
+
+
+def test_silent_wrong_height_must_not_bypass_parameter_history(tmp_path):
+    # R1: old SPS can decode successfully while silently losing picture rows.
+    for label, size in [('old', '192x128'), ('new', '192x144')]:
+        run(['ffmpeg', '-v', 'error', '-f', 'lavfi', '-i', f'testsrc2=size={size}:rate=30',
+             '-t', '2', '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '0', '-bf', '0',
+             '-c:a', 'aac', str(tmp_path / f'{label}.mkv')])
+    previous = tmp_path / f'{PREFIX}-00000.mkv'
+    # Strip repeated in-band headers so the stale container SPS determines decode.
+    clean = tmp_path / 'new-clean.mkv'
+    run(['ffmpeg', '-v', 'error', '-i', str(tmp_path / 'new.mkv'), '-c', 'copy',
+         '-bsf:v', 'filter_units=remove_types=7|8', str(clean)])
+    shutil.copyfile(clean, previous)
+    old, _, _ = codec._scan_file(tmp_path / 'old.mkv')
+    new, _, _ = codec._scan_file(clean)
+    source = tmp_path / f'{PREFIX}-00001.mkv'
+    data = clean.read_bytes()
+    source.write_bytes(codec._patch_header(data[:65536], new, old) + data[65536:])
+    assert codec._decode(source)  # no error, despite the wrong height
+    assert codec.inspect_video(source)['status'] == 'repairable'
+    output, report = codec.prepare_video(source)
+    info = json.loads(run(['ffprobe', '-v', 'error', '-show_streams', '-of', 'json', str(output)]).stdout)
+    assert info['streams'][0]['height'] == 144
+    assert report['final_avcc'] != old.hex()
+    assert codec._packets(source) == codec._packets(output)
+
+
+def test_low_disk_does_not_create_recovery_cache(source, monkeypatch):
+    monkeypatch.setattr(codec.shutil, 'disk_usage', lambda path: SimpleNamespace(free=0))
+    with pytest.raises(ValueError, match='空间不足'):
+        codec.prepare_video(source)
+    assert not (source.parent / '.codec-media').exists()

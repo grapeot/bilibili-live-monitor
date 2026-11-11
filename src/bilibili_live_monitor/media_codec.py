@@ -96,7 +96,8 @@ def _decode(path, *, short=False):
     args = ['ffmpeg', '-nostdin', '-v', 'error', '-xerror', '-threads', '2', '-i', str(path)]
     if short:
         args += ['-t', '1']
-    result = subprocess.run([*args, '-map', '0:v:0', '-map', '0:a?', '-fps_mode', 'passthrough', '-f', 'null', '-'],
+    result = subprocess.run([*args, '-map', '0:v:0', '-map', '0:a?', '-fps_mode', 'passthrough',
+                             '-enc_time_base:v', '1:1000000', '-f', 'null', '-'],
                             capture_output=True, timeout=180)
     if result.returncode or result.stderr:
         logging.getLogger(__name__).warning('解码检查失败：%s', result.stderr.decode(errors='replace')[-1000:])
@@ -149,7 +150,9 @@ def inspect_video(source):
     header, units, stat = _scan_file(source)
     _, initial, _ = _avcc(header)
     dependencies = []
-    if not _decode(source, short=True):
+    # Decode success is NOT proof of a correct SPS (a smaller old height can
+    # silently crop the decoded picture). Always establish the capture epoch.
+    if int(match[2]) > 0:
         initial, dependencies = _history(source, match)
     active = initial
     changed = False
