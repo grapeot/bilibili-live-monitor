@@ -201,6 +201,10 @@ def archive_data(session_root, database, room_id, name, include_summaries=True, 
     points = sorted((epoch(at), packet['data']['fans']) for at, command, packet in source['raw']
                     if command == 'ROOM_REAL_TIME_MESSAGE_UPDATE' and isinstance(packet.get('data'), dict)
                     and nonnegative_integer(packet['data'].get('fans')) is not None)
+    # 粉丝团为平台推送的当前点亮人数（存量），只在开播期间推送；每天取最后一次推送作为收盘值。
+    clubs = sorted((epoch(at), packet['data']['fans_club']) for at, command, packet in source['raw']
+                   if command == 'ROOM_REAL_TIME_MESSAGE_UPDATE' and isinstance(packet.get('data'), dict)
+                   and nonnegative_integer(packet['data'].get('fans_club')) is not None and observed(epoch(at)))
     watched = sorted((epoch(at), packet['data']['num']) for at, command, packet in source['raw']
                      if command == 'WATCHED_CHANGE' and isinstance(packet.get('data'), dict)
                      and nonnegative_integer(packet['data'].get('num')) is not None)
@@ -240,6 +244,20 @@ def archive_data(session_root, database, room_id, name, include_summaries=True, 
         if not day['has_message_observations']:
             for field in ('danmaku', 'entries', 'gift_count', 'gift_amount_yuan'):
                 day[field] = None
+    closes = {}
+    for at, value in clubs:
+        closes[datetime.fromtimestamp(at, ZONE).date().isoformat()] = (at, value)
+    previous = None
+    for date in sorted(days):
+        day = days[date]
+        close = closes.get(date)
+        day['fans_club_close'] = close[1] if close else None
+        day['fans_club_close_at'] = iso(close[0]) if close else None
+        # 与上一个有推送的日期比较，跨过下播期间，到期熄灭也计入变化。
+        day['fans_club_change'] = close[1] - previous[1] if close and previous else None
+        day['fans_club_change_since'] = previous[0] if close and previous else None
+        if close:
+            previous = (date, close[1])
     from .period_overview import overall_share, period_overview
     result = {'room_id': room_id, 'name': name, 'timezone': 'Asia/Shanghai',
             'sessions': sorted(sessions, key=lambda s: s['start'], reverse=True),

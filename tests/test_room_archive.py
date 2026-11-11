@@ -275,3 +275,52 @@ def test_asr_only_days_do_not_become_zero_message_days(tmp_path):
     assert data['periods'][0]['observed_days']==1
     assert data['periods'][0]['entries_daily_mean']==1
     assert data['periods'][0]['gift_amount_yuan']==0
+
+
+def test_fans_club_daily_close_and_change_cross_midnight(tmp_path):
+    from datetime import datetime
+    root, db = fixture(tmp_path)
+    start = epoch('2026-01-01T15:59:00+00:00')
+    with sqlite3.connect(db) as conn:
+        # 第一天两次推送，第二天两次推送；两场之间空档与场次外的推送不计入。
+        for at, n in [(10, 40), (50, 42), (100, 39), (210, 55), (290, 37), (1000, 99)]:
+            conn.execute('INSERT INTO raw_events(room_id,received_utc,command,data) VALUES (?,?,?,?)',
+                ('1', iso(start+at), 'ROOM_REAL_TIME_MESSAGE_UPDATE',
+                 json.dumps({'data': {'fans': 1, 'fans_club': n}})))
+    data = archive_data(root, db, '1', '测试', now=datetime.fromisoformat('2026-01-02T12:00:00+08:00'))
+    days = {d['date']: d for d in data['days']}
+    first, second = days['2026-01-01'], days['2026-01-02']
+    assert (first['fans_club_close'], first['fans_club_change'], first['fans_club_change_since']) == (42, None, None)
+    assert first['fans_club_close_at'] == iso(start+50)
+    assert (second['fans_club_close'], second['fans_club_change'], second['fans_club_change_since']) == (37, -5, '2026-01-01')
+    week = data['periods'][0]
+    assert (week['fans_club_latest'], week['fans_club_latest_date'], week['fans_club_daily_mean']) == (37, '2026-01-02', 39.5)
+    assert (week['fans_club_change'], week['fans_club_change_since']) == (-5, '2026-01-01')
+
+
+def test_missing_fans_club_stays_unknown(tmp_path):
+    from datetime import datetime
+    root, db = fixture(tmp_path)
+    data = archive_data(root, db, '1', '测试', now=datetime.fromisoformat('2026-01-02T12:00:00+08:00'))
+    assert all(d['fans_club_close'] is None and d['fans_club_change'] is None for d in data['days'])
+    assert data['periods'][0]['fans_club_daily_mean'] is None
+
+
+def test_fans_club_day_without_push_is_skipped_as_baseline(tmp_path):
+    from datetime import datetime
+    root, db = fixture(tmp_path)
+    for key, day in [('c' * 24, '2026-01-03'), ('d' * 24, '2026-01-04')]:
+        d = root / key
+        (d / 'public').mkdir(parents=True)
+        (d / 'config.json').write_text(json.dumps({'room_id': '1', 'start_utc': day + 'T04:00:00+00:00'}))
+        (d / 'workflow.json').write_text(json.dumps({'stage': 'completed'}))
+        (d / 'public/snapshot.json').write_text(json.dumps({'session_start': day + 'T04:00:00+00:00',
+            'updated_at': day + 'T05:00:00+00:00', 'session_summary': {}}))
+    with sqlite3.connect(db) as conn:
+        for at, n in [('2026-01-01T16:03:50+00:00', 30), ('2026-01-04T04:30:00+00:00', 25)]:
+            conn.execute('INSERT INTO raw_events(room_id,received_utc,command,data) VALUES (?,?,?,?)',
+                ('1', at, 'ROOM_REAL_TIME_MESSAGE_UPDATE', json.dumps({'data': {'fans': 1, 'fans_club': n}})))
+    data = archive_data(root, db, '1', '测试', now=datetime.fromisoformat('2026-01-04T12:00:00+08:00'))
+    days = {d['date']: d for d in data['days']}
+    assert (days['2026-01-03']['fans_club_close'], days['2026-01-03']['fans_club_change']) == (None, None)
+    assert (days['2026-01-04']['fans_club_change'], days['2026-01-04']['fans_club_change_since']) == (-5, '2026-01-02')
