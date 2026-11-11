@@ -104,7 +104,7 @@ def _decode(path, *, short=False):
     return result.returncode == 0 and not result.stderr
 
 
-def _history(source, match, limit=32):
+def _history(source, match, limit=512):
     found, dependencies = {}, []
     number = int(match[2])
     for n in range(number - 1, max(-1, number - limit - 1), -1):
@@ -245,15 +245,16 @@ def _patch_header(head, old, initial):
     return bytes(patched)
 
 
-def prepare_video(source, *, expected_sha=None):
+def prepare_video(source, *, expected_sha=None, allow_mixed=False):
     """返回(可解码路径, 参数报告)。只创建私有副本，正常来源不复制。"""
     source = Path(source).resolve(strict=True)
     report = inspect_video(source)
     if expected_sha is not None and _sha(source) != expected_sha:
         raise CodecParametersError('源片指纹不符')
-    if report['status'] == 'mixed_parameters':
+    if report['status'] == 'mixed_parameters' and not allow_mixed:
         raise CodecParametersError('分片内部编码参数变化，须按参数边界拆分；保留原片')
-    if report['status'] != 'repairable':
+    if (report['status'] not in ('repairable', 'mixed_parameters')
+            or report['header_avcc'] == report['initial_avcc']):
         return source, report
     _check_inputs(report)
     source_sha = _sha(source)
@@ -263,7 +264,8 @@ def prepare_video(source, *, expected_sha=None):
         raise CodecParametersError('新参数超出原CodecPrivate空间，保留原片')
     if shutil.disk_usage(source.parent).free < 2 * source.stat().st_size + 64 * 1024**2:
         raise CodecParametersError('空间不足以同时保留原片与恢复临时副本')
-    key = hashlib.sha256((POLICY + source_sha + initial.hex()).encode()).hexdigest()
+    key = hashlib.sha256((POLICY + source_sha + initial.hex()
+                          + (':mixed' if report['status'] == 'mixed_parameters' else '')).encode()).hexdigest()
     root = source.parent / '.codec-media'
     root.mkdir(exist_ok=True)
     target, receipt = root / f'{key}.mkv', root / f'{key}.json'
@@ -287,7 +289,10 @@ def prepare_video(source, *, expected_sha=None):
                 dst.write(_patch_header(head, old, initial))
                 while block := src.read(1024 * 1024):
                     dst.write(block)
-            if not _decode(temporary) or _packets(source) != _packets(temporary):
+            # Mixed inputs are fully decoded/checked by the adaptive archive
+            # path; ordinary fixed-canvas callers still reject them above.
+            if ((report['status'] != 'mixed_parameters' and not _decode(temporary))
+                    or _packets(source) != _packets(temporary)):
                 raise CodecParametersError('恢复副本解码或原码时间戳校验失败')
             _check_inputs(report)
             if _sha(source) != source_sha:

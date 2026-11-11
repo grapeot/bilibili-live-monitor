@@ -46,4 +46,6 @@
 
 `pytest -q tests/test_media_codec.py`使用本地合成H264/AAC码流覆盖正常分片、参数切换、过期CodecPrivate、历史缺失、前序已归档、缓存损坏、原片指纹变化、音视频包时间戳不变及自动压缩实际读取恢复副本。
 
+`pytest -q tests/test_archive_validation.py tests/test_media_codec.py`覆盖真实混合画幅归档及cleanup重验、非关键AAC首包完整保留、逐帧错误尺寸/时间漂移/音频缺包拒绝、重叠AAC包有效展示跨度、长capture锚点及过期初始头后的双向切换。跨平台集成测试仅将VideoToolbox换成libx265，其余滤镜、包复制与验收走生产代码；Apple Silicon实际硬编验收另在私有隔离媒体上执行。
+
 真实媒体验收放私有目录：比较原片前后SHA、恢复副本完整解码和抽帧；不把真实用户名、房号、视频或源路径放进测试fixture。

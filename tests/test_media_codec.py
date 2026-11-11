@@ -24,12 +24,14 @@ def capture(tmp_path_factory):
     for label, size, duration in [('old', '192x128', '1'), ('new', '160x128', '4')]:
         run(['ffmpeg', '-v', 'error', '-f', 'lavfi', '-i', f'testsrc2=size={size}:rate=30',
              '-t', duration, '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p',
-             '-g', '30', '-bf', '0', '-color_primaries', 'bt709', '-color_trc', 'bt709',
+             '-g', '30', '-bf', '0', '-x264-params', 'colorprim=bt709:transfer=bt709:colormatrix=bt709',
+             '-color_primaries', 'bt709', '-color_trc', 'bt709',
              '-colorspace', 'bt709', '-f', 'h264', str(root / f'{label}.h264')])
     (root / 'joined.h264').write_bytes((root / 'old.h264').read_bytes() + (root / 'new.h264').read_bytes())
     run(['ffmpeg', '-v', 'error', '-fflags', '+genpts', '-r', '30', '-i', str(root / 'joined.h264'),
          '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000', '-t', '5',
-         '-c:v', 'copy', '-c:a', 'aac', '-f', 'segment', '-segment_time', '2',
+         '-c:v', 'copy', '-r', '30', '-c:a', 'aac', '-color_primaries', 'bt709', '-color_trc', 'bt709',
+         '-colorspace', 'bt709', '-f', 'segment', '-segment_time', '2',
          '-reset_timestamps', '1', '-segment_format', 'matroska', str(root / f'{PREFIX}-%05d.mkv')])
     # Obtain an old header from a genuinely old single-resolution stream.
     run(['ffmpeg', '-v', 'error', '-r', '30', '-i', str(root / 'old.h264'),
@@ -143,6 +145,8 @@ def test_archive_uses_normalized_source_and_keeps_original_identity(source, monk
         observed.append(Path(path))
         return {'timestamp_max_adjustment_us': 0, 'format': {'duration': '2'}}
     monkeypatch.setattr(archive, 'probe', probe)
+    monkeypatch.setattr(archive.validation, 'audio_evidence', lambda *_: {})
+    monkeypatch.setattr(archive.validation, 'normalize_reference', lambda info, **_: info)
     monkeypatch.setattr(archive.shutil, 'disk_usage', lambda p: SimpleNamespace(free=10**12))
     monkeypatch.setattr(archive, 'verify_output', lambda info, path: {'format': {'duration': '2'}})
     commands = []
@@ -193,3 +197,42 @@ def test_low_disk_does_not_create_recovery_cache(source, monkeypatch):
     with pytest.raises(ValueError, match='空间不足'):
         codec.prepare_video(source)
     assert not (source.parent / '.codec-media').exists()
+
+
+def test_long_constant_capture_can_find_first_anchor_beyond_32_segments(tmp_path, capture, monkeypatch):
+    header, _, _ = codec._scan_file(capture / 'normal.mkv')
+    for number in range(41):
+        (tmp_path / f'{PREFIX}-{number:05}.mkv').write_bytes(b'constant-epoch')
+    monkeypatch.setattr(codec, '_scan_file', lambda p: (header, (), codec._stat(p)))
+    monkeypatch.setattr(codec, '_decode', lambda *_a, **_k: True)
+    report = codec.inspect_video(tmp_path / f'{PREFIX}-00040.mkv')
+    assert report['status'] == 'unchanged'
+    assert len(report['dependencies']) == 40
+
+
+def test_adaptive_preparation_restores_initial_epoch_without_removing_later_changes(source, capture):
+    # Previous first segment ends in the new epoch. This segment changes back
+    # and forth, but its container deliberately carries the old initial header.
+    joined = source.parent / 'back-and-forth.h264'
+    joined.write_bytes((capture / 'new.h264').read_bytes() + (capture / 'old.h264').read_bytes()
+                       + (capture / 'new.h264').read_bytes())
+    fresh = source.parent / 'fresh.mkv'
+    run(['ffmpeg', '-v', 'error', '-fflags', '+genpts', '-r', '30', '-i', str(joined),
+         '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000', '-t', '9',
+         '-c:v', 'copy', '-c:a', 'aac', str(fresh)])
+    old, _, _ = codec._scan_file(capture / 'old.mkv')
+    new, _, _ = codec._scan_file(fresh)
+    data = fresh.read_bytes()
+    source.write_bytes(codec._patch_header(data[:65536], new, old) + data[65536:])
+    original = codec._sha(source)
+    with pytest.raises(codec.CodecParametersError, match='分片内部'):
+        codec.prepare_video(source)
+    output, report = codec.prepare_video(source, expected_sha=original, allow_mixed=True)
+    assert output != source and report['status'] == 'mixed_parameters'
+    assert codec._packets(output) == codec._packets(source)
+    assert codec._sha(source) == original
+    frames = json.loads(run(['ffprobe', '-v', 'error', '-show_frames', '-select_streams', 'v:0',
+                             '-show_entries', 'frame=width,height', '-of', 'json', str(output)]).stdout)['frames']
+    sizes = [(f['width'], f['height']) for f in frames]
+    assert sizes[0] == sizes[-1] == (160, 128)
+    assert (192, 128) in sizes and len(sizes) == 270

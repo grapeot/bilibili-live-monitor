@@ -74,3 +74,5 @@ SQLite保存房间、segments、timeline和递增SSE事件；timeline按 `(room_
 `prepare_video`：正常分片返回原路径；可恢复分片写入私有内容寻址缓存，等长更新CodecPrivate并将祖先失效CRC声明替换为Void，不重编码、不移动容器偏移。完整解码与音视频包/PTS/DTS校验后接纳。来源与依赖stat、原片SHA、缓存SHA共同约束复用。内部参数变化分片明确拒绝固定画幅处理。
 
 `resolve_media(video=True)`供剪辑使用；归档encode在probe/计帧/转码之前调用prepare，归档receipt同时保存原清单身份、实际media_input和final_avcc，以支持前序原片归档后的参数读取。音频读取与inspect/plan保持既有只读契约。
+
+自动归档显式使用`allow_mixed=True`，恢复分片初始参数后逐帧解码；混合画幅等比归一至1920×1440并补边，普通剪辑读取不启用此选项。`archive_validation`独立负责逐帧尺寸/像素比例/BT709、视频PTS和AAC包内容/时间轴的证据生成与重验。回执的`source_info`是明确标注的归一化后比较参考，`pre_normalization_source_info`保留真实输入，时间轴用zlib/base64压缩。新回执在编码和清理时使用同一验收；旧回执沿用旧验收，不追溯宣称已有逐包证据。

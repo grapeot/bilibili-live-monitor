@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from fractions import Fraction
 from pathlib import Path
 
+from . import archive_validation as validation
 from .archive_media import archive_path, archive_receipt, file_stat, receipt_path
 from .live_share import atomic_json
 from .media_codec import prepare_video
@@ -23,15 +24,18 @@ def command(args, **kwargs):
 def probe(path, *, frames=False):
     args = ['ffprobe', '-v', 'error', '-show_format', '-show_streams', '-of', 'json']
     if frames:
-        args += ['-count_frames', '-show_frames', '-show_entries', 'frame=media_type,best_effort_timestamp_time']
+        args += ['-count_frames', '-show_frames', '-show_entries',
+                 'frame=media_type,best_effort_timestamp_time,width,height,pix_fmt,sample_aspect_ratio,color_space,color_transfer,color_primaries']
     result = command([*args, str(path)])
     if frames and result.stderr:
         raise ValueError('视频帧解码报错，保留原片：' + result.stderr.decode(errors='replace')[-1000:])
     info = json.loads(result.stdout)
     if frames:
         # Retain only the bound, not thousands of frame records in the receipt.
-        times = [f['best_effort_timestamp_time'] for f in info.pop('frames', []) if f['media_type'] == 'video']
+        decoded = info.pop('frames', [])
+        times = [f['best_effort_timestamp_time'] for f in decoded if f['media_type'] == 'video']
         info['timestamp_max_adjustment_us'] = timestamp_adjustment(times)
+        info['video_evidence'] = validation.video_evidence(decoded)
     return info
 
 
@@ -88,6 +92,8 @@ def verify_output(source_info, target):
         raise ValueError('无法验证原片解码帧数，保留原片')
     if video.get('nb_read_frames') != original_frames:
         raise ValueError('归档帧数改变')
+    if source_info.get('validation_policy') == validation.POLICY:
+        validation.verify_evidence(source_info, info, target, command)
     command(['ffmpeg', '-nostdin', '-v', 'error', '-xerror', '-threads', '2', '-i', str(target),
              '-map', '0:v:0', '-map', '0:a:0', '-f', 'null', '-'])
     return info
@@ -172,9 +178,13 @@ def check_source(item):
 def encode(item, lock_fd):
     check_source(item)
     source, target = Path(item['source']), Path(item['output'])
-    media_source, codec_parameters = prepare_video(source)
+    media_source, codec_parameters = prepare_video(source, expected_sha=item['legacy_row'].get('sha256'),
+                                                   allow_mixed=True)
+    mixed = codec_parameters['status'] == 'mixed_parameters'
     check_profile(probe(media_source))
-    source_info = probe(media_source, frames=True)
+    decoded_input = probe(media_source, frames=True)
+    decoded_input['audio_evidence'] = validation.audio_evidence(media_source, command)
+    source_info = validation.normalize_reference(decoded_input, mixed=mixed)
     if source_info['timestamp_max_adjustment_us'] > 1000:
         raise ValueError('原片时间戳需要超过1毫秒修正，保留原片')
     # 留出录制余量；Trash并不释放空间，不能计入可用空间。
@@ -187,13 +197,15 @@ def encode(item, lock_fd):
         raise ValueError('归档目标已存在，先inspect，不覆盖')
     try:
         command(['nice', '-n', '10', 'ffmpeg', '-hide_banner', '-nostdin', '-v', 'error', '-xerror', '-n',
-                 '-threads', '2', '-i', str(media_source), '-map', '0:v:0', '-map', '0:a:0',
-                 '-vf', 'settb=AVTB,setpts=if(eq(N\\,0)\\,PTS\\,max(PTS\\,PREV_OUTPTS+1))',
+                 '-threads', '2', '-filter_threads', '2', '-copyts',
+                 *(['-reinit_filter', '0'] if mixed else []),
+                 '-i', str(media_source), '-map', '0:v:0', '-map', '0:a:0',
+                 '-vf', validation.MIXED_FILTER if mixed else validation.TIME_FILTER,
                  '-c:v', 'hevc_videotoolbox', '-allow_sw', '0', '-require_sw', '0',
                  '-profile:v', 'main', '-pix_fmt', 'yuv420p', '-b:v', '2800k',
                  '-color_range', 'tv', '-colorspace', 'bt709', '-color_trc', 'bt709', '-color_primaries', 'bt709',
                   '-fps_mode', 'passthrough', '-enc_time_base:v', 'filter', '-video_track_timescale', '1000000',
-                   '-c:a', 'copy', '-tag:v', 'hvc1', str(temporary)],
+                    '-c:a', 'copy', '-copyinkf:a', '-avoid_negative_ts', 'disabled', '-tag:v', 'hvc1', str(temporary)],
                 pass_fds=(lock_fd,) if isinstance(lock_fd, int) else tuple(lock_fd))
         output_info = verify_output(source_info, temporary)
         check_source(item)
@@ -204,7 +216,10 @@ def encode(item, lock_fd):
         saved = {'status': 'archived', 'source': str(source), 'source_stat': item['source_stat'],
                  'output': str(target), 'output_stat': file_stat(target), 'source_info': source_info,
                   'legacy_row': item['legacy_row'],
-                  'media_input': str(media_source), 'codec_parameters': codec_parameters,
+                   'media_input': str(media_source), 'codec_parameters': codec_parameters,
+                   'pre_normalization_source_info': decoded_input,
+                   'normalization': 'aspect-preserving-1920x1440' if mixed else 'native',
+                   'source_info_scope': 'decoded reference after documented normalization',
                   'output_duration': float(output_info['format']['duration']), 'video_bitrate': 2_800_000,
                   'timestamp_policy': 'source_timestamps_monotonic_1us',
                  'verified_at': datetime.now(timezone.utc).isoformat()}
