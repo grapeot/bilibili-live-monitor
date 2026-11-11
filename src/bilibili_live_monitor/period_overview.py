@@ -18,6 +18,7 @@ def period_overview(days, *, now=None, share_amounts=None, share_label=None):
         item = {'days': count, 'start': start.isoformat(), 'end': today.isoformat(),
                 'observed_days': len(entries), 'entries_daily_mean': sum(entries) / len(entries) if entries else None,
                 'gift_amount_yuan': total, 'gift_amount_unknown': unknown}
+        item.update(fans_club_period(days, start.isoformat(), today.isoformat()))
         if share_label is not None:
             amounts = [(share_amounts or {}).get(row['date'], 0) for row in selected]
             own = sum(amount or 0 for amount in amounts)
@@ -25,6 +26,22 @@ def period_overview(days, *, now=None, share_amounts=None, share_label=None):
                                  'percentage': own / total * 100 if total and not unknown and None not in amounts else None}
         result.append(item)
     return result
+
+
+def fans_club_period(days, start, end):
+    """窗口内按天收盘的粉丝团人数；变化以窗口前最后一个收盘值为基线，缺基线时用窗口内首个收盘值。"""
+    closes = sorted((row['date'], row['fans_club_close']) for row in days
+                    if type(row.get('fans_club_close')) is int and row['date'] <= end)
+    inside = [(date, value) for date, value in closes if date >= start]
+    if not inside:
+        return {'fans_club_latest': None, 'fans_club_latest_date': None, 'fans_club_daily_mean': None,
+                'fans_club_change': None, 'fans_club_change_since': None}
+    before = [(date, value) for date, value in closes if date < start]
+    base = before[-1] if before else inside[0] if len(inside) > 1 else None
+    return {'fans_club_latest': inside[-1][1], 'fans_club_latest_date': inside[-1][0],
+            'fans_club_daily_mean': sum(value for _, value in inside) / len(inside),
+            'fans_club_change': inside[-1][1] - base[1] if base else None,
+            'fans_club_change_since': base[0] if base else None}
 
 
 def overall_share(days, amounts, label):

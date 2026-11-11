@@ -43,3 +43,20 @@ test.each([
  expect(!!link).toBe(visible);
  if(link){expect(link.getAttribute('href')).toBe('https://example.test/archive/');expect(link.getAttribute('target')).toBe('_blank');expect(link.getAttribute('rel')).toContain('noopener');}
 });
+
+test('按日显示粉丝团收盘值与较上次推送日期的变化，无推送显示 —',async()=>{
+ const base={session_keys:[],observed_seconds:3600,coverage_seconds:3600,danmaku:1,entries:1,gift_count:0,gift_amount_yuan:0,
+  gift_count_unknown:0,gift_amount_unknown:0,followers_change:null,followers_partial:false,has_observations:true};
+ const value={name:'测试主播',days:[
+  {...base,date:'2026-01-03',fans_club_close:null,fans_club_close_at:null,fans_club_change:null,fans_club_change_since:null},
+  {...base,date:'2026-01-02',fans_club_close:37,fans_club_close_at:'2026-01-02T04:00:00Z',fans_club_change:5,fans_club_change_since:'2026-01-01'}],
+  sessions:[],warnings:0,updated_at:'2026-01-03T03:00:00Z'};
+ vi.stubGlobal('fetch',vi.fn(async()=>({ok:true,json:async()=>value})));
+ render(<RoomArchive base="/instances/guest/" roomId="1"/>);
+ await screen.findByText('测试主播');
+ expect(screen.getByText('粉丝团人数')).toBeTruthy();
+ expect(screen.getByText('当天无平台推送')).toBeTruthy();
+ fireEvent.change(screen.getByLabelText('选择日期'),{target:{value:'2026-01-02'}});
+ expect(screen.getByText('37')).toBeTruthy();
+ expect(screen.getByText(/^较 01-01 \+5 · 截至/)).toBeTruthy();
+});

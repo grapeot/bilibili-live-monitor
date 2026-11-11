@@ -11,7 +11,8 @@ type Summary={followers_change:number|null;gift_count:number|null;gift_amount_yu
 type Session={key:string;start:string;end:string;status:string;has_result:boolean;summary:Summary;dates:string[]};
 type Day={date:string;session_keys:string[];observed_seconds:number;coverage_seconds:number;danmaku:number|null;entries:number|null;
   gift_count:number|null;gift_amount_yuan:number|null;gift_count_unknown:number;gift_amount_unknown:number;followers_change:number|null;followers_partial:boolean;has_observations:boolean;
-  watched_sessions?:{key:string;start:string;value:number|null;observed_at:string|null}[]};
+  watched_sessions?:{key:string;start:string;value:number|null;observed_at:string|null}[];
+  fans_club_close?:number|null;fans_club_close_at?:string|null;fans_club_change?:number|null;fans_club_change_since?:string|null};
 type Archive={room_id:string;name:string;mode?:string;timezone:string;sessions:Session[];summaries?:SummaryRow[];summary_source?:string;days:Day[];warnings:number;updated_at:string|null;periods?:PeriodSummary[];gift_share?:GiftShare};
 const clock=(value:string)=>new Date(value).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false});
 const number=(n:number|null|undefined)=>n==null?'—':n.toLocaleString('zh-CN');
@@ -48,6 +49,9 @@ export function RoomArchive({base,roomId}:{base:string;roomId:string}){
       <strong>{number(w.value)}</strong><small style={{display:'block'}}>开播 {clock(w.start)}{w.observed_at?' · 上报 '+clock(w.observed_at):' · 暂无上报'}</small>
      </section>):<strong>—</strong>}<small>截至所选日期末或当前的本场累计值；跨日含此前观看，不跨场相加去重</small></div>
      <div><span>礼物平台金额</span><strong>{selected.gift_amount_yuan==null?'—':'¥'+selected.gift_amount_yuan.toFixed(2)}{selected.gift_amount_unknown?'+':''}</strong><small>{number(selected.gift_count)} 件{selected.gift_count_unknown?'，另有数量未知事件':''}</small></div>
+      {'fans_club_close' in selected&&<div><span>粉丝团人数</span><strong>{number(selected.fans_club_close)}</strong><small>{selected.fans_club_close==null?'当天无平台推送':
+       (selected.fans_club_change==null||!selected.fans_club_change_since?'暂无更早记录可比较':'较 '+selected.fans_club_change_since.slice(5)+' '+(selected.fans_club_change>0?'+':'')+number(selected.fans_club_change))+
+       (selected.fans_club_close_at?' · 截至 '+clock(selected.fans_club_close_at):'')}</small></div>}
       <div><span>净涨粉</span><strong>{selected.followers_change==null?'—':(selected.followers_change>0?'+':'')+number(selected.followers_change)}</strong><small>{selected.followers_partial?'当天记录不完整':'按当天记录计算'}</small></div>
     </section>
     {selected.coverage_seconds<selected.observed_seconds*.95&&<p className="archive-note">当天转写未覆盖全部场次时间，空白时段不视为已采集。</p>}
@@ -59,6 +63,7 @@ export function RoomArchive({base,roomId}:{base:string;roomId:string}){
     </article>)}</section>
    </>}
     <p className="archive-note">日均来访按实际有记录天数计算，同一观众多次进入会重复计入。礼物为期间总金额，按平台标价统计，非主播实收；无记录显示 —。</p>
+    {data.days.some(d=>'fans_club_close' in d)&&<p className="archive-note">粉丝团人数为平台推送的当前点亮人数，平台只在开播时推送，每天取最后一次推送值；变化与上一个有推送的日期比较，包含下播期间的到期熄灭。</p>}
     {!!data.warnings&&<p role="alert">有 {data.warnings} 场记录暂时无法显示。</p>}
    <p className="archive-note">最新数据时间：{data.updated_at?clock(data.updated_at):'暂无'}</p>
   </>}
