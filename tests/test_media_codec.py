@@ -30,7 +30,7 @@ def capture(tmp_path_factory):
     (root / 'joined.h264').write_bytes((root / 'old.h264').read_bytes() + (root / 'new.h264').read_bytes())
     run(['ffmpeg', '-v', 'error', '-fflags', '+genpts', '-r', '30', '-i', str(root / 'joined.h264'),
          '-f', 'lavfi', '-i', 'sine=frequency=440:sample_rate=48000', '-t', '5',
-         '-c:v', 'copy', '-c:a', 'aac', '-color_primaries', 'bt709', '-color_trc', 'bt709',
+         '-c:v', 'copy', '-r', '30', '-c:a', 'aac', '-color_primaries', 'bt709', '-color_trc', 'bt709',
          '-colorspace', 'bt709', '-f', 'segment', '-segment_time', '2',
          '-reset_timestamps', '1', '-segment_format', 'matroska', str(root / f'{PREFIX}-%05d.mkv')])
     # Obtain an old header from a genuinely old single-resolution stream.

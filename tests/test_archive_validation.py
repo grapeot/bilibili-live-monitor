@@ -113,6 +113,11 @@ def test_real_mixed_archive_retains_all_frames_audio_and_source_identity(capture
     monkeypatch.setattr(archive, 'no_writer', lambda _: None)
     item = {'source': str(source), 'output': str(archive_path(source)), 'source_stat': file_stat(source),
             'workflow': str(workflow), 'legacy_row': {'sha256': original}}
+    profile = archive.probe(source)['streams']
+    try:
+        archive.check_profile({'streams': profile})
+    except ValueError as error:
+        pytest.fail(f'合成fixture规格错误：{profile!r}: {error}')
     with archive.writer_lock(tmp_path) as fd:
         assert archive.encode(item, fd)['status'] == 'archived'
     assert codec._sha(source) == original
