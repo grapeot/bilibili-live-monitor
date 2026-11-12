@@ -94,7 +94,13 @@ python -m bilibili_live_monitor.audience_crm build --config .local/example-crm.j
 
 在 `prepare` 与 `finish` 之间，针对 `plan.tasks` 中每个任务的 `input` 与 `result` 路径，调用指定 agent 生成备忘（运行前须实核底层模型映射），并发上限为 10。自动收尾读取 CRM 配置的 `author_agent`；未指定时，整场查证模式默认 `grok`，旧局部模式保留 `ollama_glm_5_3_flash`。可选 `coordinator_model`（`provider/model`）仅覆盖 CRM 总协调模型，不改变直播采集或原场终审配置。指定 agent 不可用时报告阻塞，不静默切换。
 
+设置 `author_agent: "cursor_grok_cli"` 时，OpenCode保留指定总协调模型，按人查证改由本机Launcher托管的Cursor CLI执行，固定`grok-4.7-high`、最多十并发、单片45分钟；此值是执行后端标识，不是OpenCode task名称。总协调按`plan.tasks`列表位置以`000`起编号，调用`python -m bilibili_live_monitor.cursor_finalize start --config SESSION_CONFIG --kind audience_finalize --shard 000`。单片只写候选，总协调语义审核后将`start`改为`accept`，程序按原CRM规则核对身份、版本与真实引文后转正；明确失败且确认无旧写入者才用`retry`，最多两次、优先同CLI session且模型不变。`reused=true`保留原结果；旧结果无CLI回执时记录`legacy_result`，不伪造Cursor成功。全部实际退出并验收后仍由总协调执行原`audience_crm finish`，不把JSON合法当作查证完成。
+
 `validate` 通过仅代表 JSON 结构与引用字段合法，不代表语义通过。接纳前核对本人归属、ASR 近音、跨场履约、原唱与主播演唱的区别，以及公开引用的必要性。局部召回没有后续记录，不等于承诺未兑现；同一入团送歌与具体点歌按同一履约链处理。
+
+### Cursor CLI 终审分片
+
+音乐与杂谈终审可设置 `final_subagent: "cursor_cli_grok"`，通过本机 Launcher 托管 Cursor CLI 分片。分片固定使用 `grok-4.7-high`，总协调由显式 `final_model: "provider/model"` 独立选择，不继承实时 `model`。必须启用 `finalize_parallel`，并发上限为十；总协调审核候选并执行 `accept` 后，继续各自的合并、来源登记与完成验收。`final_model` 只控制 OpenCode 总协调，不改变 Cursor 分片模型。热加载默认值只影响后续初始化的场次，已有场次保留其冻结配置。
 
 ### 整场文件式查证（可选）
 

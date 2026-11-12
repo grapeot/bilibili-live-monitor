@@ -1,4 +1,5 @@
 import json
+import os
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -214,4 +215,7 @@ def test_initial_workflow_exists_before_health_is_scheduled(tmp_path, monkeypatc
     monkeypatch.setattr(session_runner, 'advance', advance)
     monkeypatch.setattr(session_health, 'ensure_scheduled', schedule)
     assert session_runner.run(tmp_path / 'config.json') == 0
-    assert checked == [{'stage': 'created'}]
+    assert len(checked) == 1 and checked[0]['stage'] == 'created'
+    assert checked[0]['runner_runtime']['pid'] == os.getpid()
+    assert len(checked[0]['runner_runtime']['code_sha256']) == 64
+    assert len(checked[0]['runner_runtime']['cursor_worker_sha256']) == 64

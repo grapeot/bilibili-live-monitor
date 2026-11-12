@@ -73,6 +73,8 @@ def tick(settings):
             message = f'{type(error).__name__}: {error}'
             try:
                 stopped = stop_ai(session, state.get('audience_session'), children=True)
+                from .cursor_finalize import stop_workers
+                stopped = stop_workers(session, kinds=('audience_finalize',)) and stopped
             except Exception:
                 stopped = False
             atomic_json(state_path, state)
