@@ -42,6 +42,7 @@ class LikeSummary(BaseModel):
 
 
 class RoomResponse(BaseModel):
+    capture_health: dict | None = Field(default=None, description='当前房间采集任务累计及滚动一小时恢复/有效音频/缺口指标，重启任务重新计数')
     audio_error: str | None = None
     like_summary: LikeSummary | None = None
     reconnect_attempts: int = 0

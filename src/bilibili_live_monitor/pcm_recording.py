@@ -62,6 +62,12 @@ class PCMRecording:
         if time.monotonic() - self.last_progress > 40:
             raise RuntimeError('recording_stalled：40秒没有新音频进度')
 
+    def rotate(self):
+        """局部重绑前封口，新文件以真实恢复时间命名，不跨缺口拼接。"""
+        self._close_file()
+        self.prefix = self.session + '-' + datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ') + '-' + uuid.uuid4().hex[:8]
+        self.index = 0
+
     async def close(self):
         try:
             self._close_file()

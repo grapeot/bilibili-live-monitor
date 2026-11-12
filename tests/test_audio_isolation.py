@@ -12,7 +12,7 @@ async def test_audio_failure_retries_without_ending_recording(monkeypatch):
     room = {'room_id': '123456', 'record_mode': 'video'}
     store = SimpleNamespace(room=Mock(), event=Mock())
     cycles = AsyncMock(side_effect=[RuntimeError('播放器元素已更换'), asyncio.CancelledError()])
-    owner = SimpleNamespace(store=store, capture_cycles=cycles)
+    owner = SimpleNamespace(store=store, capture_cycles=cycles, capture_recovery={})
     monkeypatch.setattr(module.asyncio, 'sleep', AsyncMock())
     monkeypatch.setattr(module, 'ensure_playing', AsyncMock())
     with pytest.raises(asyncio.CancelledError):
@@ -23,7 +23,8 @@ async def test_audio_failure_retries_without_ending_recording(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_without_recording_original_reconnect_behavior_is_preserved():
-    owner = SimpleNamespace(capture_cycles=AsyncMock(side_effect=RuntimeError('synthetic')))
-    with pytest.raises(RuntimeError, match='synthetic'):
-        await module.Monitor.capture_audio(owner, {'record_mode': 'none'}, object(), 'synthetic')
+async def test_page_recovery_request_is_not_swallowed():
+    from bilibili_live_monitor.capture_recovery import PageRecoveryRequired
+    owner = SimpleNamespace(capture_recovery={}, capture_cycles=AsyncMock(side_effect=PageRecoveryRequired('synthetic')))
+    with pytest.raises(PageRecoveryRequired, match='synthetic'):
+        await module.Monitor.capture_audio(owner, {'room_id': '123456', 'record_mode': 'none'}, object(), 'synthetic')

@@ -84,6 +84,8 @@ python -m bilibili_live_monitor run --until 2030-01-01T22:00:00-08:00
 
 临时断流默认按2秒起指数退避，300秒封顶，连续第20次失败后停止自动重试并标为人工处理；连续有效采集60秒才重置。`MAX_RECONNECTS=20`、`RETRY_DELAY=2`、`RETRY_MAX_DELAY=300`为对应配置。房间状态包含`reconnect_attempts`与`next_retry_utc`。明确403/412/429不走持续重试，仍须人工确认后resume。专用Chrome保留`about:blank#live-monitor-anchor`空白页供查播与下一次开播复用，不要把它当作无用标签页关闭。
 
+网页 PCM 每 5 秒窗口保留 90%–120% 覆盖率、源状态、缺输入/丢样及媒体进度不低于 80% 的质量检查。单窗媒体进度异常时继续采样并保存原始 PCM，但不送入 ASR 且立即结束旧 ASR 上下文；连续异常先观察，满 15 秒触发局部重绑，满 30 秒持续不健康则升级房间级重连，需连续 10 秒有效样本才清除异常周期。播放器替换或音轨失效可立即局部重绑并共享 30 秒预算，局部恢复期间不刷新弹幕页，旧 PCM 封存后按真实恢复时间启用新前缀并记录 capture_gap。房间级重连仍有退避与页面启动等待，30秒是升级阈值而非恢复完成时限。看板计数限当前房间采集任务，停止/重启后重新计数。
+
 每房间独立Page并静音。audio录制或启用ASR时，video.captureStream音轨经AudioContext(16000Hz)与AudioWorklet收PCM，Worklet输出置0不外放。audio模式关闭ASR也必须播放；只有不需要audio/ASR/预览时才暂停网页视频，video录制由FFmpeg独立进行，none不保存媒体。复用网页已有WebSocket采集弹幕，不另建连接。缩略图仅显式启用、卡片可见且页面前台时请求。
 
 仅录制模式同时对顶层与子frame启用低渲染：根元素透明，并监听新增视频/自动播放以维持暂停。Chrome直播页不再显示画面，dashboard仍正常；页面布局、动画时序、脚本和WebSocket保留，ffmpeg继续独立录制。不全局冻结CSS动画，以免淡入式验证码始终透明而漏报。ASR或预览开启时不安装低渲染守卫，选项改变由平台关闭旧页再创建。`python scripts/verify_low_render.py --cdp-url <本机CDP>`可在独立合成页验证播放防护、静态/淡入验证码判据及非pause路径，不访问真实直播。

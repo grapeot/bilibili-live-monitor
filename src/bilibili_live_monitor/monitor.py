@@ -1,5 +1,6 @@
 import asyncio
 import math
+import random
 import time
 import uuid
 import wave
@@ -11,6 +12,7 @@ from .asr import StreamingASR
 from .audio_queue import AudioQueue
 from .browser import Browser, close_page, ensure_playing, room_url
 from .capture import close_pcm, read_pcm, start_pcm
+from .capture_recovery import CaptureRecovery, PageRecoveryRequired
 from .pcm_recording import PCMRecording
 from .preview import Previews
 from .recording import Recording
@@ -97,6 +99,7 @@ class Monitor:
         self.inference_task = None
         self.active_generation = None
         self.failures = {}
+        self.capture_recovery = {}
         self.warm_task = None
         self.previews = Previews(lambda rid: self.pages.get(rid) if any(
             r['room_id'] == rid and r.get('preview_enabled') for r in self.store.rooms()) else None)
@@ -260,6 +263,7 @@ class Monitor:
     async def capture(self, room, page, generation):
         room_id = room['room_id']
         self.failures[room_id] = room.get('reconnect_attempts', 0)
+        recovery = self.capture_recovery.setdefault(room_id, CaptureRecovery())
         try:
             if delay := remaining_delay(room.get('next_retry_utc')):
                 await asyncio.sleep(delay)
@@ -269,7 +273,12 @@ class Monitor:
                     if reconnect:
                         delay = backoff_delay(self.failures[room_id], self.settings.retry_delay,
                                               self.settings.retry_max_delay)
-                        await asyncio.sleep(delay)
+                        await asyncio.sleep(min(self.settings.retry_max_delay, delay * random.uniform(1, 1.2)))
+                        recovery.record('page_reloads')
+                        recovery.new_page()
+                        room['capture_health'] = recovery.summary()
+                        self.store.event('capture_recovery', {'room_id': room_id, 'action': 'page_reload',
+                                         'at_utc': iso_ms(time.time()*1000), 'reason': room.get('error')})
                         if page.is_closed():
                             if self.pages.get(room_id) is page:
                                 self.pages.pop(room_id, None)
@@ -346,6 +355,7 @@ class Monitor:
                 if self.pages.get(room_id) is page:
                     self.pages.pop(room_id, None)
                 self.failures.pop(room_id, None)
+                self.capture_recovery.pop(room_id, None)
                 if self.generations.get(room_id) == generation:
                     self.generations.pop(room_id, None)
 
@@ -357,7 +367,7 @@ class Monitor:
         last_store = 0
         if room.get('record_mode') == 'audio':
             recorder = PCMRecording(self.settings, room)
-            audio_task = asyncio.create_task(self.capture_cycles(room, page, generation, recorder))
+            audio_task = asyncio.create_task(self.capture_audio(room, page, generation, recorder))
         elif room.get('asr_enabled', True):
             audio_task = asyncio.create_task(self.capture_audio(room, page, generation))
         try:
@@ -436,24 +446,33 @@ class Monitor:
             self.store.event('platform_action', {'at_utc': iso_ms(time.time()*1000),
                              'action': 'human_attention', 'room_id': room['room_id'], 'attention': attention})
 
-    async def capture_audio(self, room, page, generation):
+    async def capture_audio(self, room, page, generation, recorder=None):
         failures = 0
+        recovery = self.capture_recovery.setdefault(room['room_id'], CaptureRecovery())
         while True:
             try:
-                await self.capture_cycles(room, page, generation)
+                if recorder is None:
+                    await self.capture_cycles(room, page, generation)
+                else:
+                    await self.capture_cycles(room, page, generation, recorder)
                 raise RuntimeError('audio_capture_ended')
             except asyncio.CancelledError:
                 raise
+            except PageRecoveryRequired:
+                raise
             except Exception as error:
-                if room.get('record_mode', 'none') == 'none':
+                if 'recording_refused' in str(error):
                     raise
-                # 音频采集与独立ffmpeg录像分开恢复；播放器更换不再截断录像。
+                if recovery.bad(immediate=True) == 'reload':
+                    raise PageRecoveryRequired(f'采音持续异常，局部恢复无效：{error}') from error
                 failures += 1
+                recovery.record('local_restarts')
                 room['audio_error'] = f'{type(error).__name__}: {error}'[:500]
+                room['capture_health'] = recovery.summary()
                 self.store.room(room)
                 self.store.event('audio_capture_retry', {'room_id': room['room_id'],
-                                                        'attempt': failures, 'error': room['audio_error']})
-                await asyncio.sleep(min(30, 2 ** min(failures - 1, 5)))
+                    'at_utc': iso_ms(time.time()*1000), 'attempt': failures, 'error': room['audio_error']})
+                await asyncio.sleep(min(5, 2 ** min(failures - 1, 3)))
                 try:
                     await ensure_playing(page)
                 except Exception:
@@ -466,7 +485,10 @@ class Monitor:
         offset = 0
         origin_ms = None
         pending_read = None
+        recovery = self.capture_recovery.setdefault(room_id, CaptureRecovery())
         await start_pcm(page)
+        if recorder:
+            recorder.rotate()
         try:
             while True:
                 if recorder:
@@ -496,6 +518,14 @@ class Monitor:
                            'missing_samples': payload['missing_samples'],
                            'dropped_samples': payload['dropped_samples'],
                            'track_muted_ms': payload['track_muted_ms']}
+                segment['player'] = payload.get('player')
+                previous_end = room.get('_capture_end_ms')
+                if previous_end is not None and payload['started'] - previous_end > 250:
+                    gap = (payload['started'] - previous_end) / 1000
+                    recovery.record('gap_seconds', gap)
+                    self.store.event('capture_gap', {'room_id': room_id,
+                        'start_utc': iso_ms(previous_end), 'end_utc': timing['start_utc'], 'seconds': gap})
+                room['_capture_end_ms'] = payload['ended']
                 try:
                     window_metadata(pcm, payload['started'], payload['ended'])
                     validate_source(payload)
@@ -507,10 +537,29 @@ class Monitor:
                 except Exception as error:
                     segment.update(status='error', error=f'{type(error).__name__}: {error}')
                     self.stream_error(segment, segment['error'])
-                    raise
+                    recovery.record('invalid_windows')
+                    recovery.record('invalid_seconds', timing['wall_seconds'])
+                    action = recovery.bad(immediate='播放器进度不足' not in str(error))
+                    room['audio_error'] = segment['error']
+                    room['capture_health'] = recovery.summary()
+                    self.store.room(room)
+                    self.store.event('capture_window_invalid', {**segment, 'text': ''})
+                    # 不让ASR上下文跨过异常窗口；原始PCM已经保存。
+                    self.finish_stream(stream_id, generation)
+                    stream_id, offset, origin_ms = uuid.uuid4().hex, 0, None
+                    if '播放器进度不足' not in str(error):
+                        raise
+                    if action == 'reload':
+                        raise PageRecoveryRequired(segment['error']) from error
+                    if action == 'rebind':
+                        raise
+                    continue
+                recovery.record('valid_seconds', timing['wall_seconds'])
+                recovery.good(timing['wall_seconds'])
+                room['capture_health'] = recovery.summary()
                 if room.get('asr_enabled', True):
                     self.submit(segment, pcm, generation)
-                if room.pop('audio_error', None):
+                if recovery.unhealthy_since is None and room.pop('audio_error', None):
                     self.store.room(room)
                 offset += len(pcm)//2
                 if room.get('record_mode', 'none') == 'none':
@@ -523,13 +572,17 @@ class Monitor:
             if recorder and not page.is_closed():
                 if pending_read is not None:
                     try:
-                        pcm, _ = await pending_read
+                        pcm, tail = await pending_read
                         recorder.write(pcm)
+                        if tail.get('ended') is not None:
+                            room['_capture_end_ms'] = tail['ended']
                     except Exception as error:
                         self.store.event('recording_read_error', {'room_id': room_id, 'error': str(error)})
                 try:
-                    pcm, _ = await asyncio.wait_for(read_pcm(page, 0), 4)
+                    pcm, tail = await asyncio.wait_for(read_pcm(page, 0), 4)
                     recorder.write(pcm)
+                    if tail.get('ended') is not None:
+                        room['_capture_end_ms'] = tail['ended']
                 except Exception as error:
                     self.store.event('recording_tail_error', {'room_id': room_id, 'error': str(error)})
             self.finish_stream(stream_id, generation)

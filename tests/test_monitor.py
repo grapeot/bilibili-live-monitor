@@ -219,8 +219,8 @@ async def test_reconnect_after_interrupted_track(tmp_path):
     monitor.generations['123456'] = 'generation'
     with pytest.raises(asyncio.CancelledError):
         await asyncio.wait_for(monitor.capture(room, page, 'generation'), 5)
-    assert page.reloads == 1 and page.closed
+    assert page.reloads == 0 and page.closed
     assert len(attempts) == 2
     assert room['status'] == 'capturing' and room['error'] is None
-    assert any('reconnecting' in event['data'] for event in store.events(0))
+    assert any(event['kind'] == 'audio_capture_retry' for event in store.events(0))
     store.close()
