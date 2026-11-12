@@ -44,6 +44,32 @@ def test_hidden_rooms_leave_home_but_keep_daily_archive_route():
         validate_instances([{'id': 'one', 'label': 'one', 'url': 'http://127.0.0.1:1', 'hidden_rooms': [234567]}])
 
 
+def test_hidden_rooms_leave_guard_list_without_changing_upstream_policy():
+    fixed = ['https://live.bilibili.com/123456', 'https://live.bilibili.com/234567']
+    platform = {'revision': 7, 'policy': {'mode': 'fixed', 'fixed_rooms': fixed},
+                'candidates': [{'url': fixed[0], 'room_id': '123456'},
+                               {'url': fixed[1], 'room_id': '234567', 'blocked': True, 'last_error': 'ai_stopped'},
+                               {'url': 'https://live.bilibili.com/22', 'room_id': '234567', 'blocked_alias': True},
+                               {'url': 'https://live.bilibili.com/234567/', 'blocked': True}]}
+    calls = []
+
+    def upstream(request):
+        calls.append((request.url.port, request.url.path, request.method))
+        return httpx.Response(200, stream=httpx.ByteStream(json.dumps(platform).encode()),
+                              headers={'Content-Type': 'application/json'})
+
+    config = {'instances': [{'id': 'account', 'label': '账号', 'url': 'http://127.0.0.1:8765', 'hidden_rooms': ['234567']},
+                            {'id': 'guest', 'label': '匿名', 'url': 'http://127.0.0.1:8766'}]}
+    with TestClient(create_gateway(config, transport=httpx.MockTransport(upstream))) as client:
+        data = client.get('/instances/account/api/platform').json()
+        assert [c['room_id'] for c in data['candidates']] == ['123456']
+        assert data['policy']['fixed_rooms'] == fixed and data['revision'] == 7
+        assert len(client.get('/instances/guest/api/platform').json()['candidates']) == 4
+        client.post('/instances/account/api/platform/decisions', json={})
+    assert calls[-1] == (8765, '/api/platform/decisions', 'POST')
+    assert len(platform['candidates']) == 4
+
+
 @pytest.mark.parametrize('url', ['https://example.org', 'http://127.0.0.1:1/api', 'http://user@127.0.0.1:1'])
 def test_only_explicit_local_instance_endpoints(url):
     with pytest.raises(ValueError):
