@@ -290,6 +290,9 @@ def render_snapshot(snapshot: dict, *, navigation=None) -> str:
                            'label': f'{clock(at)}：{value}'})
         latest = snapshot['latest'].get(field)
         note = f'最新 {latest["value"]} · {clock(epoch(latest["at"]))}' if latest else '每分钟收到的事件数'
+        if field == 'online':
+            label = '最近上报在线人数' if snapshot['phase'] == 'live' else '下播前在线人数'
+            note = f'{label} {latest["value"]} · 上报于 {clock(epoch(latest["at"]))}' if latest else '尚未收到平台在线数据'
         charts.append({'field': field, 'name': name, 'color': color, 'mode': mode,
                        'points': points, 'note': note})
     followups = ''.join('<li>' + ('<s>' if item['status'] == 'done' else '') + esc(item['name']) +
@@ -349,18 +352,8 @@ def render_snapshot(snapshot: dict, *, navigation=None) -> str:
                '</tbody></table></div></section>')
     if snapshot.get('content_mode') == 'talk':
         footer = ''
-    totals = snapshot.get('session_summary', {})
     from .activity_summary import render_gifters
     footer += render_gifters(snapshot.get('gift_summary', []))
-    change = totals.get('followers_change')
-    fans = '—' if change is None else f'{change:+d}' if change else '0'
-    count = str(totals.get('gift_count', 0)) + ('+' if totals.get('gift_count_unknown') else '')
-    amount = f'{totals.get("gift_amount_yuan", 0):.2f}' + ('+' if totals.get('gift_amount_unknown') else '')
-    watched = str(totals['watched']) if totals.get('watched') is not None else '—'
-    footer += ('<section id="session-summary"><h2>本场汇总</h2><div class="activity-table"><table>'
-               '<thead><tr><th>累计涨粉</th><th>礼物总数</th><th>礼物总金额（元）</th><th>看过人数</th></tr></thead>'
-               f'<tbody><tr><td>{fans}</td><td>{count}</td><td>{amount}</td><td>{watched}</td></tr></tbody>'
-               '</table></div><p>按本场已收到的数据汇总；看过人数采用平台累计值。</p></section>')
     data = {'title': snapshot['label'], 'timezone': 'Asia/Shanghai', 'since': iso(lo), 'until': iso(hi),
             'summary': {'gaps': [], 'unique_entry_uids': 0, 'gift_events': snapshot['counts']['gifts']}}
     revision = hashlib.sha256(json.dumps(snapshot, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
@@ -371,7 +364,8 @@ def render_snapshot(snapshot: dict, *, navigation=None) -> str:
     if destinations.get('audience_url'):
         from .audience_navigation import with_audience_links
         page = with_audience_links(page, destinations['audience_url'])
-    return page
+    from .session_overview import session_overview
+    return session_overview(page, snapshot['label'], snapshot, navigation=destinations)
 
 
 def atomic_json(path: Path, value: dict) -> None:

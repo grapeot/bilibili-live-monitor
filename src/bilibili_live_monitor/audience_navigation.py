@@ -1,4 +1,5 @@
 """可独立载入的静态观众导航；不导入数据库或运行时。"""
+import html
 import json
 import re
 from urllib.parse import urlsplit
@@ -8,7 +9,8 @@ NAVIGATION = r'''<script id="audience-navigation">
 function fill(){if(!document.getElementById('audience-entry')){
 const a=document.createElement('a');a.id='audience-entry';a.href=base.href;a.textContent='观众备忘';
 const songs=[...document.querySelectorAll('header a,nav a')].find(link=>link.textContent.trim()==='歌曲搜索');
-if(songs)songs.after(a);else{const nav=document.createElement('nav');nav.append(a);(document.querySelector('main')||document.body).prepend(nav);}}
+if(songs)songs.after(a);else{const shared=document.querySelector('.session-header nav');if(shared)shared.append(a);
+else{const nav=document.createElement('nav');nav.append(a);(document.querySelector('main')||document.body).prepend(nav);}}}
 if(!ready)return;for(const cell of document.querySelectorAll('#gift-summary tbody tr td:first-child')){
 if(cell.querySelector('a'))continue;const name=cell.textContent.trim(),ids=names.get(name)||[];
 const a=document.createElement('a');a.textContent=name;const url=new URL(ids.length===1?ids[0]+'/':'',base);
@@ -26,6 +28,8 @@ def with_audience_links(text, url):
             or parsed.query or parsed.fragment):
         raise ValueError('观众目录必须是有效HTTPS地址')
     script = NAVIGATION.replace('__URL__', json.dumps(url.rstrip('/') + '/').replace('<', r'\u003c'))
+    text = re.sub(r'(<a\b[^>]*\bid="audience-entry"[^>]*\bhref=")[^"]*(")',
+                  lambda match: match[1] + html.escape(url.rstrip('/') + '/', quote=True) + match[2], text)
     if 'id="audience-navigation"' in text:
         return re.sub(r'<script id="audience-navigation">.*?</script>', lambda _: script, text, flags=re.S)
     closing = '</body>' if '</body>' in text else '</html>'
