@@ -24,7 +24,7 @@ export function SessionOverviewChart({rows}:{rows:SummaryRow[]}){
  // 默认停在最右侧的最近场次；用户向左查看更早场次后，宽度变化或数据刷新不再把视图拉回。
  const pinned=useRef(true),latest=points.length?points[points.length-1].key||points[points.length-1].date+points[points.length-1].session:'';
  useLayoutEffect(()=>{pinned.current=true;},[latest,points.length]);
- useLayoutEffect(()=>{const node=container.current;if(node&&pinned.current)node.scrollLeft=node.scrollWidth;},[latest,points.length,width]);
+ useLayoutEffect(()=>{const node=container.current;if(node&&pinned.current)node.scrollLeft=node.scrollWidth;},[latest,points.length,width,available]);
  const follow=()=>{const node=container.current;if(node)pinned.current=node.scrollLeft+node.clientWidth>=node.scrollWidth-2;};
  const leftMax=ceiling(points.map(row=>row.metrics.online_mean)),rightMax=ceiling(points.map(row=>row.metrics.amount));
  const x=(index:number)=>(index+.5)*width/Math.max(1,points.length);
