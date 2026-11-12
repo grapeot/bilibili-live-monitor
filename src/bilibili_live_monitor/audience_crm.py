@@ -355,6 +355,8 @@ def _prepare(config, material):
 
 def finish(config, directory):
     directory = Path(directory).resolve()
+    from .cursor_finalize import require_run_stopped
+    require_run_stopped(directory)
     root = Path(config['workspace']).resolve()
     if directory.parent != root / 'runs' or not re.fullmatch('[a-f0-9]{64}', directory.name):
         raise ValueError('计划目录必须位于本主播私有runs目录')

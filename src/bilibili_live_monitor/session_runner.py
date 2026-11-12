@@ -3,6 +3,7 @@ import argparse
 import fcntl
 import hashlib
 import json
+import os
 import re
 import shlex
 import subprocess
@@ -305,6 +306,10 @@ def run(path):
         fcntl.flock(publisher, fcntl.LOCK_EX | fcntl.LOCK_NB)
         status_path = workspace / 'workflow.json'
         state = json.loads(status_path.read_text()) if status_path.exists() else {'stage': 'created'}
+        state['runner_runtime'] = {'pid': os.getpid(),
+            'code_sha256': hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+            'cursor_worker_sha256': hashlib.sha256(Path(__file__).with_name('cursor_finalize.py').read_bytes()).hexdigest(),
+            'started_at': iso(time.time())}
         # 首次健康任务可能在AI预检完成前启动，先发布可读取的初始状态。
         atomic_json(status_path, state)
         next_health_check = 0
@@ -339,6 +344,11 @@ def run(path):
                                                   or config.get('talk_finalize') is True)) and stopped
                             except Exception:
                                 stopped = False
+                    try:
+                        from .cursor_finalize import stop_workers
+                        stopped = stop_workers(config) and stopped
+                    except Exception:
+                        stopped = False
                     if stopped:
                         state['stage'] = 'attention'
                         try:

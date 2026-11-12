@@ -114,6 +114,8 @@ def database_rows(config, ident):
 
 
 def finish(config):
+    from .cursor_finalize import require_stopped
+    require_stopped(config, 'talk_finalize')
     plan, rows = validated_rows(config)
     # 单一总任务先检查跨片用词及改动，再调用本命令；程序只允许完整事务提交。
     with sqlite3.connect(config['database'], timeout=30) as db:

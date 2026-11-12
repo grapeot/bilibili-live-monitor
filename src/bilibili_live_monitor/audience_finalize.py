@@ -7,6 +7,30 @@ from pathlib import Path
 from . import audience_crm as crm
 from .live_share import atomic_json
 
+CURSOR_AUTHOR = 'cursor_grok_cli'
+
+
+def cursor_prompt(session, config, directory, prompt):
+    """保留CRM内容与总协调模型，只替换按人的执行后端。"""
+    if config['author_agent'] != CURSOR_AUTHOR:
+        return prompt
+    old = f"仅对reused=false（本场有新互动、新提名或来源变更）的任务使用task的{config['author_agent']}子代理处理input/result，最多同时10个；不可静默改模型或创建下一级代理。"
+    prompt = prompt.replace(old, '仅对reused=false的任务使用Cursor Grok CLI查证；不使用OpenCode task，不创建下一级代理。')
+    prompt = prompt.replace('使用OpenCode工具自主查证后续', '使用CLI文件读取/检索工具自主查证后续')
+    prompt = prompt.replace('或排定时任务。', '或安排本任务监督以外的定时任务。')
+    command = shlex.join(['env', f'PYTHONPATH={Path(__file__).resolve().parents[1]}', sys.executable,
+        '-m', 'bilibili_live_monitor.cursor_finalize', 'start', '--config', session['_config_path'],
+        '--kind', 'audience_finalize'])
+    return prompt + f'''
+总协调仍由本OpenCode会话完成，先创建可见todo并按人更新状态、CLI session及验收结果；总协调模型保持原指定配置，不改成分片模型。
+plan.tasks按列表位置从0编号，补零至少3位，例如000；编号对应同一person_id，不把person_id当数字序号。
+对每个非reused任务调用 `{command} --shard 000`，替换实际编号。Launcher托管单片Cursor，固定grok-4.7-high、每片45分钟、最多10并发；同批启动所有就绪片，不把长CLI直接塞进短bash，不用sleep占满工具预算。
+逐片日志/回执在{directory / 'cursor_workers'}；stream init含CLI session_id。文件存在、日志增长或进程存活都不等于完成，须核对退出0及最终result/success/is_error=false。
+Cursor只写候选，总协调逐项查证引用归属、未决承诺与previous保留，再把start改为accept（其他参数不变）完成程序验证及转正。reused=true的结果由原程序验证并直接保留；已有旧结果无Cursor回执时先做同样语义审核再accept，记录legacy_result，不伪造CLI回执、不重跑。
+明确failed/interrupted且无旧写入者时可把start改为retry，最多两次且优先同CLI UUID、同模型；发送不明先查回执与进程，不盲目重投或手工改状态。
+等待全部分片实际退出并验收，仍按原合同统一audience_crm finish，保留冻结材料、来源查证、逐字引用校验与current指针事务，不运行音乐终审的merge/corrections，不发布不通知。
+等CLI期间仅允许本任务唯一有界同会话回访，使用既有OpenCode submission/Launcher流程、原总协调模型与build agent、正确opencode_cwd及diagnose=false；每次读真实进展，完成即停链，不能用idle代替完成。超过本场预算或不可恢复时如实报告失败。
+'''
 
 def load_settings(session):
     path = Path(session['audience_crm_config'])
@@ -50,6 +74,8 @@ def advance(session, state):
             raise ValueError('CRM接纳版本房间错误')
         if not stop_ai(session, state.get('audience_session'), children=True):
             return False
+        from .cursor_finalize import require_run_stopped
+        require_run_stopped(directory)
         if config.get('publish_on_finalize') and not session.get('local_only', False):
             from .audience_publish import publish
             result = publish(config)
@@ -73,6 +99,8 @@ def advance(session, state):
     if not state.get('audience_submitted'):
         command = shlex.join([sys.executable, '-m', 'bilibili_live_monitor.audience_crm',
                              'finish', '--config', str(path), '--run', str(directory)])
+        if config['author_agent'] == CURSOR_AUTHOR:
+            command = shlex.join(['env', f'PYTHONPATH={Path(__file__).resolve().parents[1]}']) + ' ' + command
         prompt = f'''{tag}
 你负责此场CRM总协调，不改代码、不发布、不通知。读取{directory / 'plan.json'}及{directory / 'instructions.txt'}。
 plan.json中reused=true的任务已由程序校验复用上一版result，直接保留无需重跑；仅对reused=false（本场有新互动、新提名或来源变更）的任务使用task的{config['author_agent']}子代理处理input/result，最多同时10个；不可静默改模型或创建下一级代理。
@@ -87,7 +115,7 @@ plan.json中reused=true的任务已由程序校验复用上一版result，直接
             state['audience_dispatch_uncertain'] = True
             atomic_json(state_path, state)
 
-        dispatch(session, ai_session, prompt, root, handoff)
+        dispatch(session, ai_session, cursor_prompt(session, config, directory, prompt), root, handoff)
         state.pop('audience_dispatch_uncertain', None)
         state['audience_submitted'] = True
     return False

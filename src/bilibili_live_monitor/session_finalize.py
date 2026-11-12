@@ -124,6 +124,8 @@ def merge(config):
 
 
 def finish(config):
+    from .cursor_finalize import require_stopped
+    require_stopped(config, 'finalize')
     root = Path(config['workspace']) / 'finalize'
     plan = json.loads((root / 'plan.json').read_text())
     assert_frozen(config, plan)
@@ -201,6 +203,8 @@ def submit(config, session, on_handoff=lambda: None):
 
 
 def dispatch(config, session, prompt, root, on_handoff):
+    from .cursor_finalize import coordinator_prompt
+    prompt = coordinator_prompt(config, prompt, root)
     path = root / 'prompt.md'
     path.write_text(prompt)
     on_handoff()
