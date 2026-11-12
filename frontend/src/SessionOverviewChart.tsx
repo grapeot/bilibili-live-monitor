@@ -1,4 +1,4 @@
-import React,{useEffect,useRef,useState} from 'react';
+import React,{useEffect,useLayoutEffect,useRef,useState} from 'react';
 import type {SummaryRow} from './SessionSummaryTable';
 import './session_overview_chart.css';
 
@@ -21,6 +21,11 @@ export function SessionOverviewChart({rows}:{rows:SummaryRow[]}){
  },[rows.length>0]);
  const points=[...rows].reverse();
  const width=Math.max(available,points.length*76),height=290,top=16,bottom=222;
+ // 默认停在最右侧的最近场次；用户向左查看更早场次后，宽度变化或数据刷新不再把视图拉回。
+ const pinned=useRef(true),latest=points.length?points[points.length-1].key||points[points.length-1].date+points[points.length-1].session:'';
+ useLayoutEffect(()=>{pinned.current=true;},[latest,points.length]);
+ useLayoutEffect(()=>{const node=container.current;if(node&&pinned.current)node.scrollLeft=node.scrollWidth;},[latest,points.length,width,available]);
+ const follow=()=>{const node=container.current;if(node)pinned.current=node.scrollLeft+node.clientWidth>=node.scrollWidth-2;};
  const leftMax=ceiling(points.map(row=>row.metrics.online_mean)),rightMax=ceiling(points.map(row=>row.metrics.amount));
  const x=(index:number)=>(index+.5)*width/Math.max(1,points.length);
  const y=(value:number,max:number)=>bottom-value/max*(bottom-top);
@@ -39,7 +44,7 @@ export function SessionOverviewChart({rows}:{rows:SummaryRow[]}){
     <svg className="overview-axis" viewBox={`0 0 52 ${height}`} preserveAspectRatio="none" aria-label="左轴：平均在线人数">
      {[0,1,2,3,4].map(i=><text key={i} x="46" y={y(leftMax*i/4,leftMax)+4} textAnchor="end">{tick(leftMax*i/4)}</text>)}
     </svg>
-    <div className="overview-chart-scroll" ref={container} tabIndex={0} aria-label="按开播顺序排列的场次趋势，可横向滚动">
+    <div className="overview-chart-scroll" ref={container} tabIndex={0} onScroll={follow} aria-label="按开播顺序排列的场次趋势，默认显示最近场次，可向左滚动查看更早场次">
      <svg width={width} height={height} style={{width,height}} role="group" aria-label="柱形为平均在线，折线为每场礼物总金额">
       {[0,1,2,3,4].map(i=><line className="overview-gridline" key={i} x1="0" x2={width} y1={y(leftMax*i/4,leftMax)} y2={y(leftMax*i/4,leftMax)}/>)}
       {points.map((row,index)=>valid(row.metrics.online_mean)&&<rect key={index} className={'overview-bar'+(active===index?' active':'')}
@@ -63,7 +68,7 @@ export function SessionOverviewChart({rows}:{rows:SummaryRow[]}){
    </div>
    <output className="overview-chart-detail" aria-live="polite">{selected?
     `${selected.date} · ${selected.session} ｜ 平均在线 ${online(selected.metrics.online_mean)} 人 ｜ 礼物总金额 ${amount(selected.metrics.amount)}`:
-    '按开播顺序查看完整场次；悬停、点击或用键盘选中可查看数值。缺失数据不记为零。'}</output>
+    '默认显示最近场次，向左滚动查看更早场次；悬停、点击或用键盘选中可查看数值。缺失数据不记为零。'}</output>
   </>}
  </section>;
 }
