@@ -26,3 +26,24 @@ it('缺失金额使折线断开，零值保留，单点与空数据不生成无�
  expect(container.innerHTML).not.toMatch(/NaN|Infinity/);
  rerender(<SessionOverviewChart rows={[]}/>);expect(screen.getByText('暂无场次数据。')).toBeTruthy();
 });
+it('默认滚到最右侧最近场次，用户向左查看后刷新不拉回，新场次到来再回到最右',()=>{
+ const left=new WeakMap<Element,number>();
+ const restore=['scrollLeft','scrollWidth','clientWidth'].map(name=>[name,Object.getOwnPropertyDescriptor(HTMLElement.prototype,name)??
+  Object.getOwnPropertyDescriptor(Element.prototype,name)] as const);
+ Object.defineProperty(HTMLElement.prototype,'scrollWidth',{configurable:true,get:()=>1200});
+ Object.defineProperty(HTMLElement.prototype,'clientWidth',{configurable:true,get:()=>400});
+ Object.defineProperty(HTMLElement.prototype,'scrollLeft',{configurable:true,get(){return left.get(this)??0;},set(value:number){left.set(this,value);}});
+ try{
+  const rows=[row('03',20,2000),row('02',10,1000),row('01',5,500)];
+  const {container,rerender}=render(<SessionOverviewChart rows={rows}/>);
+  const scroll=container.querySelector('.overview-chart-scroll') as HTMLElement;
+  expect(scroll.scrollLeft).toBe(1200);
+  scroll.scrollLeft=100;fireEvent.scroll(scroll);
+  rerender(<SessionOverviewChart rows={[...rows]}/>);
+  expect(scroll.scrollLeft).toBe(100);
+  rerender(<SessionOverviewChart rows={[row('04',30,3000),...rows]}/>);
+  expect(scroll.scrollLeft).toBe(1200);
+ }finally{
+  for(const [name,descriptor] of restore){if(descriptor)Object.defineProperty(HTMLElement.prototype,name,descriptor);else delete (HTMLElement.prototype as any)[name];}
+ }
+});
