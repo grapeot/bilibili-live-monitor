@@ -9,8 +9,8 @@ NAVIGATION = r'''<script id="audience-navigation">
 function fill(){if(!document.getElementById('audience-entry')){
 const a=document.createElement('a');a.id='audience-entry';a.href=base.href;a.textContent='观众备忘';
 const songs=[...document.querySelectorAll('header a,nav a')].find(link=>link.textContent.trim()==='歌曲搜索');
-if(songs)songs.after(a);else{const nav=document.createElement('nav');nav.append(a);(document.querySelector('main')||document.body).prepend(nav);}}
-const entry=document.getElementById('audience-entry');if(entry&&entry.href!==base.href)entry.href=base.href;
+if(songs)songs.after(a);else{const shared=document.querySelector('.session-header nav');if(shared)shared.append(a);
+else{const nav=document.createElement('nav');nav.append(a);(document.querySelector('main')||document.body).prepend(nav);}}}
 if(!ready)return;for(const cell of document.querySelectorAll('#gift-summary tbody tr td:first-child')){
 if(cell.querySelector('a'))continue;const name=cell.textContent.trim(),ids=names.get(name)||[];
 const a=document.createElement('a');a.textContent=name;const url=new URL(ids.length===1?ids[0]+'/':'',base);

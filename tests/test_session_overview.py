@@ -31,7 +31,7 @@ def test_one_navigation_then_title_time_cards_and_charts():
 
 
 def test_missing_counts_negative_growth_and_unknown_values():
-    page = session_overview(PAGE, 'Room', {})
+    page = session_overview('<html><title>Room</title><main><h1>Room</h1><p>旧场次时间</p></main></html>', 'Room', {})
     assert page.count('<strong>—</strong>') == 4
     assert '旧场次时间' in page
     page = session_overview(PAGE, 'Room', {'session_summary': {'followers_change': 3,
@@ -39,13 +39,35 @@ def test_missing_counts_negative_growth_and_unknown_values():
     assert '<strong>+3</strong>' in page and '<strong>0+</strong>' in page
 
 
+def test_missing_snapshot_preserves_known_legacy_summary_and_moves_it_before_chart():
+    old = PAGE.replace('旧汇总', '<tr><td>+7</td><td>35</td><td>123.45</td><td>6789</td></tr>')
+    for snapshot in ({}, {'phase': 'completed'}):
+        page = session_overview(old, 'Room', snapshot)
+        for value in ('+7', '35', '123.45', '6789'):
+            assert f'<td>{value}</td>' in page
+        assert page.count('id="session-summary"') == 1
+        assert page.index('id="session-summary"') < page.index('data-chart="online"')
+
+
+def test_legacy_audience_script_targets_are_migrated_without_song_navigation():
+    from bilibili_live_monitor.audience_navigation import with_audience_links
+    old = with_audience_links(PAGE.replace('<a href="https://example.org/songs/">歌曲搜索</a>', ''),
+                              'https://example.org/old-audience/')
+    page = session_overview(old, 'Room', SNAPSHOT, navigation={'home_url': '/home/'})
+    assert page.count('<nav ') == 1
+    assert 'id="audience-entry" data-nav-key="audience_url" href="https://example.org/old-audience/"' in page
+    page = session_overview(old, 'Room', SNAPSHOT, navigation={'audience_url': 'https://example.org/new-audience/'})
+    assert 'https://example.org/old-audience/' not in page
+    assert page.count('<nav ') == 1
+
+
 def test_room_name_and_navigation_are_escaped_and_unsafe_targets_ignored():
     page = session_overview(PAGE, r'<script>"\1&', {},
                             navigation={'home_url': 'javascript:alert(1)', 'songs_url': '//evil.example',
-                                        'audience_url': 'https://example.org/?a="&b=1'})
+                                        'audience_url': 'https://example.org/a"&b/'})
     assert '<script>' not in page and '&lt;script&gt;' in page and '\\1' in page
     assert 'javascript:' not in page and '//evil.example' not in page
-    assert 'href="https://example.org/?a=&quot;&amp;b=1"' in page
+    assert 'href="https://example.org/a&quot;&amp;b/"' in page
 
 
 def test_cross_day_completed_and_attention_metadata():

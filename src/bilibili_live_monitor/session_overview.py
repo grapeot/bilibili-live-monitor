@@ -1,5 +1,6 @@
 """本地网关与静态单场页共用的展示层；不取数或改变快照。"""
 import html
+import json
 import math
 import re
 from datetime import datetime
@@ -115,6 +116,12 @@ def session_overview(content, name, snapshot, *, navigation=None):
     parser = Navigation()
     parser.feed(content)
     destinations = parser.links
+    audience_script = re.search(r'<script id="audience-navigation">\s*\(\(\)=>\{const base=new URL\(("(?:\\.|[^"\\])*")\)', content)
+    if audience_script and 'audience_url' not in destinations:
+        try:
+            destinations['audience_url'] = json.loads(audience_script[1])
+        except ValueError:
+            pass
     destinations.update(navigation or {})
     links = []
     for key, label in [('home_url', '返回主页'), ('songs_url', '歌曲搜索'), ('audience_url', '观众备忘')]:
@@ -124,6 +131,9 @@ def session_overview(content, name, snapshot, *, navigation=None):
             links.append(f'<a{identity} data-nav-key="{key}" href="{html.escape(target, quote=True)}">{label}</a>')
     header = ('<header class="session-header"><span class="session-brand">' + html.escape(name) + '</span>'
               '<nav aria-label="页面导航">' + ''.join(links) + '</nav></header>')
+    old_summary = re.search(r'<section id="session-summary"[^>]*>.*?</section>', content, flags=re.S)
+    summary = (old_summary[0] if old_summary and not isinstance(snapshot.get('session_summary'), dict)
+               else summary_cards(snapshot))
     # 允许网关对新页或旧页重复应用同一布局；保留图表、脚本与刷新标识。
     content = re.sub(r'<header class="session-header">.*?</header>', '', content, flags=re.S)
     content = re.sub(r'<nav class="archive-nav">.*?</nav>', '', content, flags=re.S)
@@ -141,6 +151,9 @@ def session_overview(content, name, snapshot, *, navigation=None):
         content = re.sub(r'(</h1>)\s*(?:<p[^>]*>.*?</p>)?', lambda m: m[1] + metadata,
                          content, count=1, flags=re.S)
     # 首屏汇总放在场次时间之后，早于图表及操作提示。
-    content = re.sub(r'(</h1>(?:\s*<p[^>]*>.*?</p>)?)', lambda m: m[1] + summary_cards(snapshot),
+    content = re.sub(r'(</h1>(?:\s*<p[^>]*>.*?</p>)?)', lambda m: m[1] + summary,
                      content, count=1, flags=re.S)
+    if safe_target(destinations.get('audience_url')):
+        from .audience_navigation import with_audience_links
+        content = with_audience_links(content, destinations['audience_url'])
     return content
