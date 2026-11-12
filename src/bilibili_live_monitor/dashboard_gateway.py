@@ -56,6 +56,19 @@ def browser_automation(data):
             'notifications': [project(r, ('id', 'label', 'event', 'status')) for r in data.get('notifications', [])]}
 
 
+def candidate_room_id(candidate):
+    return str(candidate.get('room_id') or candidate.get('url', '').rstrip('/').rsplit('/', 1)[-1])
+
+
+def visible_platform(platform, instance):
+    """首页守候列表与房间卡片同样隐藏已移交房间；上游固定名单与封禁记录不变。"""
+    hidden = set(instance.get('hidden_rooms', []))
+    if not hidden:
+        return platform
+    return {**platform, 'candidates': [c for c in platform.get('candidates', [])
+                                       if candidate_room_id(c) not in hidden]}
+
+
 def room_snapshot(state, platform, automation, instance):
     account = automation.get('account', {})
     mode = account.get('mode', 'account')
@@ -66,7 +79,7 @@ def room_snapshot(state, platform, automation, instance):
     for candidate in platform.get('candidates', []):
         if candidate.get('url') not in fixed:
             continue
-        rid = candidate.get('room_id') or candidate['url'].rstrip('/').rsplit('/', 1)[-1]
+        rid = candidate_room_id(candidate)
         if rid not in rooms:
             rooms[rid] = dict(room_id=rid, title=candidate.get('title') or rid, url=candidate['url'],
                 cover_url='', status='waiting', record_mode=platform['policy'].get('record_mode', 'audio'),
@@ -283,7 +296,16 @@ def create_gateway(config, *, transport=None):
             raise HTTPException(404, '不支持的监控接口')
         if row.get('mode') == 'anonymous' and request.method != 'GET' and path.startswith(('automation', 'assistant')):
             raise HTTPException(403, '匿名实例不提供账号、欢迎或点赞操作')
-        summary_response = ((path == 'automation' and request.method == 'GET')
+        if path == 'platform' and request.method == 'GET' and row.get('hidden_rooms'):
+            try:
+                response = await app.state.client.get(row['url'] + '/api/platform', params=request.query_params)
+                response.raise_for_status()
+                return visible_platform(response.json(), row)
+            except httpx.HTTPStatusError as error:
+                raise HTTPException(error.response.status_code, '守候状态暂不可用') from error
+            except (httpx.HTTPError, ValueError) as error:
+                raise HTTPException(502, '守候状态暂不可用') from error
+        summary_response =((path == 'automation' and request.method == 'GET')
                             or (path == 'automation/account' and request.method == 'POST')
                             or (re.fullmatch(r'automation/rooms/[^/]+', path) and request.method == 'PUT'))
         if summary_response:
