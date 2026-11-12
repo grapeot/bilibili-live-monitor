@@ -65,8 +65,9 @@ def visible_platform(platform, instance):
     hidden = set(instance.get('hidden_rooms', []))
     if not hidden:
         return platform
-    return {**platform, 'candidates': [c for c in platform.get('candidates', [])
-                                       if candidate_room_id(c) not in hidden]}
+    # 短链别名可能尚未解析出规范房号，也可能已解析；房号与URL末段任一命中即隐藏。
+    return {**platform, 'candidates': [c for c in platform.get('candidates', []) if not hidden & {
+        str(c.get('room_id') or ''), c.get('url', '').rstrip('/').rsplit('/', 1)[-1]}]}
 
 
 def room_snapshot(state, platform, automation, instance):

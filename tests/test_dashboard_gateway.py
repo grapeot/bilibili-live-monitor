@@ -49,7 +49,8 @@ def test_hidden_rooms_leave_guard_list_without_changing_upstream_policy():
     platform = {'revision': 7, 'policy': {'mode': 'fixed', 'fixed_rooms': fixed},
                 'candidates': [{'url': fixed[0], 'room_id': '123456'},
                                {'url': fixed[1], 'room_id': '234567', 'blocked': True, 'last_error': 'ai_stopped'},
-                               {'url': 'https://live.bilibili.com/234567', 'blocked_alias': True}]}
+                               {'url': 'https://live.bilibili.com/22', 'room_id': '234567', 'blocked_alias': True},
+                               {'url': 'https://live.bilibili.com/234567/', 'blocked': True}]}
     calls = []
 
     def upstream(request):
@@ -63,10 +64,10 @@ def test_hidden_rooms_leave_guard_list_without_changing_upstream_policy():
         data = client.get('/instances/account/api/platform').json()
         assert [c['room_id'] for c in data['candidates']] == ['123456']
         assert data['policy']['fixed_rooms'] == fixed and data['revision'] == 7
-        assert len(client.get('/instances/guest/api/platform').json()['candidates']) == 3
+        assert len(client.get('/instances/guest/api/platform').json()['candidates']) == 4
         client.post('/instances/account/api/platform/decisions', json={})
     assert calls[-1] == (8765, '/api/platform/decisions', 'POST')
-    assert len(platform['candidates']) == 3
+    assert len(platform['candidates']) == 4
 
 
 @pytest.mark.parametrize('url', ['https://example.org', 'http://127.0.0.1:1/api', 'http://user@127.0.0.1:1'])
