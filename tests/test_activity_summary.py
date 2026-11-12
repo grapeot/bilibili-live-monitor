@@ -129,7 +129,7 @@ def test_session_scope_watched_and_public_html_module_order():
     assert total['gift_count'] == 1 and total['gift_amount_yuan'] == 1
     assert 'private-uid' not in str(result)
     html = render_snapshot(result)
-    assert html.index('id="followups"') < html.index('id="activity-summary"') < html.index('id="gift-summary"') < html.index('id="session-summary"')
+    assert html.index('id="session-summary"') < html.index('id="followups"') < html.index('id="activity-summary"') < html.index('id="gift-summary"')
 
 
 def test_gifters_group_by_identity_dedupe_and_match_session_totals():

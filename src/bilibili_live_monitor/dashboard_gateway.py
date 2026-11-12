@@ -1,7 +1,6 @@
 """同源多实例看板；仅代理明确配置的本机监控服务，不共享Chrome或账号。"""
 import argparse
 import asyncio
-import html
 import json
 import logging
 import re
@@ -252,15 +251,19 @@ def create_gateway(config, *, transport=None):
                 config = read_json(root, root / key / 'config.json')
                 rid = str(config.get('room_id'))
                 if rid in row['archive'].get('rooms', {}):
-                    label = html.escape(row['archive']['rooms'][rid])
                     link = f'/instances/{ident}/rooms/{rid}/'
-                    nav = f'<nav style="max-width:1120px;margin:12px auto"><a href="{link}">← {label} · 按日归档</a></nav>'
                     try:
                         snapshot = read_object(root, root / key / 'public/snapshot.json')
                     except (OSError, ValueError, TypeError):
                         snapshot = {}
-                    page = session_overview(path.read_text(), row['archive']['rooms'][rid], snapshot)
-                    return HTMLResponse(page.replace('<main', nav + '<main', 1))
+                    try:
+                        navigation = read_object(root, root / key / 'navigation.json')
+                    except (OSError, ValueError, TypeError):
+                        navigation = {}
+                    navigation['home_url'] = link
+                    page = session_overview(path.read_text(), row['archive']['rooms'][rid], snapshot,
+                                            navigation=navigation)
+                    return HTMLResponse(page)
             except (OSError, ValueError, TypeError):
                 pass
         return FileResponse(path)
