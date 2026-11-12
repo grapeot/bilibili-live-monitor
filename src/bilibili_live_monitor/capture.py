@@ -44,7 +44,11 @@ START_PCM = '''async (worklet) => {
         source=context.createMediaStreamSource(new MediaStream(tracks));
         const state={context,tap,source,video,tracks,parts:[],samples:0,missing:0,dropped:0,
             flushes:new Map(),last:Date.now(),lastMedia:video.currentTime,started:Date.now(),
-            playError:null,pauses:0,mutedAt:tracks.some(t=>t.muted)?performance.now():null,mutedMs:0};
+            playError:null,pauses:0,mediaEvents:{},
+            mutedAt:tracks.some(t=>t.muted)?performance.now():null,mutedMs:0};
+        const listeners=['waiting','stalled','seeking','seeked','ratechange','emptied','playing'];
+        const onMediaEvent=e=>{state.mediaEvents[e.type]=(state.mediaEvents[e.type]||0)+1};
+        for(const name of listeners)video.addEventListener(name,onMediaEvent);
         for(const track of tracks) {
             track.addEventListener('mute',()=>{if(state.mutedAt==null)state.mutedAt=performance.now()});
             track.addEventListener('unmute',()=>{
@@ -53,6 +57,7 @@ START_PCM = '''async (worklet) => {
             });
         }
         state.close=async()=>{
+            for(const name of listeners)video.removeEventListener(name,onMediaEvent);
             source.disconnect();tap.disconnect();tap.port.onmessage=null;
             for(const track of stream.getTracks())track.stop();
             await context.close();if(window.__pcmMonitor===state)window.__pcmMonitor=null;
@@ -99,14 +104,22 @@ READ_PCM = '''async (seconds) => {
     for(let i=0;i<bytes.length;i+=32768)binary+=String.fromCharCode(...bytes.subarray(i,i+32768));
     const ended=Date.now(), media=m.video.currentTime;
     const perf=performance.now(), mutedMs=m.mutedMs+(m.mutedAt==null?0:perf-m.mutedAt);
+    let bufferedAhead=0;
+    for(let i=0;i<(m.video.buffered?.length||0);i++) {
+        if(m.video.buffered.start(i)<=media && m.video.buffered.end(i)>=media)
+            bufferedAhead=m.video.buffered.end(i)-media;
+    }
     const result={data:btoa(binary),started:m.last,ended,sample_rate:m.context.sampleRate,
+        player:{current_time:media,ready_state:m.video.readyState,network_state:m.video.networkState,
+            playback_rate:m.video.playbackRate,buffered_ahead:bufferedAhead,
+            seeking:m.video.seeking,ended:m.video.ended,events:m.mediaEvents||{}},
         muted:m.video.muted,paused:m.video.paused,track_live:m.tracks.every(t=>t.readyState==='live'),
         context_state:m.context.state,missing_samples:m.missing,dropped_samples:m.dropped,
         media_advanced:media-m.lastMedia,pauses:m.pauses,play_error:m.playError,
         track_muted:m.tracks.some(t=>t.muted),track_enabled:m.tracks.every(t=>t.enabled),
         track_muted_ms:mutedMs,source_changed:sourceChanged};
     m.parts=[];m.samples=0;m.missing=0;m.dropped=0;m.last=ended;m.lastMedia=media;m.pauses=0;
-    m.mutedMs=0;if(m.mutedAt!=null)m.mutedAt=perf;
+    m.mediaEvents={};m.mutedMs=0;if(m.mutedAt!=null)m.mutedAt=perf;
     return result;
 }'''
 

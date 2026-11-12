@@ -40,7 +40,8 @@ async def test_twentieth_failure_stops_without_twenty_first_attempt(tmp_path, mo
     monkeypatch.setattr('bilibili_live_monitor.monitor.asyncio.sleep', sleep)
     monitor.session_cycles = cycles
     await monitor.capture(room, Page(), 'generation')
-    assert len(calls) == 20 and waits == [backoff_delay(n) for n in range(1,20)]
+    assert len(calls) == 20 and len(waits) == 19
+    assert all(backoff_delay(n) <= delay <= backoff_delay(n)*1.2 for n, delay in enumerate(waits, 1))
     assert room['reconnect_attempts'] == 20 and room['next_retry_utc'] is None
     assert room['status'] == 'error' and room['error'].startswith('retry_exhausted:')
     platform = Platform(monitor)

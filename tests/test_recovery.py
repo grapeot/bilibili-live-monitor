@@ -106,7 +106,8 @@ async def test_interleaved_success_resets_retry_budget(monkeypatch, tmp_path):
     page = Page()
     with pytest.raises(asyncio.CancelledError):
         await monitor.capture(room, page, 'session')
-    assert page.reloads == 3  # 总失败3次，但从未连续失败2次。
+    assert page.reloads == 0  # 短瞬断局部重绑，不再刷新页面。
+    assert room['capture_health']['totals']['local_restarts'] == 3
     assert store.segments('123456') == []
     assert sum(path is not None for _, path, _, _ in monitor.queue._queue) == 36
     await monitor.close()

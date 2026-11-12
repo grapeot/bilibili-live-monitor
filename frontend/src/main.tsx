@@ -17,6 +17,8 @@ type Room = {room_id:string; title:string; url:string; cover_url:string; status:
   instance_label?:string;account_mode?:string;result_url?:string;workflow_stage?:string;home_url?:string;
   like_summary?:LikeSummary|null;
   reconnect_attempts?:number;next_retry_utc?:string|null;
+  audio_error?:string|null;
+  capture_health?:{state:string;last_hour:{page_reloads:number;local_restarts:number;invalid_seconds:number;gap_seconds:number}}|null;
   record_mode:'none'|'audio'|'video';asr_enabled:boolean;preview_enabled:boolean;
   recording_status:string;recorded_seconds:number;recording_files:number;recording_bytes:number;
    error:string|null; updated_at?:string; chunk_seconds:number; segments:Segment[];items:Item[]};
@@ -152,6 +154,8 @@ const RoomCard = React.memo(function RoomCard({room,status,onError}:{room:Room;s
     <div className="room-sub"><span>房间 {room.room_id}{room.instance_label?` · ${room.instance_label}`:''} · 流式输入 5 秒 · 上下文 ≤30 秒</span><button className="text-button" disabled={room.status==='stopped'||room.status==='waiting'} onClick={()=>api(`rooms/${room.room_id}/stop`,{method:'POST'}).catch(e=>onError(e.message))}>停止监控</button></div>
     {room.result_url&&<p className="room-sub"><a href={base+room.result_url} target="_blank" rel="noreferrer">{room.workflow_stage==='completed'?'查看本场最终结果':'查看本场结果（处理中）'}</a></p>}
     <RoomIssue status={room.status} error={room.error} updatedAt={room.updated_at}/>
+    {room.audio_error&&room.status==='capturing'&&<p className="error">音频质量或媒体进度异常：{room.audio_error}</p>}
+    {room.capture_health&&<p className="room-sub">近一小时（当前采集任务）：整页重载 {room.capture_health.last_hour.page_reloads} 次 · 采音重建 {room.capture_health.last_hour.local_restarts} 次 · 异常音频 {Math.round(room.capture_health.last_hour.invalid_seconds)} 秒 · 采集缺口 {Math.round(room.capture_health.last_hour.gap_seconds)} 秒</p>}
     {!!room.reconnect_attempts&&<p className="room-sub">连续失败 {room.reconnect_attempts} 次{room.next_retry_utc?` · 下次重试 ${time(room.next_retry_utc)}`:''}</p>}
     <p className="room-sub">保存：{({none:'关闭',audio:'原始音频',video:'原始音视频'})[room.record_mode]} · ASR：{room.asr_enabled?'启用':'禁用'} · 弹幕 / 礼物 / 入场 / 点赞：保存并显示</p>
     {room.like_summary&&<p className="room-sub like-summary">平台累计点赞：{room.like_summary.reported_total??'尚未收到'} · 个人点赞通知：{room.like_summary.notifications} 条 / 可识别 {room.like_summary.identified_users} 人{room.like_summary.observed_utc?` · 更新 ${time(room.like_summary.observed_utc)}`:''}</p>}
