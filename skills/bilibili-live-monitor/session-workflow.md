@@ -56,6 +56,24 @@
 python -m bilibili_live_monitor.session_runner --config /PRIVATE/sessions/SESSION/config.json
 ```
 
+## 新增监控房间的汇总验收
+
+用户要求新增监控房间并期望自动产出逐场汇总时，不能仅凭录音增长或页面返回 HTTP 200 就宣称完成。不得把基础录制请求自动扩大为 AI 分析、远端发布、邮件、欢迎或观众 CRM 授权；按用户明确目标或已授权本机 profile 确定采集与本地汇总范围，外发保持独立授权。
+
+1. **核对主播身份、房号映射与内容模式**：先核实主播身份及短号、正式号。支持分离房号的运行版本中，实际采集、存储、ASR 与录制用 `room_id`（如 `123456`），平台查播与恢复用 `platform_room_id`，不要将两者强行统一。candidate、automation、逐场 config、`recording_root`（如 `/PRIVATE/recordings/123456`）和 gateway 入口须正向对应同一房间，不盲目建立两个活动场，旧别名不盲删。`rooms.<id>.content_mode` 默认 `music`，启用歌曲与唱聊内容分析；`talk` 没有直播内容 AI 和歌曲终审，保留 ASR、程序统计与杂谈离线收尾。歌杂应设为 `music`，不因标题看起来像聊天就猜 `talk`。不明确时先核对房间公开分区、简介与已有资料，仍不明确则如实标待确认，不静默选 `talk` 并称汇总已接好。
+
+2. **在现有实例动态加房**：先更新并原子保存 `AUTOMATION_CONFIG`，调用 `POST /api/automation/reload`；再导入 candidate；最后 `PUT` 完整 fixed policy，保留已有名单配置，加入新房并提高 `target_rooms`（不超过 `MAX_ROOMS`）。不为容量以内的新增重启采集。gateway 启动时读映射，更新主页映射需按实际入口重载，不代表采集需重启。
+
+3. **核对工作流运行态与自然开播初始化**：确认 `session_workflow.enabled` 为 `true`，核对本机现有运行版本、`workspace_root`、模型路由及 `final_model`、录制策略、本地/远端和通知边界；磁盘配置不等于 owner 实际加载。等自然开播初始化后，核对本场 config 的 `room_id`、`platform_room_id`（如该版本支持）、`workflow_key`、`content_mode`、music 模式 `ai_enabled` 及 `recording_root`。若接入时已在播，直接核对已初始化的本场，不等待下一场。
+
+4. **守住当前场迁移边界**：已有 talk 场切 music，房间默认值只影响未来新场，reload 不会给当前或已完成场自动补音乐分析。当前场或历史场补跑要另做有边界迁移：保留原 key/URL、cutoff、原音频、离线 ASR 与历史修订，检查现有写入者与锁，复用已完成 ASR，走正常终审，不手改 completed、不清账本强投。已有补跑回执时先核验，不盲目重跑一次性迁移。
+
+5. **逐级验收，按实际阶段汇报**：配置就绪、直播实际验收、下播最终验收分开记录。离线未开播只能说配置就绪待首次自然开播，直播阶段不能声称已验收下播闭环。直播中核对录音与已启用 ASR 的实际增长、music 已启用且实际有内容复核（未到首周期则说明等待）、`/api/automation` 中的 `workflow_errors` 与单场 `workflow.json` / `health.json`，并按已授权策略核对页面与主页映射。
+
+下播完成需要对应模式的终审完成证据与实际最终页内容一致：music 核对歌曲/唱聊分段与已登记歌名来源，talk 核对离线转写及相应完成结果。有真实内容才期待登记歌曲，不强制每场有歌，不能为验收编造歌曲。completed、has_result、HTTP 200 只代表流程或页面存在，不证明内容正确；区分统计汇总和内容汇总。不承诺固定几分钟完成，封口、ASR、终审有真实等待。
+
+通知为空或 `local_only` 不等于汇总关闭；不发试邮件，不为验收创建新 cron 或模拟真开播，观察已有调度即可。验收证据留私有 `.local/`，真实房间、会话及机器路径不进入公开文档。
+
 ## 观众当前备忘与下播更新
 
 观众当前备忘（Audience CRM）按房间与观众 UID 聚合已完成场次记录，程序负责计数与金额汇总，指定查证 agent 负责生成带逐字引用的当前备忘；私有原始证据保留在本地，公开构建只输出最小投影。
