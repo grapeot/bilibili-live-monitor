@@ -10,8 +10,8 @@ from pathlib import Path
 
 from .archive_media import file_stat
 from .gift_assets import cache_default, cached_asset, load_asset, sha_file, validate_config, write_json
-from .gift_dynamic import render_rgba, text_images, validate_dynamic
-from .gift_event import guard_event
+from .gift_dynamic import BLIND_TAG, render_rgba, text_images, validate_dynamic
+from .gift_event import guard_event, is_blind_event
 from .gift_media import absolute_time, aspect, dimensions, number, prepare_base, session_config, source_clips
 from .trailer import probe, run
 
@@ -57,7 +57,11 @@ def make_plan(args):
     if getattr(args, 'event_id', None) is not None:
         if not args.session or at is not None or room or gift_id or count != 1 or getattr(args, 'username', None):
             raise ValueError('--event-id须与--session使用，且不混用时间、礼物、数量或昵称覆盖')
-        binding = guard_event(args.session, args.event_id)
+        if is_blind_event(args.session, args.event_id):
+            from .gift_blind import bind_event
+            binding = bind_event(args.session, args.event_id)
+        else:
+            binding = guard_event(args.session, args.event_id)
         at, room, gift_id, count = (binding[k] for k in ('at', 'room_id', 'gift_id', 'count'))
     if at is None:
         raise ValueError('请提供--at，或--session与--event-id')
@@ -72,16 +76,24 @@ def make_plan(args):
             raise ValueError('请提供--asset，或--room/--gift-id（场次自动提供房间）')
         try:
             asset_path, asset = cached_asset(args.cache, room, gift_id, count,
-                                              binding['effect_id'] if binding else None)
+                                              binding.get('effect_id') if binding else None)
         except FileNotFoundError as error:
             raise ValueError('礼物未缓存；先运行gift-assets fetch。render/plan均不联网') from error
-    if binding and any(asset[k] != binding[k] for k in ('room_id', 'gift_id', 'count', 'effect_id')):
+    if binding and any(asset[k] != binding[k] for k in ('room_id', 'gift_id', 'count', 'effect_id') if k in binding):
         raise ValueError('素材不属于所选续舰事件')
     before, after = number(args.before), number(args.after)
     config = json.loads(Path(asset['config']['path']).read_text())
     info = validate_config(config)
     dynamic = None
-    if validate_dynamic(config):
+    sources = validate_dynamic(config)
+    if sources and sources[0]['srcTag'] == BLIND_TAG:
+        from .gift_blind import card_images, load_resources
+        if not binding or 'results' not in binding:
+            raise ValueError('盲盒图片槽须通过--session与--event-id绑定原始结果')
+        resources = load_resources(args.cache, binding)
+        card_images(config, resources)
+        dynamic = {'kind': 'blind', 'resources': resources}
+    elif sources:
         font_path = getattr(args, 'font', None)
         if not font_path:
             raise ValueError('动态文字须显式提供--font；文件模式还须--username')
@@ -114,7 +126,7 @@ def make_plan(args):
                         'placement': args.placement, 'region': region(args.region, canvas)},
             'source_at': at, 'source_kind': 'session' if args.session else 'file',
             'effect_audio': 'omitted', 'historical_web_playback': False}
-    if binding:
+    if binding and 'results' not in binding:
         plan['event_binding'] = binding
     if dynamic:
         plan['dynamic'] = dynamic
@@ -146,10 +158,18 @@ def validate_plan(plan):
     if validate_dynamic(config):
         if not isinstance(dynamic, dict):
             raise ValueError('计划缺少动态文字绑定')
-        font = dynamic['font']
-        if sha_file(font['path']) != font['sha256']:
-            raise ValueError('计划引用的字体已改变')
-        text_images(config, dynamic['username'], font['path'])
+        if dynamic.get('kind') == 'blind':
+            from .gift_blind import card_images
+            resources = dynamic['resources']
+            binding = resources['binding']
+            if any(binding[k] != asset[k] for k in ('room_id', 'gift_id', 'count')):
+                raise ValueError('盲盒素材与原始批次不符')
+            card_images(config, resources)
+        else:
+            font = dynamic['font']
+            if sha_file(font['path']) != font['sha256']:
+                raise ValueError('计划引用的字体已改变')
+            text_images(config, dynamic['username'], font['path'])
     elif dynamic:
         raise ValueError('静态素材不能包含动态文字绑定')
     if plan.get('event_binding'):
@@ -223,13 +243,22 @@ def render(plan, output):
         effect_input = assets / 'effect.mp4'
         dynamic = candidate.get('dynamic')
         if dynamic:
-            font = assets / ('font' + Path(dynamic['font']['path']).suffix)
-            shutil.copyfile(dynamic['font']['path'], font)
-            if sha_file(font) != dynamic['font']['sha256']:
-                raise ValueError('复制期间字体改变')
             write_json(assets / 'bindings.json', dynamic)
-            effect_input = render_rgba(effect_input, json.loads((assets / 'effect.json').read_text()),
-                                       dynamic['username'], font, output / f'effect-{i:03d}-rgba.mov')
+            config = json.loads((assets / 'effect.json').read_text())
+            if dynamic.get('kind') == 'blind':
+                from .gift_blind import card_images
+                images = card_images(config, dynamic['resources'])
+                for ident, image in images.items():
+                    image.save(assets / f'result-card-{ident}.png')
+                effect_input = render_rgba(effect_input, config, None, None,
+                                           output / f'effect-{i:03d}-rgba.mov', images=images)
+            else:
+                font = assets / ('font' + Path(dynamic['font']['path']).suffix)
+                shutil.copyfile(dynamic['font']['path'], font)
+                if sha_file(font) != dynamic['font']['sha256']:
+                    raise ValueError('复制期间字体改变')
+                effect_input = render_rgba(effect_input, config, dynamic['username'], font,
+                                           output / f'effect-{i:03d}-rgba.mov')
             intermediates.append(effect_input)
             unpack = f'[{i+1}:v]'
         else:

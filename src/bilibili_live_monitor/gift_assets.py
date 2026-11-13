@@ -253,12 +253,22 @@ def configure_parser(commands):
         sources.add_argument('--catalog', type=Path)
         sources.add_argument('--cdp-url')
         item.add_argument('--refresh', action='store_true')
+        if action == 'fetch-event':
+            item.add_argument('--card-background', type=Path, help='已核对来源的结果卡背景PNG')
+            item.add_argument('--card-digits', type=Path, help='0.png至9.png的平台数字素材目录')
 
 
 def main(args):
     try:
         if args.action == 'fetch-event':
-            from .gift_event import guard_event
+            from .gift_event import guard_event, is_blind_event
+            if is_blind_event(args.session, args.event_id):
+                from .gift_blind import fetch_event
+                result = fetch_event(args.cache, args.session, args.event_id, catalog=args.catalog,
+                                     cdp_url=args.cdp_url, refresh=args.refresh,
+                                     card_background=args.card_background, card_digits=args.card_digits)
+                print(json.dumps(result, ensure_ascii=False, indent=2))
+                return 0
             event = guard_event(args.session, args.event_id)
             result = fetch(args.cache, event['room_id'], event['gift_id'], event['count'],
                            effect_id=event['effect_id'], gift_name=event['gift_name'],

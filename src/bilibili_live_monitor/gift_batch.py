@@ -60,7 +60,7 @@ def make_batch(args):
     before, after = number(args.before), number(args.after)
     origin = absolute_time(config['start_utc'])
     catalog = normalize_catalog(json.loads(args.catalog.read_text())) if args.catalog else None
-    entries, windows, seen = [], [], {}
+    entries, windows, seen, blind_members = [], [], {}, {}
     database = Path(config['database']).resolve(strict=True)
     with sqlite3.connect(database.as_uri()+'?mode=ro', uri=True) as db:
         db.execute('PRAGMA query_only=ON')
@@ -85,19 +85,22 @@ def make_batch(args):
                 item.update(status='duplicate', duplicate_of=previous_id)
                 continue
             seen[identity] = event['event_id'], fingerprint
-            if gift.get('blind_gift'):
-                item.update(status='unsupported_blind_result', reason='盲盒动态图片与结果批次尚未实现')
+            if event['event_id'] in blind_members:
+                item.update(status='planned', asset_version=blind_members[event['event_id']])
                 continue
             try:
+                blind = bool(gift.get('blind_gift'))
                 guard = gift.get('event_type') == 'GUARD_BUY'
                 binding = guard_event(session, event['event_id']) if guard else None
-                if catalog is not None and not guard:
+                if catalog is not None and not guard and not blind:
                     select_effect(catalog, event['gift_id'], event['count'])
-                asset_path, _ = cached_asset(args.cache, config['room_id'], event['gift_id'], event['count'],
-                                              binding['effect_id'] if binding else None)
+                asset_path = None
+                if not blind:
+                    asset_path, _ = cached_asset(args.cache, config['room_id'], event['gift_id'], event['count'],
+                                                  binding['effect_id'] if binding else None)
                 plan = gift_render.make_plan(Namespace(
-                    asset=asset_path, base=None, session=session, at=None if guard else event['at'],
-                    event_id=event['event_id'] if guard else None, room=None, gift_id=None,
+                    asset=asset_path, base=None, session=session, at=None if guard or blind else event['at'],
+                    event_id=event['event_id'] if guard or blind else None, room=None, gift_id=None,
                     count=1, cache=args.cache, font=args.font, username=None, before=before, after=after,
                     canvas=args.canvas, base_display_aspect=aspects.get(event['event_id']),
                     region=regions.get(event['event_id']), placement='center-fit'))
@@ -106,7 +109,22 @@ def make_batch(args):
                 # 使用场次相对秒量化，避免大epoch浮点数影响相接窗口判断。
                 start = math.floor((at-before)*30+1e-7)/30
                 end = math.ceil((at+plan['overlay']['duration']+after)*30-1e-7)/30
-                windows.append({'event_id': event['event_id'], 'start': start, 'end': end,
+                members = [event['event_id']]
+                if blind:
+                    group = plan['dynamic']['resources']['binding']
+                    members = group['event_ids']
+                    if members[0] != event['event_id']:
+                        raise ValueError('盲盒主事件顺序不符')
+                    if any(m not in {e['event_id'] for e in enumerated} for m in members):
+                        raise ValueError('盲盒结果未完整落在场次候选中')
+                    if catalog is not None:
+                        for result in group['results']:
+                            matches = [g for g in catalog['gifts'] if str(g['id']) == str(result['gift_id'])]
+                            if any(g.get('effectId') or any(t.get('effectId') for t in g.get('countMap', [])) for g in matches):
+                                raise ValueError('盲盒结果存在目录兼容特效，当前不能完整重建')
+                    for member in members:
+                        blind_members[member] = plan['asset_version']
+                windows.append({'event_id': event['event_id'], 'event_ids': members, 'start': start, 'end': end,
                                 'at': at, 'plan': plan, 'aspect': aspects.get(event['event_id'])})
                 item.update(status='planned', asset_version=plan['asset_version'])
             except (FileNotFoundError, ValueError, KeyError) as error:
@@ -123,7 +141,7 @@ def make_batch(args):
         effects = []
         for event in sorted(group['events'], key=lambda e: (e['at'], e['event_id'])):
             spec = {key: event['plan'].get(key) for key in EFFECT_KEYS}
-            spec.update(event_id=event['event_id'],
+            spec.update(event_id=event['event_id'], event_ids=event['event_ids'],
                         overlay={**event['plan']['overlay'], 'at': event['at']-group['start']})
             effects.append(spec)
         scene = {**group['events'][0]['plan'], **effects[0], 'clips': clips,
@@ -189,7 +207,13 @@ def validate_batch(plan):
         if not isinstance(scene.get('overlays'), list) or not 1 <= len(scene['overlays']) <= 256:
             raise ValueError('每个批次场景须包含1至256个特效')
         for effect in scene['overlays']:
-            actual.append(effect['event_id'])
+            members = effect.get('event_ids', [effect['event_id']])
+            dynamic = effect.get('dynamic') or {}
+            expected_members = (dynamic['resources']['binding']['event_ids'] if dynamic.get('kind') == 'blind'
+                                else [effect['event_id']])
+            if members != expected_members or effect['event_id'] != members[0]:
+                raise ValueError('特效与原始批次的结果覆盖不符')
+            actual.extend(members)
             entry = by_id.get(effect['event_id'])
             if entry is None:
                 raise ValueError('特效引用了不存在的事件')
