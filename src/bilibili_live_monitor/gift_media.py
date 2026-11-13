@@ -1,14 +1,14 @@
 """离线礼物切片的只读来源定位、时间映射和画幅检查。"""
 import json
 import math
-import shutil
 from datetime import datetime
 from fractions import Fraction
 from pathlib import Path
 
 from .archive_media import archive_receipt, archived_input, file_stat, receipt_path
 from .gift_assets import sha_file, write_json
-from .media_codec import CAPTURE, _check_inputs, _elements, _packets, _patch_header, inspect_video
+from .media_codec import CAPTURE, inspect_video, prepare_copy
+from .media_container import expanded_matroska
 from .trailer import require_coverage, run
 
 
@@ -170,27 +170,13 @@ def prepare_base(source, output):
     output = Path(output).resolve()
     if output == source.parent or output.is_relative_to(source.parent):
         raise ValueError('解码准备目录必须位于原始录像目录之外')
-    report = inspect_video(source)
     before = file_stat(source)
     output.mkdir(parents=True, exist_ok=False)
     target = output / ('prepared' + source.suffix)
+    report = prepare_copy(source, target)
     patch = report['status'] in ('repairable', 'mixed_parameters') and report['initial_avcc'] != report['header_avcc']
-    if patch:
-        _check_inputs(report)
-    old, initial = (bytes.fromhex(report[key]) for key in ('header_avcc', 'initial_avcc')) if patch else (b'', b'')
-    with source.open('rb') as src, target.open('xb') as dst:
-        if patch and len(initial) > len(old):
-            _expanded_matroska(src, dst, old, initial)
-        else:
-            if patch:
-                dst.write(_patch_header(src.read(65536), old, initial))
-            shutil.copyfileobj(src, dst, length=1024 * 1024)
     if file_stat(source) != before:
         raise ValueError('准备期间原始录像发生变化')
-    if report['status'] != 'unmanaged':
-        _check_inputs(report)
-    if _packets(source) != _packets(target):
-        raise ValueError('准备副本的媒体包或时间戳与原片不符')
     result = {'prepared': str(target), 'source': str(source), 'source_stat': before,
               'parameters': report, 'header_patched': patch, 'sha256': sha_file(target),
               'full_file_decode_verified': False,
@@ -200,86 +186,5 @@ def prepare_base(source, output):
 
 
 def _expanded_matroska(src, dst, old, initial):
-    """允许更长AVCC的独立副本：重建Tracks长度，丢弃失效索引，媒体Cluster逐字节复制。"""
-    def size_bytes(value):
-        width = next(n for n in range(1, 9) if value < (1 << (7 * n)) - 1)
-        return ((1 << (7 * width)) | value).to_bytes(width, 'big')
-
-    def header():
-        first = src.read(1)
-        if not first:
-            return None
-        if not first[0]:
-            raise ValueError('EBML元素ID无效')
-        width = 9 - first[0].bit_length()
-        if width > 4:
-            raise ValueError('EBML元素ID超限')
-        ident = first + src.read(width - 1)
-        first = src.read(1)
-        if not first or not first[0]:
-            raise ValueError('EBML长度缺失')
-        count = 9 - first[0].bit_length()
-        raw = first + src.read(count - 1)
-        if len(raw) != count or len(ident) != width:
-            raise ValueError('EBML头不完整')
-        size = int.from_bytes(raw, 'big') & ((1 << (7 * count)) - 1)
-        return ident, size, count, ident + raw
-
-    def copy_bytes(count, write=True):
-        while count:
-            block = src.read(min(count, 1024 * 1024))
-            if not block:
-                raise ValueError('Matroska元素提前结束')
-            if write:
-                dst.write(block)
-            count -= len(block)
-
-    matches = 0
-
-    def tracks(data):
-        nonlocal matches
-        result = bytearray()
-        for begin, ident, payload, end in _elements(data, 0, len(data)):
-            if end > len(data):
-                raise ValueError('Tracks元素越界')
-            body = data[payload:end]
-            if ident == 0xbf:  # ancestor CRC no longer valid after header growth
-                continue
-            if ident == 0xae:
-                body = tracks(body)
-            elif ident == 0x63a2 and body == old:
-                body = initial
-                matches += 1
-            identity = ident.to_bytes((ident.bit_length() + 7) // 8, 'big')
-            result.extend(identity + size_bytes(len(body)) + body)
-        return bytes(result)
-
-    item = header()
-    if item is None or item[0] != bytes.fromhex('1a45dfa3'):
-        raise ValueError('需要标准Matroska EBML头')
-    dst.write(item[3])
-    copy_bytes(item[1])
-    item = header()
-    if item is None or item[0] != bytes.fromhex('18538067'):
-        raise ValueError('缺少Matroska Segment')
-    # Streaming unknown-sized Segment: stale SeekHead/Cues offsets are omitted below.
-    dst.write(item[0] + b'\x01' + b'\xff' * 7)
-    while (item := header()) is not None:
-        ident, size, width, raw = item
-        if size == (1 << (7 * width)) - 1:
-            raise ValueError('不支持未知长度的Segment子元素')
-        if ident in (bytes.fromhex('114d9b74'), bytes.fromhex('1c53bb6b'), b'\xbf'):
-            copy_bytes(size, write=False)
-        elif ident == bytes.fromhex('1654ae6b'):
-            if size > 1024 * 1024:
-                raise ValueError('Tracks头超出1MiB上限')
-            body = src.read(size)
-            if len(body) != size:
-                raise ValueError('Tracks头不完整')
-            body = tracks(body)
-            dst.write(ident + size_bytes(len(body)) + body)
-        else:
-            dst.write(raw)
-            copy_bytes(size)
-    if matches != 1:
-        raise ValueError('不能唯一定位需要替换的CodecPrivate')
+    """保留已有调用入口，容器实现与归档共享。"""
+    return expanded_matroska(src, dst, old, initial)

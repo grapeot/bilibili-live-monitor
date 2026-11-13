@@ -11,10 +11,36 @@ from datetime import datetime, timezone
 from fractions import Fraction
 from pathlib import Path
 
+from . import archive_policy
 from . import archive_validation as validation
 from .archive_media import archive_path, archive_receipt, file_stat, receipt_path
 from .live_share import atomic_json
-from .media_codec import prepare_video
+from .media_codec import POLICY, CodecParametersError, prepare_video
+
+ArchiveSkip = archive_policy.ArchiveSkip
+skip_path = archive_policy.skip_path
+
+
+def retain_original(item, skip):
+    check_source(item)
+    saved = {'source': item['source'], 'source_stat': item['source_stat'],
+             'policy': archive_policy.ARCHIVE_POLICY, 'codec_policy': validation.POLICY,
+             'parameter_policy': POLICY, 'status': 'skipped', 'reason': skip.reason,
+             'message': str(skip), 'warning': skip.warning,
+             'checked_at': datetime.now(timezone.utc).isoformat()}
+    if hasattr(skip, 'dependencies') or archive_policy.parameter_dependent(skip.reason):
+        current = archive_policy.dependency_fingerprint(item['source'])
+        if getattr(skip, 'dependencies', current) != current:
+            raise ValueError('检查期间参数依赖改变，不能记忆旧阻塞')
+        saved['dependencies'] = current
+    atomic_json(skip_path(item['source']), saved)
+    return {**saved, 'original_present': True}
+
+
+def preflight(info, source_size):
+    check_profile(info)
+    _, audio = streams(info)
+    archive_policy.check_saving(info, source_size, audio)
 
 
 def command(args, **kwargs):
@@ -28,7 +54,10 @@ def probe(path, *, frames=False):
                  'frame=media_type,best_effort_timestamp_time,width,height,pix_fmt,sample_aspect_ratio,color_space,color_transfer,color_primaries']
     result = command([*args, str(path)])
     if frames and result.stderr:
-        raise ValueError('视频帧解码报错，保留原片：' + result.stderr.decode(errors='replace')[-1000:])
+        error = subprocess.CalledProcessError(0, args, stderr=result.stderr)
+        if archive_policy.decode_error(error):
+            raise ArchiveSkip('source_decode_error', '视频帧解码报错，保留原片：' + result.stderr.decode(errors='replace')[-1000:], warning=True)
+        raise ValueError('帧探测故障：' + result.stderr.decode(errors='replace')[-1000:])
     info = json.loads(result.stdout)
     if frames:
         # Retain only the bound, not thousands of frame records in the receipt.
@@ -55,34 +84,46 @@ def streams(info):
     video = [s for s in info['streams'] if s['codec_type'] == 'video']
     audio = [s for s in info['streams'] if s['codec_type'] == 'audio']
     if len(video) != 1 or len(audio) != 1 or len(info['streams']) != 2:
-        raise ValueError('首版仅支持一条视频和一条音轨')
+        raise ArchiveSkip('unsupported_streams', '仅支持一条视频和一条音轨，保留原片', warning=True)
     return video[0], audio[0]
 
 
 def check_profile(info):
     video, audio = streams(info)
-    rate = float(Fraction(video.get('avg_frame_rate', '0/1')))
+    try:
+        rate = float(Fraction(video.get('avg_frame_rate') or video.get('r_frame_rate') or '0/1'))
+    except (ValueError, ZeroDivisionError):
+        rate = 0
     if (not (0 < video['width'] <= 1920 and 0 < video['height'] <= 1440)
             or video['width'] % 2 or video['height'] % 2 or video.get('pix_fmt') != 'yuv420p'
-            or not any(abs(rate - approved) < .02 for approved in (30000 / 1001, 30, 60))
+            or not 0 < rate <= 60.02
             or video.get('codec_name') != 'h264'
             or audio.get('codec_name') != 'aac'
-            or any(video.get(key) != 'bt709' for key in ('color_space', 'color_transfer', 'color_primaries'))):
-        raise ValueError('未验证的编码规格；仅支持H264 8-bit SDR BT709、最大1920x1440、29.97/30/60fps + AAC')
+            or any(video.get(key) not in (None, 'unknown', 'unspecified', 'bt709')
+                   for key in ('color_space', 'color_transfer', 'color_primaries'))):
+        raise ArchiveSkip('unsupported_profile', '未支持的编码规格：要求H264 8-bit SDR、最大1920x1440、0–60fps + AAC', warning=True)
 
 
 def verify_output(source_info, target):
     if source_info.get('timestamp_max_adjustment_us', 1001) > 1000:
         raise ValueError('原片时间戳需要超过1毫秒修正或未经验证，保留原片')
-    info = probe(target, frames=True)
+    try:
+        info = probe(target, frames=True)
+    except ArchiveSkip as error:
+        raise ValueError('归档输出解码失败：' + str(error)) from error
     before_v, before_a = streams(source_info)
-    video, audio = streams(info)
+    try:
+        video, audio = streams(info)
+    except ArchiveSkip as error:
+        raise ValueError('归档输出轨道结构无效：' + str(error)) from error
     duration = float(info['format']['duration'])
     original_duration = float(source_info['format']['duration'])
     if not math.isfinite(duration) or duration <= 0 or abs(duration - original_duration) > .25:
         raise ValueError('归档时长不匹配')
     if (video.get('codec_name') != 'hevc'
-            or any(video.get(key) != before_v.get(key) for key in ('width', 'height', 'pix_fmt', 'color_space', 'color_transfer', 'color_primaries'))
+            or any(video.get(key) != before_v.get(key) for key in ('width', 'height', 'pix_fmt'))
+            or any(video.get(key) != before_v[key] for key in ('color_space', 'color_transfer', 'color_primaries')
+                   if before_v.get(key) not in (None, 'unknown', 'unspecified'))
             or any(audio.get(key) != before_a.get(key) for key in ('codec_name', 'channels', 'sample_rate'))):
         raise ValueError('归档画面或音轨规格不匹配')
     # MKV/MP4 infer different avg/r_frame_rate for jitter or missing starts.
@@ -112,6 +153,13 @@ def inventory(root, session_ids=()):
     root = Path(root).resolve(strict=True)
     wanted = set(session_ids)
     found, items = set(), {}
+    references = {}
+    for directory in sorted(root.iterdir()):
+        workflow, manifest = directory / 'workflow.json', directory / 'offline/manifest.json'
+        if workflow.is_file() and manifest.is_file():
+            stage = json.loads(workflow.read_text()).get('stage')
+            for row in json.loads(manifest.read_text()).get('rows', []):
+                references.setdefault(str(Path(row['path']).resolve()), []).append((str(workflow), stage, row))
     for directory in sorted(root.iterdir()):
         if not directory.is_dir() or wanted and directory.name not in wanted:
             continue
@@ -132,7 +180,14 @@ def inventory(root, session_ids=()):
             item = {'source': str(source), 'output': str(archive_path(source)), 'sessions': [directory.name],
                     'source_stat': {key: row[key] for key in ('size', 'mtime_ns')}, 'duration': row.get('duration_sec'),
                     'action': 'encode', 'config': str(config_path), 'workflow': str(state_path), 'legacy_row': row}
-            if source.suffix.lower() != '.mkv':
+            refs = references[str(source)]
+            item['workflows'] = sorted({ref[0] for ref in refs})
+            if any(stage != 'completed' for _, stage, _ in refs):
+                item.update(action='skip', reason='referenced_by_unfinished_session')
+            elif any({key: ref_row[key] for key in ('size', 'mtime_ns')} != item['source_stat']
+                     or ref_row.get('sha256') != row.get('sha256') for _, _, ref_row in refs):
+                item.update(action='skip', reason='conflicting_source_identity')
+            elif source.suffix.lower() != '.mkv':
                 item.update(action='skip', reason='audio_only_or_unsupported')
             elif not (source.is_relative_to(recording_root)
                       or source.is_relative_to((directory / 'offline/recovered').resolve())):
@@ -151,6 +206,13 @@ def inventory(root, session_ids=()):
                 item.update(action='skip', reason='changed_original')
             elif archive_path(source).exists():
                 item.update(action='skip', reason='unverified_output_exists')
+            elif skip_path(source).is_file():
+                try:
+                    saved = json.loads(skip_path(source).read_text())
+                except (ValueError, KeyError):
+                    saved = {}
+                if archive_policy.reusable_skip(saved, item):
+                    item.update(action='skip', reason=saved['reason'], warning=saved.get('warning', False))
             items[source] = item
     if wanted - found:
         raise ValueError('找不到场次：' + ','.join(sorted(wanted - found)))
@@ -176,17 +238,37 @@ def check_source(item):
 
 
 def encode(item, lock_fd):
+    dependencies = archive_policy.dependency_fingerprint(item['source'])
+    try:
+        return _encode(item, lock_fd)
+    except CodecParametersError as error:
+        if error.reason not in archive_policy.PARAMETER_BLOCKS:
+            raise
+        skip = ArchiveSkip('codec_' + error.reason, str(error), warning=True)
+        skip.dependencies = dependencies
+        raise skip from error
+    except ArchiveSkip as skip:
+        skip.dependencies = dependencies
+        raise
+
+
+def _encode(item, lock_fd):
     check_source(item)
     source, target = Path(item['source']), Path(item['output'])
     media_source, codec_parameters = prepare_video(source, expected_sha=item['legacy_row'].get('sha256'),
                                                    allow_mixed=True)
     mixed = codec_parameters['status'] == 'mixed_parameters'
-    check_profile(probe(media_source))
-    decoded_input = probe(media_source, frames=True)
-    decoded_input['audio_evidence'] = validation.audio_evidence(media_source, command)
+    try:
+        preflight(probe(media_source), item['source_stat']['size'])
+        decoded_input = probe(media_source, frames=True)
+        decoded_input['audio_evidence'] = validation.audio_evidence(media_source, command)
+    except subprocess.CalledProcessError as error:
+        if archive_policy.decode_error(error):
+            raise ArchiveSkip('source_decode_error', '原片解码损坏，保留原片：' + str(error.stderr)[-1500:], warning=True) from error
+        raise
     source_info = validation.normalize_reference(decoded_input, mixed=mixed)
     if source_info['timestamp_max_adjustment_us'] > 1000:
-        raise ValueError('原片时间戳需要超过1毫秒修正，保留原片')
+        raise ArchiveSkip('source_timestamps', '原片时间戳需要超过1毫秒修正，保留原片', warning=True)
     # 留出录制余量；Trash并不释放空间，不能计入可用空间。
     needed = max(source.stat().st_size, int(float(source_info['format']['duration']) * 500_000))
     if shutil.disk_usage(source.parent).free < 5 * 1024**3 + needed:
@@ -198,9 +280,9 @@ def encode(item, lock_fd):
     try:
         command(['nice', '-n', '10', 'ffmpeg', '-hide_banner', '-nostdin', '-v', 'error', '-xerror', '-n',
                  '-threads', '2', '-filter_threads', '2', '-copyts',
-                 *(['-reinit_filter', '0'] if mixed else []),
+                 '-reinit_filter', '0',
                  '-i', str(media_source), '-map', '0:v:0', '-map', '0:a:0',
-                 '-vf', validation.MIXED_FILTER if mixed else validation.TIME_FILTER,
+                 '-noautoscale', '-vf', validation.MIXED_FILTER if mixed else validation.TIME_FILTER,
                  '-c:v', 'hevc_videotoolbox', '-allow_sw', '0', '-require_sw', '0',
                  '-profile:v', 'main', '-pix_fmt', 'yuv420p', '-b:v', '2800k',
                  '-color_range', 'tv', '-colorspace', 'bt709', '-color_trc', 'bt709', '-color_primaries', 'bt709',
@@ -211,7 +293,7 @@ def encode(item, lock_fd):
         output_info = verify_output(source_info, temporary)
         check_source(item)
         if temporary.stat().st_size >= source.stat().st_size:
-            raise ValueError('成品没有变小，保留原片')
+            raise ArchiveSkip('no_size_saving', '成品没有变小，保留原片')
         # 硬链接创建不会覆盖其他文件；半途退出的无回执输出不会用于回退。
         os.link(temporary, target)
         saved = {'status': 'archived', 'source': str(source), 'source_stat': item['source_stat'],
@@ -286,6 +368,8 @@ def main(args):
                     verify_output(saved['source_info'], Path(item['output']))
                     result = {'source': item['source'], 'status': 'verified'}
                 results.append(result)
+            except ArchiveSkip as skip:
+                results.append(retain_original(item, skip))
             except (ValueError, OSError, subprocess.SubprocessError) as error:
                 results.append({'source': item['source'], 'status': 'failed', 'error': str(error)})
     print(json.dumps({'results': results}, ensure_ascii=False))

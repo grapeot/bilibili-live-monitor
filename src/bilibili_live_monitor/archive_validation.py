@@ -124,6 +124,11 @@ def normalize_reference(info, *, mixed):
         video.update(width=CANVAS[0], height=CANVAS[1], coded_width=CANVAS[0], coded_height=CANVAS[1],
                      sample_aspect_ratio='1:1', display_aspect_ratio='4:3')
         evidence['shapes'] = [[*CANVAS, 'yuv420p', '1:1']]
+    else:
+        # Stream metadata may describe an old container epoch. The actual
+        # decoded frames, rather than that stale display size, define native.
+        width, height, _, _ = evidence['shapes'][0]
+        video.update(width=width, height=height, sample_aspect_ratio='1:1')
     video['nb_read_frames'] = str(evidence['frames'])
     pts, normalized = unpack(evidence['pts_us']), []
     for value in pts:
