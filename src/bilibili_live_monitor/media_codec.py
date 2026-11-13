@@ -15,12 +15,17 @@ import tempfile
 from functools import lru_cache
 from pathlib import Path
 
-POLICY = 'h264-segment-parameters-v1'
+POLICY = 'h264-segment-parameters-v2'
+HISTORY_POLICIES = {'h264-segment-parameters-v1', POLICY}
 CAPTURE = re.compile(r'([a-f0-9]{8}-\d{8}T\d{6}Z-[a-f0-9]{8})-(\d{5})\.mkv')
 
 
 class CodecParametersError(ValueError):
     """不能证明安全恢复时保留来源，不能按猜测参数继续压缩。"""
+
+    def __init__(self, message, *, reason='unsupported_parameters'):
+        super().__init__(message)
+        self.reason = reason
 
 
 def _run(args):
@@ -93,15 +98,66 @@ def _scan_file(path):
 
 
 def _decode(path, *, short=False):
-    args = ['ffmpeg', '-nostdin', '-v', 'error', '-xerror', '-threads', '2', '-i', str(path)]
-    if short:
-        args += ['-t', '1']
-    result = subprocess.run([*args, '-map', '0:v:0', '-map', '0:a?', '-fps_mode', 'passthrough',
-                             '-enc_time_base:v', '1:1000000', '-f', 'null', '-'],
-                            capture_output=True, timeout=180)
+    # A null muxer can reject duplicate DTS even when every video frame decodes.
+    # Decode frames without an output muxer. Timestamp/AAC validation belongs to
+    # the archive contract; decoder stderr remains a hard failure here.
+    result = _frame_probe(path, short=short)
     if result.returncode or result.stderr:
         logging.getLogger(__name__).warning('解码检查失败：%s', result.stderr.decode(errors='replace')[-1000:])
     return result.returncode == 0 and not result.stderr
+
+
+def _frame_probe(path, *, short=False):
+    return subprocess.run(['ffprobe', '-v', 'error', '-threads', '2',
+                           *(['-read_intervals', '%+1'] if short else []),
+                           '-select_streams', 'v:0', '-show_frames', '-show_entries',
+                           'frame=width,height,sample_aspect_ratio,best_effort_timestamp_time',
+                           '-of', 'json', str(path)], capture_output=True, timeout=180)
+
+
+def _valid_candidate(path):
+    result = _frame_probe(path)
+    from .archive_policy import decode_error
+    error = subprocess.CalledProcessError(result.returncode, 'ffprobe', stderr=result.stderr)
+    if result.returncode < 0:
+        raise error
+    if result.returncode or result.stderr:
+        if decode_error(error):
+            return False
+        raise error
+    frames = json.loads(result.stdout).get('frames', [])
+    if not frames or not all(f.get('width', 0) > 0 and f.get('height', 0) > 0 for f in frames):
+        raise ValueError('探测未产生可信的视频帧，不能作为选参反证')
+    return True
+
+
+def _leading_parameters(source, header):
+    """只认可首个视频包内、首个VCL之前的完整SPS/PPS，不借容器补齐。"""
+    result = _run(['ffprobe', '-v', 'fatal', '-select_streams', 'v:0', '-read_intervals', '%+#1',
+                   '-show_packets', '-show_data', '-of', 'json', str(source)])
+    packets = json.loads(result.stdout).get('packets', [])
+    if not packets:
+        return None
+    dump = packets[0].get('data', '')
+    raw = bytes.fromhex(''.join(line.split(': ', 1)[1].split('  ', 1)[0].replace(' ', '')
+                               for line in dump.strip().splitlines()))
+    length, _, _ = _avcc(header)
+    found, pos = {}, 0
+    while pos < len(raw):
+        if pos + length > len(raw):
+            return None
+        size = int.from_bytes(raw[pos:pos + length], 'big')
+        pos += length
+        unit = raw[pos:pos + size]
+        if not unit or len(unit) != size:
+            return None
+        pos += size
+        kind = unit[0] & 31
+        if kind in range(1, 6):
+            return (found[7], found[8]) if 7 in found and 8 in found else None
+        if kind in (7, 8):
+            found[kind] = unit
+    return None
 
 
 def _history(source, match, limit=512):
@@ -128,17 +184,18 @@ def _history(source, match, limit=512):
             try:
                 saved = archive_receipt(previous)
                 codec = saved['codec_parameters']
-                if codec['policy'] != POLICY:
+                if codec['policy'] not in HISTORY_POLICIES:
                     raise ValueError('参数记录版本不匹配')
                 _, pair, _ = _avcc(bytes.fromhex(codec['final_avcc']))
-            except (OSError, ValueError, KeyError) as error:
-                raise CodecParametersError('缺少可信的前序参数：' + previous.name) from error
+            except (FileNotFoundError, ValueError, KeyError) as error:
+                raise CodecParametersError('缺少可信的前序参数：' + previous.name,
+                                           reason='missing_parameter_history') from error
             found.setdefault(7, pair[0])
             found.setdefault(8, pair[1])
             dependencies.append({'archive': str(previous), 'output_stat': saved['output_stat']})
         if 7 in found and 8 in found:
             return (found[7], found[8]), dependencies
-    raise CodecParametersError('有界历史内找不到完整参数，保留原片')
+    raise CodecParametersError('有界历史内找不到完整参数，保留原片', reason='missing_parameter_history')
 
 
 def inspect_video(source):
@@ -153,7 +210,11 @@ def inspect_video(source):
     # Decode success is NOT proof of a correct SPS (a smaller old height can
     # silently crop the decoded picture). Always establish the capture epoch.
     if int(match[2]) > 0:
-        initial, dependencies = _history(source, match)
+        leading = _leading_parameters(source, header)
+        if leading is None:
+            initial, dependencies = _history(source, match)
+        else:
+            initial = leading
     active = initial
     changed = False
     for unit in units:
@@ -168,6 +229,89 @@ def inspect_video(source):
             'initial_avcc': _make_avcc(header, initial).hex(),
             'final_avcc': _make_avcc(header, active).hex(), 'header_avcc': header.hex(),
             'dependencies': dependencies}
+
+
+def _copy_with_header(source, target, report):
+    old, initial = (bytes.fromhex(report[key]) for key in ('header_avcc', 'initial_avcc'))
+    with source.open('rb') as src, target.open('xb') as dst:
+        if len(initial) > len(old):
+            from .media_container import expanded_matroska
+            try:
+                expanded_matroska(src, dst, old, initial)
+            except ValueError as error:
+                raise CodecParametersError(str(error), reason='unsupported_container') from error
+        else:
+            dst.write(_patch_header(src.read(65536), old, initial))
+            shutil.copyfileobj(src, dst, 1024 * 1024)
+
+
+def _select_candidate(source, temporary, report):
+    """Validate both explanations for a conflicting header; do not guess.
+
+    A successful native decode alone can silently crop rows with a stale SPS.
+    Conversely, inherited history can be stale after an unrecorded epoch switch.
+    If both decode, neither explanation is proved: keep the original blocked.
+    """
+    _copy_with_header(source, temporary, report)
+    leading = _leading_parameters(source, bytes.fromhex(report['header_avcc']))
+    if leading is not None and leading == _avcc(bytes.fromhex(report['initial_avcc']))[1]:
+        if not _valid_candidate(temporary):
+            raise CodecParametersError('自带参数副本完整视频解码失败，保留原片',
+                                       reason='unresolved_decode_error')
+        return temporary, {**report, 'parameter_selection': {'basis': 'complete_inband_before_first_vcl'}}
+    native_ok, history_ok = _valid_candidate(source), _valid_candidate(temporary)
+    evidence = {'native_decode_ok': native_ok, 'history_decode_ok': history_ok,
+                'scope': 'all video frames; decoder stderr rejected; no output muxer'}
+    if native_ok and history_ok:
+        raise CodecParametersError('两套不同参数均可解码，不能排除静默裁画面；保留原片',
+                                   reason='ambiguous_parameters')
+    if not native_ok and not history_ok:
+        raise CodecParametersError('原生和历史参数均未通过完整视频解码，保留原片',
+                                   reason='unresolved_decode_error')
+    report = {**report, 'parameter_selection': evidence}
+    if history_ok:
+        return temporary, report
+    # Only the native explanation passes. Rebuild the final state from that
+    # initial header instead of carrying a stale historical final_avcc forward.
+    header, units, _ = _scan_file(source)
+    _, active, _ = _avcc(header)
+    changed = False
+    for unit in units:
+        pair = (unit, active[1]) if unit[0] & 31 == 7 else (active[0], unit)
+        changed |= pair != active
+        active = pair
+    report.update(initial_avcc=header.hex(), final_avcc=_make_avcc(header, active).hex(),
+                  status='mixed_parameters' if changed else 'unchanged')
+    return source, report
+
+
+def prepare_copy(source, output):
+    """Explicit private copy for offline callers; never writes a source cache."""
+    source, output = Path(source).resolve(strict=True), Path(output).resolve()
+    if output.is_relative_to(source.parent):
+        raise ValueError('准备副本必须位于原片目录之外')
+    report = inspect_video(source)
+    if output.exists():
+        raise FileExistsError(output)
+    owned = False
+    try:
+        with tempfile.TemporaryDirectory(prefix='.parameters-', dir=output.parent) as name:
+            selected = source
+            if report['status'] in ('repairable', 'mixed_parameters') and report['header_avcc'] != report['initial_avcc']:
+                _check_inputs(report)
+                selected, report = _select_candidate(source, Path(name) / 'candidate.mkv', report)
+            with selected.open('rb') as src, output.open('xb') as dst:
+                owned = True
+                shutil.copyfileobj(src, dst, 1024 * 1024)
+        if report['status'] != 'unmanaged':
+            _check_inputs(report)
+        if _packets(source) != _packets(output):
+            raise CodecParametersError('准备副本的媒体包或时间戳不符', reason='packet_mismatch')
+        return report
+    except BaseException:
+        if owned:
+            output.unlink(missing_ok=True)
+        raise
 
 
 def _check_inputs(report):
@@ -259,9 +403,6 @@ def prepare_video(source, *, expected_sha=None, allow_mixed=False):
     _check_inputs(report)
     source_sha = _sha(source)
     initial = bytes.fromhex(report['initial_avcc'])
-    old = bytes.fromhex(report['header_avcc'])
-    if len(initial) > len(old):
-        raise CodecParametersError('新参数超出原CodecPrivate空间，保留原片')
     if shutil.disk_usage(source.parent).free < 2 * source.stat().st_size + 64 * 1024**2:
         raise CodecParametersError('空间不足以同时保留原片与恢复临时副本')
     key = hashlib.sha256((POLICY + source_sha + initial.hex()
@@ -277,33 +418,35 @@ def prepare_video(source, *, expected_sha=None, allow_mixed=False):
                     and saved.get('policy') == POLICY
                     and saved.get('output_sha256') == _sha(target)):
                 _check_inputs(report)
-                return target, report
+                return target, {**report, **({'parameter_selection': saved['parameter_selection']}
+                                           if 'parameter_selection' in saved else {})}
             raise CodecParametersError('恢复缓存校验失败，不覆盖已有文件')
         if target.exists() or receipt.exists():
             raise CodecParametersError('存在未验收恢复副本，不覆盖')
-        fd, name = tempfile.mkstemp(prefix='.partial-', suffix='.mkv', dir=root)
-        temporary = Path(name)
+        name = tempfile.mkdtemp(prefix='.partial-', dir=root)
+        temporary = Path(name) / 'candidate.mkv'
         try:
-            with source.open('rb') as src, os.fdopen(fd, 'wb') as dst:
-                head = src.read(65536)
-                dst.write(_patch_header(head, old, initial))
-                while block := src.read(1024 * 1024):
-                    dst.write(block)
-            # Mixed inputs are fully decoded/checked by the adaptive archive
-            # path; ordinary fixed-canvas callers still reject them above.
-            if ((report['status'] != 'mixed_parameters' and not _decode(temporary))
-                    or _packets(source) != _packets(temporary)):
-                raise CodecParametersError('恢复副本解码或原码时间戳校验失败')
+            selected, report = _select_candidate(source, temporary, report)
+            if report['status'] == 'mixed_parameters' and not allow_mixed:
+                raise CodecParametersError('分片内部编码参数变化，保留原片')
+            if selected == source:
+                _check_inputs(report)
+                if _sha(source) != source_sha:
+                    raise CodecParametersError('恢复期间原片发生变化')
+                return source, report
+            if _packets(source) != _packets(selected):
+                raise CodecParametersError('恢复副本的原码时间戳校验失败', reason='packet_mismatch')
             _check_inputs(report)
             if _sha(source) != source_sha:
                 raise CodecParametersError('恢复期间原片发生变化')
-            os.link(temporary, target)
+            os.link(selected, target)
             saved = {**report, 'source_sha256': source_sha, 'output_sha256': _sha(target),
                      'output': str(target), 'verified': True}
             with receipt.open('x') as stream:
                 json.dump(saved, stream, ensure_ascii=False)
         finally:
             temporary.unlink(missing_ok=True)
+            Path(name).rmdir()
     return target, report
 
 

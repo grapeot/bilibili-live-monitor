@@ -139,7 +139,7 @@ def test_archive_uses_normalized_source_and_keeps_original_identity(source, monk
     from bilibili_live_monitor import recording_archive as archive
     output, parameters = codec.prepare_video(source)
     monkeypatch.setattr(archive, 'check_source', lambda item: None)
-    monkeypatch.setattr(archive, 'check_profile', lambda info: None)
+    monkeypatch.setattr(archive, 'preflight', lambda *_: None)
     observed = []
     def probe(path, **kwargs):
         observed.append(Path(path))
@@ -186,11 +186,12 @@ def test_silent_wrong_height_must_not_bypass_parameter_history(tmp_path):
     source.write_bytes(codec._patch_header(data[:65536], new, old) + data[65536:])
     assert codec._decode(source)  # no error, despite the wrong height
     assert codec.inspect_video(source)['status'] == 'repairable'
-    output, report = codec.prepare_video(source)
-    info = json.loads(run(['ffprobe', '-v', 'error', '-show_streams', '-of', 'json', str(output)]).stdout)
-    assert info['streams'][0]['height'] == 144
-    assert report['final_avcc'] != old.hex()
-    assert codec._packets(source) == codec._packets(output)
+    original = codec._sha(source)
+    with pytest.raises(codec.CodecParametersError) as error:
+        codec.prepare_video(source)
+    assert error.value.reason == 'ambiguous_parameters'
+    assert codec._sha(source) == original
+    assert not list((source.parent / '.codec-media').glob('*.mkv'))
 
 
 def test_low_disk_does_not_create_recovery_cache(source, monkeypatch):
@@ -205,6 +206,7 @@ def test_long_constant_capture_can_find_first_anchor_beyond_32_segments(tmp_path
     for number in range(41):
         (tmp_path / f'{PREFIX}-{number:05}.mkv').write_bytes(b'constant-epoch')
     monkeypatch.setattr(codec, '_scan_file', lambda p: (header, (), codec._stat(p)))
+    monkeypatch.setattr(codec, '_leading_parameters', lambda *_: None)
     monkeypatch.setattr(codec, '_decode', lambda *_a, **_k: True)
     report = codec.inspect_video(tmp_path / f'{PREFIX}-00040.mkv')
     assert report['status'] == 'unchanged'
