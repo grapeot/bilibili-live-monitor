@@ -5,6 +5,7 @@ import sqlite3
 from argparse import Namespace
 from pathlib import Path
 
+import numpy as np
 import pytest
 from PIL import Image
 
@@ -181,3 +182,36 @@ def test_plan_pins_asset_after_catalog_refresh(tmp_path, media_fixture):
     entry = next((tmp_path / 'cache/entries').iterdir())
     entry.write_text('{"version":"does-not-exist"}')
     assert gift_render.validate_plan(plan)[0]['version'] == original
+
+
+def test_cross_segment_pcm_has_no_new_silence_at_join(tmp_path, media_fixture):
+    args, base = media_fixture
+    second = tmp_path / 'second.mp4'
+    shutil.copyfile(base, second)
+    session = tmp_path / 'session'
+    (session / 'offline').mkdir(parents=True)
+    (session / 'config.json').write_text('{"room_id":"123456"}')
+    start = absolute_time('2030-01-01T00:00:00Z')
+    rows = [{'path': str(p), 'wall_start': start + i * 4, 'duration_sec': 4,
+             'size': p.stat().st_size, 'mtime_ns': p.stat().st_mtime_ns} for i, p in enumerate((base, second))]
+    (session / 'offline/manifest.json').write_text(json.dumps({'rows': rows}))
+    args.base, args.session, args.at = None, session, '2030-01-01T00:00:03.9+00:00'
+    plan = gift_render.make_plan(args)
+    assert len(plan['clips']) == 2
+    output = tmp_path / 'joined'
+    gift_render.render(plan, output)
+    import subprocess
+    pcm = subprocess.check_output(['ffmpeg', '-v', 'error', '-i', str(output / 'video.mp4'),
+                                   '-vn', '-ac', '1', '-ar', '48000', '-f', 'f32le', '-'])
+    samples = np.frombuffer(pcm, dtype='<f4')
+    # Join is 0.5s into this output. The old per-part AAC path inserted ~25ms silence here.
+    windows = [samples[int(t * 48000):int((t + .005) * 48000)] for t in np.arange(.46, .61, .005)]
+    assert min(float(np.sqrt(np.mean(window**2))) for window in windows) > .025
+
+
+def test_expected_cli_error_has_no_traceback(tmp_path, capsys):
+    args = Namespace(action='render', plan=None, at=None)
+    assert gift_render.main(args) == 1
+    captured = capsys.readouterr()
+    assert 'Traceback' not in captured.err
+    assert json.loads(captured.err)['error_type'] == 'ValueError'

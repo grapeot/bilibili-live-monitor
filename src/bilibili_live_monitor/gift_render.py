@@ -1,16 +1,16 @@
 """按冻结计划离线叠加单个礼物；场次事件供skill按需批量编排。"""
-import argparse
 import json
 import shutil
 import sqlite3
 import subprocess
+import sys
 from datetime import datetime, timezone
 from fractions import Fraction
 from pathlib import Path
 
 from .archive_media import file_stat
 from .gift_assets import cache_default, cached_asset, load_asset, sha_file, validate_config, write_json
-from .gift_media import absolute_time, aspect, dimensions, number, session_config, source_clips
+from .gift_media import absolute_time, aspect, dimensions, number, prepare_base, session_config, source_clips
 from .trailer import probe, run
 
 
@@ -149,19 +149,19 @@ def render(plan, output):
         fit_w, fit_h = max(2, int(fit_h * float(ratio) / 2) * 2), max(2, int(fit_h / 2) * 2)
         filters = (f'scale={fit_w}:{fit_h}:flags=lanczos,setsar=1,'
                    f'pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30')
-        part = output / f'part-{index:03d}.mp4'
+        part = output / f'part-{index:03d}.mkv'
         run(['ffmpeg', '-nostdin', '-v', 'error', '-xerror', '-ss', str(clip['start']),
              '-i', clip['path'], '-t', str(clip['duration']), '-map', '0:v:0', '-map', '0:a:0',
              '-vf', filters, '-af', 'aresample=48000,asetpts=PTS-STARTPTS',
              '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '18', '-pix_fmt', 'yuv420p',
-             '-c:a', 'aac', '-b:a', '192k', '-ac', '2', '-movflags', '+faststart', str(part)])
+             '-c:a', 'pcm_s16le', '-ac', '2', str(part)])
         parts.append(part)
     # concat demuxer paths are generated relative names, never unescaped user paths.
     concat = output / 'parts.txt'
     concat.write_text(''.join(f"file '{part.name}'\n" for part in parts))
     base = output / 'base.mp4'
     run(['ffmpeg', '-nostdin', '-v', 'error', '-f', 'concat', '-safe', '1', '-i', str(concat),
-         '-c', 'copy', '-movflags', '+faststart', str(base)])
+         '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', str(base)])
     rx, ry, rw, rh = info['rgbFrame']
     ax, ay, aw, ah = info['aFrame']
     overlay = plan['overlay']
@@ -223,6 +223,9 @@ def configure_parser(commands):
     listing.add_argument('--session', type=Path, required=True)
     check = actions.add_parser('verify')
     check.add_argument('--output', type=Path, required=True)
+    prepare = actions.add_parser('prepare', help='在新的私有目录准备原始分片解码头；不写生产目录')
+    prepare.add_argument('--base', type=Path, required=True)
+    prepare.add_argument('--output', type=Path, required=True)
     for action in ('plan', 'render'):
         item = actions.add_parser(action)
         inputs = item.add_mutually_exclusive_group(required=True)
@@ -247,7 +250,9 @@ def configure_parser(commands):
 
 def main(args):
     try:
-        if args.action == 'events':
+        if args.action == 'prepare':
+            result = prepare_base(args.base, args.output)
+        elif args.action == 'events':
             result = events(args.session)
         elif args.action == 'verify':
             result = verify(args.output)
@@ -262,4 +267,6 @@ def main(args):
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
     except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
-        raise argparse.ArgumentError(None, str(error)) from error
+        print(json.dumps({'error_type': type(error).__name__, 'error': str(error)}, ensure_ascii=False),
+              file=sys.stderr)
+        return 1

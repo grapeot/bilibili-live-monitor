@@ -60,6 +60,19 @@ bili-live gift-render verify --output /PRIVATE/result
 
 场次模式需要既有 `offline/manifest.json` 做墙钟到文件映射，校验来源或归档回执，不重跑 ASR、不改原片。直播中尚无清单时，使用已封口的明确 `--base` 文件和文件内秒数。输入须有单视频轨和单音频轨，检查目标区间包覆盖，拒绝缺口、重叠或素材变化。支持跨稳定分片和不同分片的画幅归一；片内画幅切换报错，须先拆稳定输入。管理原片需要参数恢复时，先显式准备独立可读副本，工具不会自动向生产 `.codec-media` 写入。
 
+### 原始录制分片的解码准备
+
+```bash
+bili-live gift-render prepare --base /PRIVATE/recordings/segment.mkv --output /PRIVATE/prepared
+# 使用prepare返回的prepared路径及原文件相对秒数，继续plan/render。
+bili-live gift-render render --base /PRIVATE/prepared/prepared.mkv --at 30 \
+  --asset /PRIVATE/cache/versions/VERSION.json --output /PRIVATE/result
+```
+
+`prepare` 的输出目录必须全新且在原始录像目录之外。它只复制原片并按可信历史参数准备解码头；较长参数头需要重建 Matroska Tracks 长度并移除失效索引，不重新编码媒体。准备后逐包核对内容及时间戳，生产原片与 `.codec-media` 不变。返回 `prepared` 路径与 `preparation.json`，不把解码头准备等同于整片画幅稳定或完整解码通过；后续计划仍检查目标时间段的画幅和覆盖。片内仍有参数切换时，应选择稳定区间或另行拆分。
+
+跨分片合成的中间音频使用 PCM，拼接后只编码一次 AAC，避免逐片 AAC 的延迟／尾部填充在接缝产生新增静音。成片仍保留底层声音，不混入礼物音轨。
+
 ## 输出规格
 
 新输出目录包含 `video.mp4`（合成）、`base.mp4`（底层）、`plan.json`、`assets/effect.mp4`、`assets/effect.json`、`assets/version.json`、`preview.jpg`（左底右合）和 `verification.json`。失败时可能保留本次中间文件，用于诊断；它们不代表验收通过。

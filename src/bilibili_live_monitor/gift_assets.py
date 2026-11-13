@@ -1,9 +1,9 @@
 """礼物目录快照、按需素材缓存与固定版本；不触发送礼或改变直播页面。"""
-import argparse
 import asyncio
 import hashlib
 import json
 import os
+import sys
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -245,4 +245,6 @@ def main(args):
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
     except (OSError, ValueError, KeyError, httpx.HTTPError) as error:
-        raise argparse.ArgumentError(None, str(error)) from error
+        print(json.dumps({'error_type': type(error).__name__, 'error': str(error)}, ensure_ascii=False),
+              file=sys.stderr)
+        return 1
