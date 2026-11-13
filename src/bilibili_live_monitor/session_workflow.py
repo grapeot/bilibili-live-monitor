@@ -112,9 +112,27 @@ class SessionWorkflows:
             return path
         cfg = self.config
         rid = record['room_id']
+        candidate = self.automation.candidate(rid) or {}
+        platform_room = candidate.get('room_id') or rid
+        if not candidate:
+            # launch期间candidate.room_id可能暂时变成页面短号；URL仍是稳定的入口身份。
+            candidate = next((c for c in self.automation.platform.candidates.values()
+                              if c['url'] in self.automation.platform.fixed_urls()
+                              and c['url'].rsplit('/', 1)[-1] == rid), {})
+            platform_room = rid
+        if not candidate:
+            raise RuntimeError('平台候选尚未就绪，等待来源绑定')
+        # 页面可能重定向到短号；数据库与媒体使用实际采集房号，控制面仍用规范号。
+        aliases = {room['room_id'] for room in self.automation.store.rooms()
+                   if candidate.get('url') in (room.get('source_url'), room.get('url'))}
+        if not aliases:
+            raise RuntimeError('采集来源尚未就绪，等待浏览器完成房号解析')
+        if len(aliases) > 1:
+            raise ValueError('同一候选对应多个采集房间，无法确定场次来源')
+        capture_room = next(iter(aliases))
         settings = self.automation.platform.monitor.settings
         args = SimpleNamespace(workspace=directory, database=settings.data_dir / 'monitor.sqlite3',
-            room=rid, label=self.automation.rooms[rid]['label'], start=record['start'],
+            room=capture_room, label=self.automation.rooms[rid]['label'], start=record['start'],
             hours=cfg.get('max_hours', 12), api=cfg.get('api', 'http://127.0.0.1:8765'),
             launcher=cfg.get('launcher', 'http://127.0.0.1:7997'), ai_session=None, model=None,
             opencode_cwd=None, opencode_python=None, remote=record['remote'], url=record['url'],
@@ -129,10 +147,11 @@ class SessionWorkflows:
         config['content_mode'] = self.automation.rooms[rid].get('content_mode', 'music')
         if config['content_mode'] == 'talk':
             config.update(ai_enabled=False, talk_finalize=True)
-        config.update(model=cfg['model'], opencode_python=cfg['opencode_python'],
+        config.update(room_id=capture_room, platform_room_id=platform_room,
+            model=cfg['model'], opencode_python=cfg['opencode_python'],
             local_only=self.automation.rooms[rid].get('local_only', cfg.get('local_only', False)),
             opencode_cwd=cfg['opencode_cwd'], opencode_project=cfg['opencode_project'],
-            recording_root=str(settings.data_dir / 'recordings' / rid),
+            recording_root=str(settings.data_dir / 'recordings' / capture_room),
             recording_segment_seconds=settings.recording_segment_seconds,
             asr_python=settings.asr_python, asr_model=settings.asr_model,
             seal_seconds=cfg.get('seal_seconds', 300),

@@ -35,7 +35,7 @@ def request(url, value=None):
 def terminal(config, platform, now):
     if now >= config['deadline']:
         return True
-    candidate = next((c for c in platform['candidates'] if c.get('room_id') == config['room_id']), None)
+    candidate = next((c for c in platform['candidates'] if c.get('room_id') == config.get('platform_room_id', config['room_id'])), None)
     if not candidate or candidate.get('status_error'):
         return False
     try:
@@ -253,7 +253,7 @@ def cycle(config, path, mode, upload=True):
                 state.update(stop_intent=True, cutoff=state.get('cutoff', frozen_cutoff(config, state, platform, now)))
                 atomic_json(path, state)
             if not state.get('stop_intent'):
-                candidate = next(c for c in platform['candidates'] if c.get('room_id') == config['room_id'])
+                candidate = next(c for c in platform['candidates'] if c.get('room_id') == config.get('platform_room_id', config['room_id']))
                 if (candidate.get('live_status') == 1 and candidate.get('live_start') == config['live_start']
                         and 0 <= now - epoch(candidate['status_checked_utc']) < 180):
                     state['last_live_at'] = epoch(candidate['status_checked_utc'])

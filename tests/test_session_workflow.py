@@ -37,6 +37,7 @@ def automation(tmp_path):
     candidate = {'url': 'https://live.bilibili.com/123456', 'room_id': '123456',
                  'live_start': '2030-01-01 08:00:00', 'live_status': 1,
                  'status_checked_utc': iso(time.time())}
+    store.room({'room_id': '123456', 'url': candidate['url'], 'status': 'capturing'})
     platform = SimpleNamespace(store=store, monitor=SimpleNamespace(browser=None, settings=Settings(data_dir=tmp_path)),
         policy=SimpleNamespace(enabled=True, mode='fixed'), candidates={'123456': candidate},
         fixed_urls=lambda: {candidate['url']})
