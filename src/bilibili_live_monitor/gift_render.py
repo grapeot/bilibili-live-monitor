@@ -177,22 +177,17 @@ def validate_plan(plan):
 
 
 def render(plan, output):
-    asset, info = validate_plan(plan)
+    specifications = plan.get('overlays', [None])
+    if not isinstance(specifications, list) or not 1 <= len(specifications) <= 256:
+        raise ValueError('同一场景须含1至256个特效')
+    effects = []
+    for spec in specifications:
+        candidate = plan if spec is None else {**plan, **spec}
+        asset, info = validate_plan(candidate)
+        effects.append((candidate, asset, info))
     output = Path(output).resolve()
     output.mkdir(parents=True, exist_ok=False)
     write_json(output / 'plan.json', plan)
-    assets = output / 'assets'
-    assets.mkdir()
-    for name, key in (('effect.mp4', 'media'), ('effect.json', 'config')):
-        shutil.copyfile(asset[key]['path'], assets / name)
-    write_json(assets / 'version.json', asset)
-    dynamic = plan.get('dynamic')
-    if dynamic:
-        font = assets / ('font' + Path(dynamic['font']['path']).suffix)
-        shutil.copyfile(dynamic['font']['path'], font)
-        if sha_file(font) != dynamic['font']['sha256']:
-            raise ValueError('复制期间字体改变')
-        write_json(assets / 'bindings.json', dynamic)
     width, height = plan['canvas']
     parts = []
     for index, clip in enumerate(plan['clips']):
@@ -201,7 +196,7 @@ def render(plan, output):
         fit_h = min(height, width / float(ratio))
         fit_w, fit_h = max(2, int(fit_h * float(ratio) / 2) * 2), max(2, int(fit_h / 2) * 2)
         filters = (f'scale={fit_w}:{fit_h}:flags=lanczos,setsar=1,'
-                   f'pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30')
+                   f'pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30:start_time=0')
         part = output / f'part-{index:03d}.mkv'
         run(['ffmpeg', '-nostdin', '-v', 'error', '-xerror', '-ss', str(clip['start']),
              '-i', clip['path'], '-t', str(clip['duration']), '-map', '0:v:0', '-map', '0:a:0',
@@ -215,32 +210,53 @@ def render(plan, output):
     base = output / 'base.mp4'
     run(['ffmpeg', '-nostdin', '-v', 'error', '-f', 'concat', '-safe', '1', '-i', str(concat),
          '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', str(base)])
-    rx, ry, rw, rh = info['rgbFrame']
-    ax, ay, aw, ah = info['aFrame']
-    overlay = plan['overlay']
-    x, y, w, h = overlay['region']
-    scale = min(w / rw, h / rh)
-    ew, eh = max(2, int(rw * scale / 2) * 2), max(2, int(rh * scale / 2) * 2)
-    left = {'left-fit': x, 'right-fit': x + w - ew, 'center-fit': x + (w - ew) // 2}[overlay['placement']]
-    top = y + (h - eh) // 2
-    effect_input = assets / 'effect.mp4'
-    if dynamic:
-        effect_input = render_rgba(effect_input, json.loads((assets / 'effect.json').read_text()),
-                                   dynamic['username'], font, output / 'effect-rgba.mov')
-        unpack = '[1:v]'
-    else:
-        unpack = (f'[1:v]split=2[r0][a0];[r0]crop={rw}:{rh}:{rx}:{ry},format=rgb24[r];'
-                  f'[a0]crop={aw}:{ah}:{ax}:{ay},scale={rw}:{rh}:flags=bilinear,format=gray[a];'
-                  '[r][a]alphamerge,')
-    graph = (unpack + f'scale={ew}:{eh}:flags=lanczos,setsar=1,'
-             f'setpts=PTS-STARTPTS+{overlay["at"]}/TB[g];'
-             f'[0:v][g]overlay={left}:{top}:eof_action=pass:repeatlast=0:format=auto,format=yuv420p[v]')
+    inputs, graph, intermediates = [], [], []
+    previous = '[0:v]'
+    for i, (candidate, asset, info) in enumerate(effects):
+        assets = output / 'assets'
+        if len(effects) > 1:
+            assets = assets / f'overlay-{i:03d}'
+        assets.mkdir(parents=True)
+        for name, key in (('effect.mp4', 'media'), ('effect.json', 'config')):
+            shutil.copyfile(asset[key]['path'], assets / name)
+        write_json(assets / 'version.json', asset)
+        effect_input = assets / 'effect.mp4'
+        dynamic = candidate.get('dynamic')
+        if dynamic:
+            font = assets / ('font' + Path(dynamic['font']['path']).suffix)
+            shutil.copyfile(dynamic['font']['path'], font)
+            if sha_file(font) != dynamic['font']['sha256']:
+                raise ValueError('复制期间字体改变')
+            write_json(assets / 'bindings.json', dynamic)
+            effect_input = render_rgba(effect_input, json.loads((assets / 'effect.json').read_text()),
+                                       dynamic['username'], font, output / f'effect-{i:03d}-rgba.mov')
+            intermediates.append(effect_input)
+            unpack = f'[{i+1}:v]'
+        else:
+            rx, ry, rw, rh = info['rgbFrame']
+            ax, ay, aw, ah = info['aFrame']
+            unpack = (f'[{i+1}:v]split=2[r{i}0][a{i}0];'
+                      f'[r{i}0]crop={rw}:{rh}:{rx}:{ry},format=rgb24[r{i}];'
+                      f'[a{i}0]crop={aw}:{ah}:{ax}:{ay},scale={rw}:{rh}:flags=bilinear,format=gray[a{i}];'
+                      f'[r{i}][a{i}]alphamerge,')
+        overlay = candidate['overlay']
+        x, y, w, h = overlay['region']
+        scale = min(w / info['w'], h / info['h'])
+        ew, eh = (max(2, int(n*scale/2)*2) for n in (info['w'], info['h']))
+        left = {'left-fit': x, 'right-fit': x+w-ew, 'center-fit': x+(w-ew)//2}[overlay['placement']]
+        top = y+(h-eh)//2
+        graph.append(unpack + f'scale={ew}:{eh}:flags=lanczos,setsar=1,'
+                     f'setpts=PTS-STARTPTS+{overlay["at"]}/TB[g{i}];'
+                     f'{previous}[g{i}]overlay={left}:{top}:eof_action=pass:repeatlast=0:format=auto[b{i}]')
+        previous = f'[b{i}]'
+        inputs += ['-i', str(effect_input)]
+    graph.append(previous + 'fps=30:start_time=0,format=yuv420p[v]')
     video = output / 'video.mp4'
-    run(['ffmpeg', '-nostdin', '-v', 'error', '-xerror', '-i', str(base), '-i', str(effect_input),
-         '-filter_complex_threads', '2', '-filter_complex', graph, '-map', '[v]', '-map', '0:a:0',
+    run(['ffmpeg', '-nostdin', '-v', 'error', '-xerror', '-i', str(base), *inputs,
+         '-filter_complex_threads', '2', '-filter_complex', ';'.join(graph), '-map', '[v]', '-map', '0:a:0',
          '-t', str(plan['duration']), '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '18',
          '-pix_fmt', 'yuv420p', '-c:a', 'copy', '-movflags', '+faststart', str(video)])
-    preview_at = overlay['at'] + overlay['duration'] / 2
+    preview_at = effects[0][0]['overlay']['at'] + effects[0][0]['overlay']['duration'] / 2
     run(['ffmpeg', '-nostdin', '-v', 'error', '-ss', str(preview_at), '-i', str(base),
          '-ss', str(preview_at), '-i', str(video), '-filter_complex',
          '[0:v]scale=640:-2[l];[1:v]scale=640:-2[r];[l][r]hstack[v]',
@@ -250,8 +266,8 @@ def render(plan, output):
     for part in parts:
         part.unlink()
     concat.unlink()
-    if dynamic:
-        effect_input.unlink()
+    for intermediate in intermediates:
+        intermediate.unlink()
     return result
 
 
@@ -281,6 +297,8 @@ def verify(output):
 def configure_parser(commands):
     parser = commands.add_parser('gift-render', help='离线礼物动画合成与场次事件枚举')
     actions = parser.add_subparsers(dest='action', required=True)
+    from .gift_batch import configure_parser as configure_batch
+    configure_batch(actions)
     listing = actions.add_parser('events')
     listing.add_argument('--session', type=Path, required=True)
     check = actions.add_parser('verify')
@@ -315,7 +333,15 @@ def configure_parser(commands):
 
 def main(args):
     try:
-        if args.action == 'prepare':
+        if args.action in ('batch-plan', 'batch-render', 'batch-verify'):
+            from .gift_batch import make_batch, render_batch, verify_batch
+            if args.action == 'batch-plan':
+                result = make_batch(args)
+            elif args.action == 'batch-render':
+                result = render_batch(json.loads(args.plan.read_text()), args.output)
+            else:
+                result = verify_batch(args.output)
+        elif args.action == 'prepare':
             result = prepare_base(args.base, args.output)
         elif args.action == 'events':
             result = events(args.session)
