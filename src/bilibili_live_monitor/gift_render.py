@@ -250,7 +250,8 @@ def render(plan, output):
                      f'{previous}[g{i}]overlay={left}:{top}:eof_action=pass:repeatlast=0:format=auto[b{i}]')
         previous = f'[b{i}]'
         inputs += ['-i', str(effect_input)]
-    graph.append(previous + 'fps=30:start_time=0,format=yuv420p[v]')
+    graph.append(previous + f'tpad=stop_mode=clone:stop_duration=1,fps=30:start_time=0,'
+                 f'trim=duration={plan["duration"]},format=yuv420p[v]')
     video = output / 'video.mp4'
     run(['ffmpeg', '-nostdin', '-v', 'error', '-xerror', '-i', str(base), *inputs,
          '-filter_complex_threads', '2', '-filter_complex', ';'.join(graph), '-map', '[v]', '-map', '0:a:0',

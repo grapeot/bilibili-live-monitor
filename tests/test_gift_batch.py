@@ -164,3 +164,31 @@ def test_disjoint_scenes_preserve_gaps_as_cuts_not_replay(batch_case, tmp_path):
     # 两段正弦音在1.4秒拼接；逐段AAC原封拼接会在此引入额外静音。
     windows = [samples[int(t*48000):int((t+.005)*48000)] for t in np.arange(1.35, 1.45, .005)]
     assert min(float(np.sqrt(np.mean(w**2))) for w in windows) > .025
+
+
+@pytest.mark.parametrize('mutation', ['shift', 'copy'])
+def test_actual_source_offsets_cannot_replay_other_scene(batch_case, tmp_path, mutation):
+    args, database = batch_case
+    args.event_region = []
+    with sqlite3.connect(database) as db:
+        db.execute('DELETE FROM timeline WHERE id IN (3,4)')
+        db.execute('UPDATE timeline SET at_utc=? WHERE id=2', ('2030-01-01T00:00:02.600000+00:00',))
+    plan = gift_batch.make_batch(args)
+    assert len(plan['scenes']) == 2
+    if mutation == 'shift':
+        plan['scenes'][1]['clips'][0]['start'] += .1
+    else:
+        plan['scenes'][1]['clips'] = copy.deepcopy(plan['scenes'][0]['clips'])
+    output = tmp_path/'invalid'
+    with pytest.raises(ValueError, match='取片路径或偏移'):
+        gift_batch.render_batch(plan, output)
+    assert not output.exists()
+
+
+def test_source_manifest_is_frozen(batch_case):
+    args, _ = batch_case
+    plan = gift_batch.make_batch(args)
+    manifest = args.session/'offline/manifest.json'
+    manifest.write_text(manifest.read_text()+'\n')
+    with pytest.raises(ValueError, match='清单已改变'):
+        gift_batch.validate_batch(plan)

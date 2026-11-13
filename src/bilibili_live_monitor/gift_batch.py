@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import gift_render
-from .archive_media import file_stat
+from .archive_media import archived_input, file_stat
 from .gift_assets import (
     cache_default,
     cached_asset,
@@ -19,7 +19,7 @@ from .gift_assets import (
     write_json,
 )
 from .gift_event import guard_event
-from .gift_media import absolute_time, dimensions, number, session_config, source_clips
+from .gift_media import absolute_time, dimensions, number, select_rows, session_config, source_clips
 from .trailer import probe, run
 
 EFFECT_KEYS = ('asset_path', 'asset_sha256', 'asset_version', 'gift_id', 'count',
@@ -131,7 +131,9 @@ def make_batch(args):
                  'source_kind': 'session', 'overlays': effects,
                  'source_start': group['start'], 'source_end': group['end']}
         scenes.append(scene)
+    manifest_path = session/'offline/manifest.json'
     result = {'batch_schema_version': 1, 'session': str(session), 'canvas': list(canvas), 'fps': 30,
+              'manifest': {'path': str(manifest_path), 'sha256': sha_file(manifest_path)},
               'inventory': entries, 'scenes': scenes, 'historical_web_playback': False,
               'playback_policy': 'event_timestamp_overlay_no_web_queue_emulation',
               'naive_clip_seconds': sum(w['plan']['duration'] for w in windows),
@@ -144,11 +146,17 @@ def validate_batch(plan):
     if plan.get('batch_schema_version') != 1 or plan.get('fps') != 30:
         raise ValueError('不支持的批次计划')
     dimensions('x'.join(str(n) for n in plan['canvas']))
+    manifest = plan['manifest']
+    if (Path(manifest['path']).resolve() != Path(plan['session']).resolve()/'offline/manifest.json'
+            or sha_file(manifest['path']) != manifest['sha256']):
+        raise ValueError('批次来源清单已改变或不属于所选场次')
+    rows = json.loads(Path(manifest['path']).read_text())['rows']
     by_id = {e['event_id']: e for e in plan['inventory']}
     if len(by_id) != len(plan['inventory']):
         raise ValueError('批次覆盖清单的行ID重复')
     expected = [e['event_id'] for e in plan['inventory'] if e['status'] == 'planned']
     actual, previous_end, previous_wall_end = [], None, None
+    used_ranges = {}
     if not plan['scenes'] and expected:
         raise ValueError('批次没有可渲染场景；请核对素材缓存与覆盖清单')
     for scene in plan['scenes']:
@@ -160,6 +168,24 @@ def validate_batch(plan):
             raise ValueError('批次场景重叠、倒序或规格不一致')
         previous_end = scene['source_end']
         previous_wall_end = wall_start+scene['duration']
+        selected = select_rows(rows, wall_start, previous_wall_end)
+        if len(selected) != len(scene['clips']):
+            raise ValueError('实际取片未连续覆盖声明的场景时间')
+        for clip, (row, offset, length) in zip(scene['clips'], selected, strict=True):
+            source = Path(row['path']).resolve()
+            if source.is_file():
+                if file_stat(source) != {key:row[key] for key in ('size', 'mtime_ns')}:
+                    raise ValueError('批次清单原片已改变')
+            else:
+                source = archived_input(row).resolve()
+            if (Path(clip['path']).resolve() != source or abs(clip['start']-offset) > .00001
+                    or abs(clip['duration']-length) > .00001):
+                raise ValueError('实际取片路径或偏移与场景墙钟映射不符')
+            spans = used_ranges.setdefault(str(source), [])
+            left, right = clip['start'], clip['start']+clip['duration']
+            if any(min(right, b)-max(left, a) > .00001 for a,b in spans):
+                raise ValueError('实际来源区间被重复播放')
+            spans.append((left, right))
         if not isinstance(scene.get('overlays'), list) or not 1 <= len(scene['overlays']) <= 256:
             raise ValueError('每个批次场景须包含1至256个特效')
         for effect in scene['overlays']:
@@ -203,7 +229,8 @@ def render_batch(plan, output):
     metadata.write_text('\n'.join(chapters)+'\n')
     count = len(plan['scenes'])
     command += ['-i', str(metadata)]
-    graph += [''.join(concat)+f'concat=n={count}:v=1:a=1[vc][a]', '[vc]fps=30:start_time=0[v]']
+    graph += [''.join(concat)+f'concat=n={count}:v=1:a=1[vc][a]',
+              f'[vc]tpad=stop_mode=clone:stop_duration=1,fps=30:start_time=0,trim=duration={plan["duration"]}[v]']
     run(command+['-filter_complex_threads', '2', '-filter_complex', ';'.join(graph), '-map', '[v]', '-map', '[a]',
                  '-map_metadata', str(count), '-map_chapters', str(count),
                  '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '18', '-pix_fmt', 'yuv420p',
@@ -221,7 +248,7 @@ def verify_batch(output):
     if ([v['width'], v['height']] != plan['canvas'] or v.get('sample_aspect_ratio') != '1:1'
             or v.get('avg_frame_rate') != '30/1'
             or abs(float(metadata['format']['duration'])-plan['duration']) > .15
-            or abs(int(v.get('nb_frames', 0))-round(plan['duration']*30)) > 1
+            or int(v.get('nb_frames', 0)) != round(plan['duration']*30)
             or sum(s['codec_type'] == 'audio' for s in metadata['streams']) != 1):
         raise ValueError('批次成片画幅、时长、帧率、帧数或音轨验收失败')
     run(['ffmpeg', '-nostdin', '-v', 'error', '-xerror', '-i', str(video),
