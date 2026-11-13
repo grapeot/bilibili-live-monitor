@@ -9,11 +9,23 @@ from .gift_assets import canonical, positive
 from .gift_media import absolute_time, session_config
 
 
-def guard_event(session, event_id):
+def is_blind_event(session, event_id):
+    _, config = session_config(session)
+    database = Path(config['database']).resolve(strict=True)
+    with sqlite3.connect(database.as_uri()+'?mode=ro', uri=True) as db:
+        row = db.execute('SELECT data FROM timeline WHERE id=? AND room_id=? AND kind=?',
+                         (positive(event_id), str(config['room_id']), 'gift')).fetchone()
+    return bool(row and json.loads(row[0]).get('gift', {}).get('blind_gift'))
+
+
+def guard_event(session, event_id, *, include_recorded_tail=False):
     root, config = session_config(session)
     manifest = root / 'offline/manifest.json'
     cutoff = (json.loads(manifest.read_text())['cutoff'] if manifest.exists()
               else datetime.now(timezone.utc).timestamp())
+    if include_recorded_tail:
+        from .gift_scope import event_cutoff
+        cutoff = event_cutoff(session, True)
     database = Path(config['database']).resolve(strict=True)
     with sqlite3.connect(database.as_uri() + '?mode=ro', uri=True) as db:
         db.execute('PRAGMA query_only=ON')

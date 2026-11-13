@@ -10,21 +10,24 @@ from pathlib import Path
 
 from .archive_media import file_stat
 from .gift_assets import cache_default, cached_asset, load_asset, sha_file, validate_config, write_json
-from .gift_dynamic import render_rgba, text_images, validate_dynamic
-from .gift_event import guard_event
+from .gift_dynamic import BLIND_TAG, render_rgba, text_images, validate_dynamic
+from .gift_event import guard_event, is_blind_event
 from .gift_media import absolute_time, aspect, dimensions, number, prepare_base, session_config, source_clips
 from .trailer import probe, run
 
 
-def events(session):
+def events(session, *, include_recorded_tail=False):
     root, config = session_config(session)
     start = absolute_time(config['start_utc'])
     manifest_path = root / 'offline/manifest.json'
     cutoff = (json.loads(manifest_path.read_text())['cutoff'] if manifest_path.exists()
               else datetime.now(timezone.utc).timestamp())
+    from .gift_scope import recorded_tail
+    tail = (recorded_tail(session) if manifest_path.exists() else
+            {'cutoff': cutoff, 'recorded_end': cutoff, 'stop_reason': 'no_manifest'})
     database = Path(config['database']).resolve(strict=True)
     lower = datetime.fromtimestamp(start, timezone.utc).isoformat()
-    upper = datetime.fromtimestamp(cutoff, timezone.utc).isoformat()
+    upper = datetime.fromtimestamp(tail['recorded_end'], timezone.utc).isoformat()
     with sqlite3.connect(database.as_uri() + '?mode=ro', uri=True) as db:
         db.execute('PRAGMA query_only=ON')
         rows = db.execute('SELECT id,at_utc,data FROM timeline WHERE room_id=? AND kind=? AND at_utc>=? '
@@ -32,14 +35,17 @@ def events(session):
                           (str(config['room_id']), 'gift', lower, upper)).fetchall()
     result = []
     for ident, at, data in rows:
-        if not start <= absolute_time(at) < cutoff:
+        if not start <= absolute_time(at) < tail['recorded_end']:
             continue
         value = json.loads(data).get('gift', {})
         gift_id = value.get('gift_id')
         result.append({'event_id': ident, 'at': at, 'gift_id': gift_id, 'count': value.get('num', 1),
                        'gift_name': value.get('gift_name'),
                        'status': 'candidate' if gift_id else 'no_gift_id'})
-    return {'room_id': config['room_id'], 'session': str(root), 'cutoff': cutoff, 'events': result}
+    tail_events = [e for e in result if absolute_time(e['at']) >= cutoff]
+    return {'room_id': config['room_id'], 'session': str(root), 'cutoff': cutoff,
+            'events': result if include_recorded_tail else [e for e in result if absolute_time(e['at']) < cutoff],
+            'recorded_tail': {**tail, 'included': bool(include_recorded_tail), 'events': tail_events}}
 
 
 def region(value, canvas):
@@ -57,7 +63,13 @@ def make_plan(args):
     if getattr(args, 'event_id', None) is not None:
         if not args.session or at is not None or room or gift_id or count != 1 or getattr(args, 'username', None):
             raise ValueError('--event-id须与--session使用，且不混用时间、礼物、数量或昵称覆盖')
-        binding = guard_event(args.session, args.event_id)
+        if is_blind_event(args.session, args.event_id):
+            from .gift_blind import bind_event
+            binding = bind_event(args.session, args.event_id,
+                                 include_recorded_tail=getattr(args, 'include_recorded_tail', False))
+        else:
+            binding = guard_event(args.session, args.event_id,
+                                  include_recorded_tail=getattr(args, 'include_recorded_tail', False))
         at, room, gift_id, count = (binding[k] for k in ('at', 'room_id', 'gift_id', 'count'))
     if at is None:
         raise ValueError('请提供--at，或--session与--event-id')
@@ -72,16 +84,26 @@ def make_plan(args):
             raise ValueError('请提供--asset，或--room/--gift-id（场次自动提供房间）')
         try:
             asset_path, asset = cached_asset(args.cache, room, gift_id, count,
-                                              binding['effect_id'] if binding else None)
+                                              binding.get('effect_id') if binding else None)
         except FileNotFoundError as error:
             raise ValueError('礼物未缓存；先运行gift-assets fetch。render/plan均不联网') from error
-    if binding and any(asset[k] != binding[k] for k in ('room_id', 'gift_id', 'count', 'effect_id')):
+    if binding and any(asset[k] != binding[k] for k in ('room_id', 'gift_id', 'count', 'effect_id') if k in binding):
         raise ValueError('素材不属于所选续舰事件')
     before, after = number(args.before), number(args.after)
     config = json.loads(Path(asset['config']['path']).read_text())
     info = validate_config(config)
     dynamic = None
-    if validate_dynamic(config):
+    sources = validate_dynamic(config)
+    if binding and 'results' in binding and (len(sources) != 1 or sources[0]['srcTag'] != BLIND_TAG):
+        raise ValueError('盲盒素材缺少唯一的结果图片槽，不能省略结果卡')
+    if sources and sources[0]['srcTag'] == BLIND_TAG:
+        from .gift_blind import card_images, load_resources
+        if not binding or 'results' not in binding:
+            raise ValueError('盲盒图片槽须通过--session与--event-id绑定原始结果')
+        resources = load_resources(args.cache, binding)
+        card_images(config, resources, asset)
+        dynamic = {'kind': 'blind', 'resources': resources}
+    elif sources:
         font_path = getattr(args, 'font', None)
         if not font_path:
             raise ValueError('动态文字须显式提供--font；文件模式还须--username')
@@ -98,6 +120,16 @@ def make_plan(args):
         raise ValueError('特效时长与配套JSON不符')
     effect_duration = info['f'] / info['fps']
     duration = number(before + effect_duration + after)
+    tail_scope = None
+    if getattr(args, 'include_recorded_tail', False):
+        if not args.session:
+            raise ValueError('--include-recorded-tail须与--session一起使用')
+        from .gift_scope import recorded_tail
+        root, _ = session_config(args.session)
+        tail_scope = {**recorded_tail(root), 'session': str(root),
+                      'manifest_sha256': sha_file(root/'offline/manifest.json')}
+        if absolute_time(at)-before+duration > tail_scope['recorded_end']+1e-6:
+            raise ValueError('完整动画及前后文超出同一连续录制尾段，不能跨场取片或截短')
     clips = source_clips(base=args.base, session=args.session, at=at, before=before,
                          duration=duration, display_aspect=args.base_display_aspect)
     canvas = dimensions(args.canvas)
@@ -114,10 +146,12 @@ def make_plan(args):
                         'placement': args.placement, 'region': region(args.region, canvas)},
             'source_at': at, 'source_kind': 'session' if args.session else 'file',
             'effect_audio': 'omitted', 'historical_web_playback': False}
-    if binding:
+    if binding and 'results' not in binding:
         plan['event_binding'] = binding
     if dynamic:
         plan['dynamic'] = dynamic
+    if tail_scope:
+        plan['recorded_tail_scope'] = tail_scope
     return plan
 
 
@@ -125,6 +159,18 @@ def validate_plan(plan):
     if plan.get('schema_version') != 1 or plan.get('fps') != 30:
         raise ValueError('不支持的渲染计划版本或帧率')
     duration = number(plan['duration'], minimum=.01)
+    if 'recorded_tail_scope' in plan:
+        from .gift_scope import recorded_tail
+        scope = plan['recorded_tail_scope']
+        root = Path(scope['session'])
+        if (sha_file(root/'offline/manifest.json') != scope['manifest_sha256'] or
+                any(scope[k] != value for k, value in recorded_tail(root).items())):
+            raise ValueError('单事件尾段范围与冻结录像清单不符')
+        wall_start = absolute_time(plan['source_at'])
+        if 'source_start' not in plan:
+            wall_start -= plan['overlay']['at']
+        if wall_start+duration > scope['recorded_end']+1e-6:
+            raise ValueError('场景取片超出同一连续录制尾段，不能跨场取片')
     dimensions('x'.join(str(n) for n in plan['canvas']))
     overlay = plan['overlay']
     if overlay['placement'] not in ('center-fit', 'left-fit', 'right-fit'):
@@ -146,10 +192,18 @@ def validate_plan(plan):
     if validate_dynamic(config):
         if not isinstance(dynamic, dict):
             raise ValueError('计划缺少动态文字绑定')
-        font = dynamic['font']
-        if sha_file(font['path']) != font['sha256']:
-            raise ValueError('计划引用的字体已改变')
-        text_images(config, dynamic['username'], font['path'])
+        if dynamic.get('kind') == 'blind':
+            from .gift_blind import card_images
+            resources = dynamic['resources']
+            binding = resources['binding']
+            if any(binding[k] != asset[k] for k in ('room_id', 'gift_id', 'count')):
+                raise ValueError('盲盒素材与原始批次不符')
+            card_images(config, resources, asset)
+        else:
+            font = dynamic['font']
+            if sha_file(font['path']) != font['sha256']:
+                raise ValueError('计划引用的字体已改变')
+            text_images(config, dynamic['username'], font['path'])
     elif dynamic:
         raise ValueError('静态素材不能包含动态文字绑定')
     if plan.get('event_binding'):
@@ -177,22 +231,17 @@ def validate_plan(plan):
 
 
 def render(plan, output):
-    asset, info = validate_plan(plan)
+    specifications = plan.get('overlays', [None])
+    if not isinstance(specifications, list) or not 1 <= len(specifications) <= 256:
+        raise ValueError('同一场景须含1至256个特效')
+    effects = []
+    for spec in specifications:
+        candidate = plan if spec is None else {**plan, **spec}
+        asset, info = validate_plan(candidate)
+        effects.append((candidate, asset, info))
     output = Path(output).resolve()
     output.mkdir(parents=True, exist_ok=False)
     write_json(output / 'plan.json', plan)
-    assets = output / 'assets'
-    assets.mkdir()
-    for name, key in (('effect.mp4', 'media'), ('effect.json', 'config')):
-        shutil.copyfile(asset[key]['path'], assets / name)
-    write_json(assets / 'version.json', asset)
-    dynamic = plan.get('dynamic')
-    if dynamic:
-        font = assets / ('font' + Path(dynamic['font']['path']).suffix)
-        shutil.copyfile(dynamic['font']['path'], font)
-        if sha_file(font) != dynamic['font']['sha256']:
-            raise ValueError('复制期间字体改变')
-        write_json(assets / 'bindings.json', dynamic)
     width, height = plan['canvas']
     parts = []
     for index, clip in enumerate(plan['clips']):
@@ -201,7 +250,7 @@ def render(plan, output):
         fit_h = min(height, width / float(ratio))
         fit_w, fit_h = max(2, int(fit_h * float(ratio) / 2) * 2), max(2, int(fit_h / 2) * 2)
         filters = (f'scale={fit_w}:{fit_h}:flags=lanczos,setsar=1,'
-                   f'pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30')
+                   f'pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30:start_time=0')
         part = output / f'part-{index:03d}.mkv'
         run(['ffmpeg', '-nostdin', '-v', 'error', '-xerror', '-ss', str(clip['start']),
              '-i', clip['path'], '-t', str(clip['duration']), '-map', '0:v:0', '-map', '0:a:0',
@@ -215,32 +264,63 @@ def render(plan, output):
     base = output / 'base.mp4'
     run(['ffmpeg', '-nostdin', '-v', 'error', '-f', 'concat', '-safe', '1', '-i', str(concat),
          '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', str(base)])
-    rx, ry, rw, rh = info['rgbFrame']
-    ax, ay, aw, ah = info['aFrame']
-    overlay = plan['overlay']
-    x, y, w, h = overlay['region']
-    scale = min(w / rw, h / rh)
-    ew, eh = max(2, int(rw * scale / 2) * 2), max(2, int(rh * scale / 2) * 2)
-    left = {'left-fit': x, 'right-fit': x + w - ew, 'center-fit': x + (w - ew) // 2}[overlay['placement']]
-    top = y + (h - eh) // 2
-    effect_input = assets / 'effect.mp4'
-    if dynamic:
-        effect_input = render_rgba(effect_input, json.loads((assets / 'effect.json').read_text()),
-                                   dynamic['username'], font, output / 'effect-rgba.mov')
-        unpack = '[1:v]'
-    else:
-        unpack = (f'[1:v]split=2[r0][a0];[r0]crop={rw}:{rh}:{rx}:{ry},format=rgb24[r];'
-                  f'[a0]crop={aw}:{ah}:{ax}:{ay},scale={rw}:{rh}:flags=bilinear,format=gray[a];'
-                  '[r][a]alphamerge,')
-    graph = (unpack + f'scale={ew}:{eh}:flags=lanczos,setsar=1,'
-             f'setpts=PTS-STARTPTS+{overlay["at"]}/TB[g];'
-             f'[0:v][g]overlay={left}:{top}:eof_action=pass:repeatlast=0:format=auto,format=yuv420p[v]')
+    inputs, graph, intermediates = [], [], []
+    previous = '[0:v]'
+    for i, (candidate, asset, info) in enumerate(effects):
+        assets = output / 'assets'
+        if len(effects) > 1:
+            assets = assets / f'overlay-{i:03d}'
+        assets.mkdir(parents=True)
+        for name, key in (('effect.mp4', 'media'), ('effect.json', 'config')):
+            shutil.copyfile(asset[key]['path'], assets / name)
+        write_json(assets / 'version.json', asset)
+        effect_input = assets / 'effect.mp4'
+        dynamic = candidate.get('dynamic')
+        if dynamic:
+            write_json(assets / 'bindings.json', dynamic)
+            config = json.loads((assets / 'effect.json').read_text())
+            if dynamic.get('kind') == 'blind':
+                from .gift_blind import card_images
+                images = card_images(config, dynamic['resources'])
+                for ident, image in images.items():
+                    image.save(assets / f'result-card-{ident}.png')
+                effect_input = render_rgba(effect_input, config, None, None,
+                                           output / f'effect-{i:03d}-rgba.mov', images=images)
+            else:
+                font = assets / ('font' + Path(dynamic['font']['path']).suffix)
+                shutil.copyfile(dynamic['font']['path'], font)
+                if sha_file(font) != dynamic['font']['sha256']:
+                    raise ValueError('复制期间字体改变')
+                effect_input = render_rgba(effect_input, config, dynamic['username'], font,
+                                           output / f'effect-{i:03d}-rgba.mov')
+            intermediates.append(effect_input)
+            unpack = f'[{i+1}:v]'
+        else:
+            rx, ry, rw, rh = info['rgbFrame']
+            ax, ay, aw, ah = info['aFrame']
+            unpack = (f'[{i+1}:v]split=2[r{i}0][a{i}0];'
+                      f'[r{i}0]crop={rw}:{rh}:{rx}:{ry},format=rgb24[r{i}];'
+                      f'[a{i}0]crop={aw}:{ah}:{ax}:{ay},scale={rw}:{rh}:flags=bilinear,format=gray[a{i}];'
+                      f'[r{i}][a{i}]alphamerge,')
+        overlay = candidate['overlay']
+        x, y, w, h = overlay['region']
+        scale = min(w / info['w'], h / info['h'])
+        ew, eh = (max(2, int(n*scale/2)*2) for n in (info['w'], info['h']))
+        left = {'left-fit': x, 'right-fit': x+w-ew, 'center-fit': x+(w-ew)//2}[overlay['placement']]
+        top = y+(h-eh)//2
+        graph.append(unpack + f'scale={ew}:{eh}:flags=lanczos,setsar=1,'
+                     f'setpts=PTS-STARTPTS+{overlay["at"]}/TB[g{i}];'
+                     f'{previous}[g{i}]overlay={left}:{top}:eof_action=pass:repeatlast=0:format=auto[b{i}]')
+        previous = f'[b{i}]'
+        inputs += ['-i', str(effect_input)]
+    graph.append(previous + f'tpad=stop_mode=clone:stop_duration=1,fps=30:start_time=0,'
+                 f'trim=duration={plan["duration"]},format=yuv420p[v]')
     video = output / 'video.mp4'
-    run(['ffmpeg', '-nostdin', '-v', 'error', '-xerror', '-i', str(base), '-i', str(effect_input),
-         '-filter_complex_threads', '2', '-filter_complex', graph, '-map', '[v]', '-map', '0:a:0',
+    run(['ffmpeg', '-nostdin', '-v', 'error', '-xerror', '-i', str(base), *inputs,
+         '-filter_complex_threads', '2', '-filter_complex', ';'.join(graph), '-map', '[v]', '-map', '0:a:0',
          '-t', str(plan['duration']), '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '18',
          '-pix_fmt', 'yuv420p', '-c:a', 'copy', '-movflags', '+faststart', str(video)])
-    preview_at = overlay['at'] + overlay['duration'] / 2
+    preview_at = effects[0][0]['overlay']['at'] + effects[0][0]['overlay']['duration'] / 2
     run(['ffmpeg', '-nostdin', '-v', 'error', '-ss', str(preview_at), '-i', str(base),
          '-ss', str(preview_at), '-i', str(video), '-filter_complex',
          '[0:v]scale=640:-2[l];[1:v]scale=640:-2[r];[l][r]hstack[v]',
@@ -250,8 +330,8 @@ def render(plan, output):
     for part in parts:
         part.unlink()
     concat.unlink()
-    if dynamic:
-        effect_input.unlink()
+    for intermediate in intermediates:
+        intermediate.unlink()
     return result
 
 
@@ -281,6 +361,8 @@ def verify(output):
 def configure_parser(commands):
     parser = commands.add_parser('gift-render', help='离线礼物动画合成与场次事件枚举')
     actions = parser.add_subparsers(dest='action', required=True)
+    from .gift_batch import configure_parser as configure_batch
+    configure_batch(actions)
     listing = actions.add_parser('events')
     listing.add_argument('--session', type=Path, required=True)
     check = actions.add_parser('verify')
@@ -298,6 +380,8 @@ def configure_parser(commands):
             item.add_argument('--output', type=Path, required=True)
         item.add_argument('--at')
         item.add_argument('--event-id', help='与场次一起定位GUARD_BUY并绑定原始续舰消息')
+        item.add_argument('--include-recorded-tail', action='store_true',
+                          help='允许绑定cutoff后同一连续录制内的尾段事件')
         item.add_argument('--username', help='明确文件模式的动态昵称；事件模式从原始消息读取')
         item.add_argument('--font', type=Path, help='显式指定本机TTF/OTF/TTC字体，计划固定SHA256')
         item.add_argument('--asset', type=Path)
@@ -315,7 +399,15 @@ def configure_parser(commands):
 
 def main(args):
     try:
-        if args.action == 'prepare':
+        if args.action in ('batch-plan', 'batch-render', 'batch-verify'):
+            from .gift_batch import make_batch, render_batch, verify_batch
+            if args.action == 'batch-plan':
+                result = make_batch(args)
+            elif args.action == 'batch-render':
+                result = render_batch(json.loads(args.plan.read_text()), args.output)
+            else:
+                result = verify_batch(args.output)
+        elif args.action == 'prepare':
             result = prepare_base(args.base, args.output)
         elif args.action == 'events':
             result = events(args.session)

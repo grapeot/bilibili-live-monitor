@@ -6,7 +6,7 @@
 
 本文件作为根 skill 的子 skill 按需加载，不新建全局 skill。工具链仅提供离线 CLI，不涉及采集端或看板部署、不重启常驻服务、不接入直播自动收尾、不自动发布、不新增通知。系统不设独立礼物 WebSocket，礼物事件由现有网页连接接收并写入数据库。
 
-当任务目标是把一场直播所有带特效的礼物切片切出来时，由 Agent 调用 `events` 读取本场礼物候选列表，再按各事件实际情况编排素材缓存、计划生成、离线合成或登记未覆盖原因。合成使用的是观测时的特效素材版本，不声称复原历史网页的排队、位置、连击或动态文字效果。生产配置与真实路径从本机私有 overlay 读取；真实媒体、素材缓存、计划与渲染产物均留在私有目录，不进入公开仓库。
+当任务目标是把一场直播所有带特效的礼物切片切出来时，由 Agent 调用 `events` 读取本场候选并准备素材缓存，再优先使用下述批次流程合并重叠录像窗口、离线合成或登记未覆盖原因。合成使用的是观测时的特效素材版本，不声称复原历史网页的排队、位置、连击或动态文字效果。生产配置与真实路径从本机私有 overlay 读取；真实媒体、素材缓存、计划与渲染产物均留在私有目录，不进入公开仓库。
 
 ## 验收标准
 
@@ -102,10 +102,53 @@ bili-live gift-render render --session /PRIVATE/live_sessions/SESSION_DIR \
 
 ### 动态合成规范与边界
 
-- 当前只支持 `srcTag` 为 `live.guard.open.animation.user.name` 的 `txt`、`fitXY`、单色无额外 `style`；字体须显式指定，不从操作系统默认字体猜测。
-- 按 JSON 的 `frame`/`mFrame` 逐帧位置与遮罩合成，未知语义、图片及盲盒结果卡仍拒绝；源素材 MP4/JSON 不修改。
+- 舰长文字限 `srcTag=live.guard.open.animation.user.name` 的 `txt/fitXY`、单色无额外 `style`；字体须显式指定。另支持下述原始批次绑定的普通盲盒结果图片槽。
+- 按 JSON 的 `frame`/`mFrame` 逐帧位置与遮罩合成，未知语义、其他图片槽及样式仍拒绝；源素材 MP4/JSON 不修改。
 - 合成按时间戳归零对齐，动画保留 JSON 帧率，输出30fps；25/30fps底片配30fps动画通过离线测试，不改播放速度。不混入特效独立音轨。
 - 输出包含真实昵称及本机路径，必须留在私有目录。字体与排队延迟不保证与历史网页相同，不自动送礼、发布或接入录制收尾。
+
+## 整场批次去重与连续场景
+
+### 普通盲盒结果卡
+
+```bash
+# event-id是本场某条盲盒结果的timeline ID；同批任一结果可用于抓取。
+bili-live gift-assets fetch-event --session /PRIVATE/session --event-id 42 \
+  --cache /PRIVATE/cache --catalog /PRIVATE/catalog.json \
+  --card-background /PRIVATE/verified-background.png --card-digits /PRIVATE/digits
+# digits目录包含已核对的平台0.png至9.png；缓存命中不联网。
+bili-live gift-render render --session /PRIVATE/session --event-id 42 \
+  --cache /PRIVATE/cache --output /PRIVATE/result
+```
+
+- 从原始`SEND_GIFT_V2`中的订单身份匹配本场完整结果，不按昵称或同秒合并；同订单多结果按原始下标区分，缺项、冲突、无身份和缺素材快照均拒绝。结果图标来自报文的`gift_info`快照。卡底及数字须显式提供已核对的PNG，固定内容哈希；不使用配置中失效的本地路径，不自动猜替代图。
+- 仅支持`live.gift.blindboxresult.img`的`img/fitXY`槽；1至10条结果按图标及数量组成一张卡，嵌进原开盒动画的逐帧遮罩。单次五十盒开出三种结果时仅播放一次开盒动画、显示三格；覆盖清单仍逐条登记全部结果。独立结果特效非零或目录存在兼容动画时批次拒绝完整覆盖并报告原因，不能静默略过。
+- 这是依据真实结果重建的开盒展示。网页送礼者主态与普通观众广播路径不同，不宣称所有人历史上都看到了开盒动画，不复原网页队列。普通盲盒缓存与正式`batch-plan/render/verify`共用，渲染完全离线。
+
+处理整场直播或同场多条礼物时，优先使用批次流水线；单事件 `render` 用于单条调试，不要逐事件独立截片后直接拼接，以免重复播放相同实录。
+
+### 批次命令工作流
+
+```bash
+# 缓存缺失须先fetch；catalog可选，只用于解释未覆盖原因，不下载素材。
+bili-live gift-render batch-plan --session /PRIVATE/session --cache /PRIVATE/cache \
+  --font /PRIVATE/font.ttf --before 2 --after 4 --canvas 1920x1080 \
+  --catalog /PRIVATE/catalog.json \
+  --event-region 42=120,80,960,720 --event-aspect 42=5:4 > /PRIVATE/batch.json
+
+bili-live gift-render batch-render --plan /PRIVATE/batch.json --output /PRIVATE/result
+bili-live gift-render batch-verify --output /PRIVATE/result
+```
+
+### 去重、连续场景与验收规则
+
+- **尾段盘点与显式纳入**：默认`events`及`batch-plan`仍以冻结cutoff划定场次，但在`recorded_tail.events`单独报告同一连续录制内的后续礼物。需要纳入时用`batch-plan --include-recorded-tail`；尾段舰长/盲盒的`fetch-event`及单事件`plan/render`也须带该选项。此选项不修改生产场次或清单。范围从cutoff左侧录制建立，只延伸同run_group/run_start、无缺口或重叠的连续分片；新run在cutoff开始时也不能视作旧场尾段。完整动画及前后文越过录制边界时拒绝，不截短或跨场取片；计划和验证结果保留尾段选择及候选清单。
+- **身份去重**：消息按房间与已有 `source_key` 去重，同一身份的关键事件字段冲突时拒绝；无 `source_key` 时只按 timeline 行 ID 区分，不按同礼物、昵称、相同时刻或数量猜重复。多条真实赠送全部保留，重复项以 `duplicate_of` 标明来源。
+- **区间并集与单底片多特效**：对前后文录像区间取并集，重叠或相接片段只播一次；`--gap` 默认0秒，可指定最多60秒，将相距不超过该值的窗口合并。一个场景包含多个按原始事件时刻触发的特效，只准备一份底片，音轨不随特效重复；不模拟网页历史排队或连击合并。
+- **人工覆盖**：`--event-region ID=x,y,w,h` 及 `--event-aspect ID=5:4` 覆盖已人工核对的具体事件，不自动判 PK，不按标签硬编码比例。重叠场景中的人工比例覆盖不一致时拒绝；混合画幅归档中的补边不能当作原片比例错误，应先保持已验证归档几何，或另做有来源证据的私有裁边副本。
+- **画布与音画拼接**：所有场景统一指定画布及30fps；按时间戳重置并统一帧率，解码后的场景音轨拼接后仅编码一次AAC，避免逐片AAC直拼新增静音。
+- **产物与覆盖率**：输出 `batch-plan.json`、各 `scene-0000/` 的底片/成片/预览/验收、总 `video.mp4`、`coverage.json`、`verification.json` 和章节。无特效/缓存缺失和不可计划事件在 `inventory` 列明；盲盒一个overlay对应原批次全部`event_ids`，逐条结果均须覆盖一次。最终覆盖清单仅把成功渲染的 `planned` 改为 `rendered`，不能把候选或计划成功称为渲染成功。
+- **计划验收**：验证每个可渲染事件恰好覆盖一次、场景源区间不重叠、素材/字体/来源指纹；固定场次manifest哈希，从墙钟重新核对实际取片路径、偏移、时长与来源区间无复用，拒绝只改声明时间而重播另一段底片。清单改变须重新计划。最终30fps帧数按计划时长严格验收。没有可渲染项时，`batch-plan` 仍输出 `inventory`，`batch-render` 拒绝生成空片；不自动抓素材或发布。
 
 ## 输出规格
 

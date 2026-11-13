@@ -1,4 +1,4 @@
-"""限已知舰长昵称文字槽的VAP动态替换；图片、未知语义及样式不降级播放。"""
+"""已知舰长昵称与普通盲盒结果槽的VAP逐帧替换；未知语义及样式不降级播放。"""
 import re
 import subprocess
 from pathlib import Path
@@ -6,6 +6,7 @@ from pathlib import Path
 from PIL import Image, ImageChops, ImageDraw, ImageFont
 
 USERNAME_TAG = 'live.guard.open.animation.user.name'
+BLIND_TAG = 'live.gift.blindboxresult.img'
 
 
 def rect(value, width, height):
@@ -24,11 +25,12 @@ def validate_dynamic(config):
         raise ValueError('暂不支持此动态替换结构')
     identifiers = set()
     for source in sources:
-        if (not isinstance(source, dict) or source.get('srcTag') != USERNAME_TAG
-                or source.get('srcType') != 'txt' or source.get('fitType') != 'fitXY'
+        if (not isinstance(source, dict)
+                or (source.get('srcTag'), source.get('srcType')) not in ((USERNAME_TAG, 'txt'), (BLIND_TAG, 'img'))
+                or source.get('fitType') != 'fitXY'
                 or source.get('style') not in (None, '')
-                or not isinstance(source.get('color'), str)
-                or not re.fullmatch(r'#[0-9a-fA-F]{6}', source['color'])):
+                or (source.get('srcType') == 'txt' and (not isinstance(source.get('color'), str)
+                    or not re.fullmatch(r'#[0-9a-fA-F]{6}', source['color'])))):
             raise ValueError('暂不支持此动态替换语义、类型或文字样式')
         ident = source.get('srcId')
         if not isinstance(ident, str) or not ident or ident in identifiers:
@@ -59,6 +61,8 @@ def text_images(config, text, font_path):
         raise ValueError('动态昵称必须为非空且不超过200字的单行文字')
     result = {}
     for source in validate_dynamic(config):
+        if source['srcType'] != 'txt':
+            raise ValueError('图片槽须绑定原始盲盒批次，不能用昵称替代')
         width, height = source['w'], source['h']
         image = Image.new('RGBA', (width, height))
         draw = ImageDraw.Draw(image)
@@ -87,10 +91,13 @@ def read_exact(pipe, size):
     return bytes(result)
 
 
-def render_rgba(media, config, text, font_path, output):
+def render_rgba(media, config, text, font_path, output, *, images=None):
     """保留素材帧率；每帧合成图片遮罩后输出带alpha的无损中间视频。"""
     info = config['info']
-    images = text_images(config, text, font_path)
+    images = text_images(config, text, font_path) if images is None else images
+    sources = validate_dynamic(config)
+    if set(images) != {source['srcId'] for source in sources}:
+        raise ValueError('动态替换图片未精确覆盖素材槽位')
     objects = {frame['i']: frame['obj'] for frame in config.get('frame', [])}
     output = Path(output)
     with output.with_suffix('.decode.log').open('wb') as dec_log, output.with_suffix('.encode.log').open('wb') as enc_log:
