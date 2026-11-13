@@ -86,6 +86,8 @@ def make_plan(args):
     info = validate_config(config)
     dynamic = None
     sources = validate_dynamic(config)
+    if binding and 'results' in binding and (len(sources) != 1 or sources[0]['srcTag'] != BLIND_TAG):
+        raise ValueError('盲盒素材缺少唯一的结果图片槽，不能省略结果卡')
     if sources and sources[0]['srcTag'] == BLIND_TAG:
         from .gift_blind import card_images, load_resources
         if not binding or 'results' not in binding:

@@ -1,4 +1,4 @@
-"""限已知舰长昵称文字槽的VAP动态替换；图片、未知语义及样式不降级播放。"""
+"""已知舰长昵称与普通盲盒结果槽的VAP逐帧替换；未知语义及样式不降级播放。"""
 import re
 import subprocess
 from pathlib import Path

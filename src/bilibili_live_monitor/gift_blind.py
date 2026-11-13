@@ -9,7 +9,16 @@ from pathlib import Path
 
 from PIL import Image
 
-from .gift_assets import canonical, download, fetch, positive, sha_file, write_json
+from .gift_assets import (
+    canonical,
+    download,
+    fetch,
+    load_asset,
+    normalize_catalog,
+    positive,
+    sha_file,
+    write_json,
+)
 from .gift_dynamic import BLIND_TAG, validate_dynamic
 from .gift_media import absolute_time, session_config
 from .gift_protocol import Gift, gift_items
@@ -122,13 +131,23 @@ def fetch_image(cache, url, refresh=False):
 def fetch_event(cache, session, event_id, *, catalog=None, cdp_url=None, refresh=False,
                 card_background=None, card_digits=None):
     binding = bind_event(session, event_id)
+    if catalog is not None:
+        check_result_effects(binding, normalize_catalog(json.loads(Path(catalog).read_text())))
     asset_result = fetch(cache, binding['room_id'], binding['gift_id'], 1,
                          catalog=catalog, cdp_url=cdp_url, refresh=refresh)
+    asset = load_asset(asset_result['asset'])
+    config = json.loads(Path(asset['config']['path']).read_text())
+    sources = validate_dynamic(config)
+    if len(sources) != 1 or sources[0]['srcTag'] != BLIND_TAG:
+        raise ValueError('盲盒素材缺少唯一的结果图片槽，不能省略结果卡')
+    catalog_path = Path(cache).resolve()/'catalogs'/f'{asset["catalog_sha256"]}.json'
+    check_result_effects(binding, normalize_catalog(json.loads(catalog_path.read_text())))
     index = resource_index(cache, binding)
     if not index.exists() or refresh:
         if not card_background or not card_digits:
             raise ValueError('盲盒卡片须显式提供--card-background PNG与--card-digits目录（0.png至9.png）')
         resources = {'binding': binding,
+                     'catalog': {'path': str(catalog_path), 'sha256': sha_file(catalog_path)},
                      'background': store_image(cache, Path(card_background).read_bytes()),
                      'digits': [store_image(cache, (Path(card_digits)/f'{n}.png').read_bytes()) for n in range(10)],
                      'icons': [fetch_image(cache, i['image_url'], refresh) for i in binding['results']]}
@@ -136,6 +155,13 @@ def fetch_event(cache, session, event_id, *, catalog=None, cdp_url=None, refresh
     resources = load_resources(cache, binding)
     return {**asset_result, 'event': binding, 'resources': str(index),
             'resources_sha256': hashlib.sha256(canonical(resources)).hexdigest()}
+
+
+def check_result_effects(binding, catalog):
+    for result in binding['results']:
+        matches = [g for g in catalog['gifts'] if str(g['id']) == str(result['gift_id'])]
+        if any(g.get('effectId') or any(t.get('effectId') for t in g.get('countMap', [])) for g in matches):
+            raise ValueError('盲盒结果存在目录兼容特效，当前不能完整重建')
 
 
 def load_resources(cache, binding):
@@ -152,6 +178,13 @@ def validate_resources(resources):
         raise ValueError('盲盒原始消息或结果绑定已改变')
     if len(resources['icons']) != len(binding['results']) or len(resources['digits']) != 10:
         raise ValueError('结果卡图标或数字资源缺失')
+    catalog = resources['catalog']
+    if sha_file(catalog['path']) != catalog['sha256']:
+        raise ValueError('盲盒结果特效目录已改变')
+    check_result_effects(binding, normalize_catalog(json.loads(Path(catalog['path']).read_text())))
+    for icon, result in zip(resources['icons'], binding['results'], strict=True):
+        if icon.get('url') != result['image_url']:
+            raise ValueError('结果卡图标与原始结果身份不符')
     for item in [resources['background'], *resources['digits'], *resources['icons']]:
         if sha_file(item['path']) != item['sha256']:
             raise ValueError('结果卡图片指纹不符')

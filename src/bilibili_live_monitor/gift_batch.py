@@ -118,10 +118,8 @@ def make_batch(args):
                     if any(m not in {e['event_id'] for e in enumerated} for m in members):
                         raise ValueError('盲盒结果未完整落在场次候选中')
                     if catalog is not None:
-                        for result in group['results']:
-                            matches = [g for g in catalog['gifts'] if str(g['id']) == str(result['gift_id'])]
-                            if any(g.get('effectId') or any(t.get('effectId') for t in g.get('countMap', [])) for g in matches):
-                                raise ValueError('盲盒结果存在目录兼容特效，当前不能完整重建')
+                        from .gift_blind import check_result_effects
+                        check_result_effects(group, catalog)
                     for member in members:
                         blind_members[member] = plan['asset_version']
                 windows.append({'event_id': event['event_id'], 'event_ids': members, 'start': start, 'end': end,

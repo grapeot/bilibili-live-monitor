@@ -155,3 +155,43 @@ def test_single_blind_event_uses_same_formal_render_entry(blind_case,tmp_path):
     plan = gift_render.make_plan(single)
     assert plan['dynamic']['resources']['binding']['results'][0]['num'] == 1
     assert gift_render.render(plan,tmp_path/'single')['verified']
+
+
+def test_blind_static_asset_cannot_silently_drop_result_card(blind_case,monkeypatch):
+    args,_ = blind_case
+    _, asset = gift_assets.cached_asset(args.cache,123456,789,1)
+    from pathlib import Path
+    cfg = json.loads(Path(asset['config']['path']).read_text())
+    cfg.pop('src')
+    cfg.pop('frame')
+    cfg['info']['custom'] = 0
+    media = Path(asset['media']['path']).read_bytes()
+    monkeypatch.setattr(gift_assets,'download',lambda url,limit:json.dumps(cfg).encode() if url.endswith('.json') else media)
+    gift_assets.fetch(args.cache,123456,789,1,catalog=args.catalog,refresh=True)
+    single = Namespace(**vars(args),asset=None,base=None,at=None,event_id=1,
+                       room=None,gift_id=None,count=1,username=None,base_display_aspect=None,
+                       region=None,placement='center-fit')
+    with pytest.raises(ValueError,match='结果图片槽'):
+        gift_render.make_plan(single)
+    with pytest.raises(ValueError,match='结果图片槽'):
+        gift_blind.fetch_event(args.cache,args.session,1,catalog=args.catalog)
+    plan = gift_batch.make_batch(args)
+    assert all(i['status']=='uncovered' and '结果图片槽' in i['reason'] for i in plan['inventory'])
+
+
+def test_known_result_effect_rejected_at_shared_fetch_entry(blind_case):
+    args,_ = blind_case
+    catalog = json.loads(args.catalog.read_text())
+    catalog['gifts'].append({'id':120,'name':'Result0','effectId':888})
+    args.catalog.write_text(json.dumps(catalog))
+    with pytest.raises(ValueError,match='目录兼容特效'):
+        gift_blind.fetch_event(args.cache,args.session,1,catalog=args.catalog)
+
+
+def test_result_icons_cannot_be_reordered(blind_case):
+    args,_ = blind_case
+    plan = gift_batch.make_batch(args)
+    resources = plan['scenes'][0]['overlays'][0]['dynamic']['resources']
+    resources['icons'][0], resources['icons'][1] = resources['icons'][1], resources['icons'][0]
+    with pytest.raises(ValueError,match='图标与原始结果身份'):
+        gift_batch.validate_batch(plan)
