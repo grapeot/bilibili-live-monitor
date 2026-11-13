@@ -52,7 +52,9 @@ def overrides(values):
 
 def make_batch(args):
     session, config = session_config(args.session)
-    enumerated = gift_render.events(session)['events']
+    include_tail = getattr(args, 'include_recorded_tail', False)
+    scope = gift_render.events(session, include_recorded_tail=include_tail)
+    enumerated = scope['events']
     regions, aspects = overrides(args.event_region), overrides(args.event_aspect)
     if (regions.keys() | aspects.keys()) - {e['event_id'] for e in enumerated}:
         raise ValueError('覆盖参数引用了不属于所选场次的事件')
@@ -91,7 +93,7 @@ def make_batch(args):
             try:
                 blind = bool(gift.get('blind_gift'))
                 guard = gift.get('event_type') == 'GUARD_BUY'
-                binding = guard_event(session, event['event_id']) if guard else None
+                binding = guard_event(session, event['event_id'], include_recorded_tail=include_tail) if guard else None
                 if catalog is not None and not guard and not blind:
                     select_effect(catalog, event['gift_id'], event['count'])
                 asset_path = None
@@ -102,6 +104,7 @@ def make_batch(args):
                     asset=asset_path, base=None, session=session, at=None if guard or blind else event['at'],
                     event_id=event['event_id'] if guard or blind else None, room=None, gift_id=None,
                     count=1, cache=args.cache, font=args.font, username=None, before=before, after=after,
+                    include_recorded_tail=include_tail,
                     canvas=args.canvas, base_display_aspect=aspects.get(event['event_id']),
                     region=regions.get(event['event_id']), placement='center-fit'))
                 at = (datetime.fromisoformat(event['at'].replace('Z', '+00:00')) -
@@ -109,6 +112,8 @@ def make_batch(args):
                 # 使用场次相对秒量化，避免大epoch浮点数影响相接窗口判断。
                 start = math.floor((at-before)*30+1e-7)/30
                 end = math.ceil((at+plan['overlay']['duration']+after)*30-1e-7)/30
+                if origin+end > scope['recorded_tail']['recorded_end']+1e-6:
+                    raise ValueError('完整动画及前后文超出同一连续录制尾段，不能跨场取片或截短')
                 members = [event['event_id']]
                 if blind:
                     group = plan['dynamic']['resources']['binding']
@@ -151,6 +156,7 @@ def make_batch(args):
     result = {'batch_schema_version': 1, 'session': str(session), 'canvas': list(canvas), 'fps': 30,
               'manifest': {'path': str(manifest_path), 'sha256': sha_file(manifest_path)},
               'inventory': entries, 'scenes': scenes, 'historical_web_playback': False,
+              'recorded_tail': scope['recorded_tail'],
               'playback_policy': 'event_timestamp_overlay_no_web_queue_emulation',
               'naive_clip_seconds': sum(w['plan']['duration'] for w in windows),
               'duration': sum(scene['duration'] for scene in scenes)}
@@ -167,6 +173,17 @@ def validate_batch(plan):
             or sha_file(manifest['path']) != manifest['sha256']):
         raise ValueError('批次来源清单已改变或不属于所选场次')
     rows = json.loads(Path(manifest['path']).read_text())['rows']
+    if 'recorded_tail' in plan:
+        from .gift_scope import recorded_tail
+        tail = plan['recorded_tail']
+        if any(tail[k] != value for k, value in recorded_tail(plan['session']).items()):
+            raise ValueError('录像尾段范围与冻结清单不符')
+        tail_ids = [e['event_id'] for e in tail['events']]
+        selected_tail = [e['event_id'] for e in plan['inventory'] if absolute_time(e['at']) >= tail['cutoff']]
+        if (len(tail_ids) != len(set(tail_ids)) or
+                selected_tail != (tail_ids if tail['included'] else []) or
+                any(not tail['cutoff'] <= absolute_time(e['at']) < tail['recorded_end'] for e in tail['events'])):
+            raise ValueError('尾段礼物未按显式选择完整列入清单')
     by_id = {e['event_id']: e for e in plan['inventory']}
     if len(by_id) != len(plan['inventory']):
         raise ValueError('批次覆盖清单的行ID重复')
@@ -177,6 +194,9 @@ def validate_batch(plan):
         raise ValueError('批次没有可渲染场景；请核对素材缓存与覆盖清单')
     for scene in plan['scenes']:
         wall_start = absolute_time(scene['source_at'])
+        if ('recorded_tail' in plan and
+                wall_start+scene['duration'] > plan['recorded_tail']['recorded_end']+1e-6):
+            raise ValueError('场景取片超出同一连续录制尾段')
         if (scene['canvas'] != plan['canvas'] or scene['source_end'] <= scene['source_start']
                 or abs(scene['duration']-(scene['source_end']-scene['source_start'])) > .00001
                 or (previous_end is not None and scene['source_start'] < previous_end-1e-7)
@@ -287,6 +307,8 @@ def verify_batch(output):
               'uncovered_events': sum(e['status'] not in ('rendered', 'duplicate') for e in coverage),
               'naive_clip_seconds': plan['naive_clip_seconds'], 'source_seconds': plan['duration'],
               'sha256': sha_file(video), 'visual_review_required': True}
+    if 'recorded_tail' in plan:
+        result['recorded_tail'] = plan['recorded_tail']
     write_json(output/'verification.json', result)
     return result
 
@@ -301,6 +323,8 @@ def configure_parser(actions):
     item.add_argument('--before', type=float, default=6)
     item.add_argument('--after', type=float, default=6)
     item.add_argument('--gap', type=float, default=0)
+    item.add_argument('--include-recorded-tail', action='store_true',
+                      help='显式纳入cutoff后同一连续录制内的礼物；默认仅在recorded_tail报告尾段候选')
     item.add_argument('--event-region', action='append', default=[], metavar='ID=x,y,w,h')
     item.add_argument('--event-aspect', action='append', default=[], metavar='ID=ratio')
     item = actions.add_parser('batch-render')

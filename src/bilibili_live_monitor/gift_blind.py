@@ -24,10 +24,13 @@ from .gift_media import absolute_time, session_config
 from .gift_protocol import Gift, gift_items
 
 
-def bind_event(session, event_id):
+def bind_event(session, event_id, *, include_recorded_tail=False):
     root, config = session_config(session)
     manifest = json.loads((root/'offline/manifest.json').read_text())
     start, end = absolute_time(config['start_utc']), manifest['cutoff']
+    if include_recorded_tail:
+        from .gift_scope import event_cutoff
+        end = event_cutoff(session, True)
     database = Path(config['database']).resolve(strict=True)
     with sqlite3.connect(database.as_uri()+'?mode=ro', uri=True) as db:
         db.execute('PRAGMA query_only=ON')
@@ -90,7 +93,8 @@ def bind_event(session, event_id):
             timelines.append(saved)
             results.append({'gift_id': positive(item['giftId']), 'num': positive(item['num']),
                             'name': item['giftName'], 'image_url': snapshot.img_basic, 'effect_id': 0})
-    return {'session': str(root), 'room_id': positive(config['room_id']), 'gift_id': box_id,
+    scope = {'include_recorded_tail': True} if stamp >= manifest['cutoff'] else {}
+    return {**scope, 'session': str(root), 'room_id': positive(config['room_id']), 'gift_id': box_id,
             'count': 1, 'event_id': min(t[0] for t in timelines), 'event_ids': sorted(t[0] for t in timelines),
             'at': row[1], 'raw_event_id': raw_id, 'results': results,
             'evidence_sha256': hashlib.sha256(canonical({'raw': packet, 'timeline': timelines})).hexdigest()}
@@ -129,8 +133,8 @@ def fetch_image(cache, url, refresh=False):
 
 
 def fetch_event(cache, session, event_id, *, catalog=None, cdp_url=None, refresh=False,
-                card_background=None, card_digits=None):
-    binding = bind_event(session, event_id)
+                card_background=None, card_digits=None, include_recorded_tail=False):
+    binding = bind_event(session, event_id, include_recorded_tail=include_recorded_tail)
     if catalog is not None:
         check_result_effects(binding, normalize_catalog(json.loads(Path(catalog).read_text())))
     asset_result = fetch(cache, binding['room_id'], binding['gift_id'], 1,
@@ -175,7 +179,8 @@ def load_resources(cache, binding):
 
 def validate_resources(resources, asset=None):
     binding = resources['binding']
-    if bind_event(binding['session'], binding['event_id']) != binding:
+    if bind_event(binding['session'], binding['event_id'],
+                  include_recorded_tail=binding.get('include_recorded_tail', False)) != binding:
         raise ValueError('盲盒原始消息或结果绑定已改变')
     if len(resources['icons']) != len(binding['results']) or len(resources['digits']) != 10:
         raise ValueError('结果卡图标或数字资源缺失')

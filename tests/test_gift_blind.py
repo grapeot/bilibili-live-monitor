@@ -220,3 +220,49 @@ def test_refreshed_asset_cannot_use_old_blind_catalog(blind_case):
     batch = gift_batch.make_batch(args)
     assert all(i['status']=='uncovered' and '资源目录' in i['reason'] for i in batch['inventory'])
     gift_render.validate_plan(old)
+
+
+def test_blind_tail_requires_explicit_fetch_and_plan_scope(blind_case):
+    args,_ = blind_case
+    path = args.session/'offline/manifest.json'
+    manifest = json.loads(path.read_text())
+    manifest['cutoff'] = manifest['rows'][0]['wall_start']+.5
+    path.write_text(json.dumps(manifest))
+    original = path.read_bytes()
+    with pytest.raises(ValueError,match='不属于所选场次'):
+        gift_blind.fetch_event(args.cache,args.session,1,catalog=args.catalog)
+    gift_blind.fetch_event(args.cache,args.session,1,catalog=args.catalog,refresh=True,
+        include_recorded_tail=True,card_background=args.cache.parent/'background.png',
+        card_digits=args.cache.parent/'digits')
+    args.include_recorded_tail = True
+    plan = gift_batch.make_batch(args)
+    assert all(e['status']=='planned' for e in plan['inventory'])
+    binding = plan['scenes'][0]['overlays'][0]['dynamic']['resources']['binding']
+    assert binding['include_recorded_tail'] is True and binding['event_ids']==[1,2,3]
+    gift_batch.validate_batch(plan)
+    assert path.read_bytes()==original
+
+
+def test_single_tail_event_cannot_cross_into_next_run(blind_case):
+    args,_ = blind_case
+    path = args.session/'offline/manifest.json'
+    manifest = json.loads(path.read_text())
+    row = manifest['rows'][0]
+    origin = row['wall_start']
+    manifest.update(cutoff=origin+.5,rows=[{**row,'duration_sec':2,'run_group':'first'},
+        {**row,'wall_start':origin+2,'duration_sec':2,'run_group':'next'}])
+    path.write_text(json.dumps(manifest))
+    gift_blind.fetch_event(args.cache,args.session,1,catalog=args.catalog,refresh=True,
+        include_recorded_tail=True,card_background=args.cache.parent/'background.png',
+        card_digits=args.cache.parent/'digits')
+    single = Namespace(**vars(args),asset=None,base=None,at=None,event_id=1,include_recorded_tail=True,
+                       room=None,gift_id=None,count=1,username=None,base_display_aspect=None,
+                       region=None,placement='center-fit')
+    with pytest.raises(ValueError,match='不能跨场'):
+        gift_render.make_plan(single)
+    single.after = 0
+    plan = gift_render.make_plan(single)
+    gift_render.validate_plan(plan)
+    plan['duration'] += .2
+    with pytest.raises(ValueError,match='不能跨场'):
+        gift_render.validate_plan(plan)

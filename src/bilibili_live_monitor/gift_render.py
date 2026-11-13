@@ -16,15 +16,18 @@ from .gift_media import absolute_time, aspect, dimensions, number, prepare_base,
 from .trailer import probe, run
 
 
-def events(session):
+def events(session, *, include_recorded_tail=False):
     root, config = session_config(session)
     start = absolute_time(config['start_utc'])
     manifest_path = root / 'offline/manifest.json'
     cutoff = (json.loads(manifest_path.read_text())['cutoff'] if manifest_path.exists()
               else datetime.now(timezone.utc).timestamp())
+    from .gift_scope import recorded_tail
+    tail = (recorded_tail(session) if manifest_path.exists() else
+            {'cutoff': cutoff, 'recorded_end': cutoff, 'stop_reason': 'no_manifest'})
     database = Path(config['database']).resolve(strict=True)
     lower = datetime.fromtimestamp(start, timezone.utc).isoformat()
-    upper = datetime.fromtimestamp(cutoff, timezone.utc).isoformat()
+    upper = datetime.fromtimestamp(tail['recorded_end'], timezone.utc).isoformat()
     with sqlite3.connect(database.as_uri() + '?mode=ro', uri=True) as db:
         db.execute('PRAGMA query_only=ON')
         rows = db.execute('SELECT id,at_utc,data FROM timeline WHERE room_id=? AND kind=? AND at_utc>=? '
@@ -32,14 +35,17 @@ def events(session):
                           (str(config['room_id']), 'gift', lower, upper)).fetchall()
     result = []
     for ident, at, data in rows:
-        if not start <= absolute_time(at) < cutoff:
+        if not start <= absolute_time(at) < tail['recorded_end']:
             continue
         value = json.loads(data).get('gift', {})
         gift_id = value.get('gift_id')
         result.append({'event_id': ident, 'at': at, 'gift_id': gift_id, 'count': value.get('num', 1),
                        'gift_name': value.get('gift_name'),
                        'status': 'candidate' if gift_id else 'no_gift_id'})
-    return {'room_id': config['room_id'], 'session': str(root), 'cutoff': cutoff, 'events': result}
+    tail_events = [e for e in result if absolute_time(e['at']) >= cutoff]
+    return {'room_id': config['room_id'], 'session': str(root), 'cutoff': cutoff,
+            'events': result if include_recorded_tail else [e for e in result if absolute_time(e['at']) < cutoff],
+            'recorded_tail': {**tail, 'included': bool(include_recorded_tail), 'events': tail_events}}
 
 
 def region(value, canvas):
@@ -59,9 +65,11 @@ def make_plan(args):
             raise ValueError('--event-id须与--session使用，且不混用时间、礼物、数量或昵称覆盖')
         if is_blind_event(args.session, args.event_id):
             from .gift_blind import bind_event
-            binding = bind_event(args.session, args.event_id)
+            binding = bind_event(args.session, args.event_id,
+                                 include_recorded_tail=getattr(args, 'include_recorded_tail', False))
         else:
-            binding = guard_event(args.session, args.event_id)
+            binding = guard_event(args.session, args.event_id,
+                                  include_recorded_tail=getattr(args, 'include_recorded_tail', False))
         at, room, gift_id, count = (binding[k] for k in ('at', 'room_id', 'gift_id', 'count'))
     if at is None:
         raise ValueError('请提供--at，或--session与--event-id')
@@ -112,6 +120,16 @@ def make_plan(args):
         raise ValueError('特效时长与配套JSON不符')
     effect_duration = info['f'] / info['fps']
     duration = number(before + effect_duration + after)
+    tail_scope = None
+    if getattr(args, 'include_recorded_tail', False):
+        if not args.session:
+            raise ValueError('--include-recorded-tail须与--session一起使用')
+        from .gift_scope import recorded_tail
+        root, _ = session_config(args.session)
+        tail_scope = {**recorded_tail(root), 'session': str(root),
+                      'manifest_sha256': sha_file(root/'offline/manifest.json')}
+        if absolute_time(at)-before+duration > tail_scope['recorded_end']+1e-6:
+            raise ValueError('完整动画及前后文超出同一连续录制尾段，不能跨场取片或截短')
     clips = source_clips(base=args.base, session=args.session, at=at, before=before,
                          duration=duration, display_aspect=args.base_display_aspect)
     canvas = dimensions(args.canvas)
@@ -132,6 +150,8 @@ def make_plan(args):
         plan['event_binding'] = binding
     if dynamic:
         plan['dynamic'] = dynamic
+    if tail_scope:
+        plan['recorded_tail_scope'] = tail_scope
     return plan
 
 
@@ -139,6 +159,18 @@ def validate_plan(plan):
     if plan.get('schema_version') != 1 or plan.get('fps') != 30:
         raise ValueError('不支持的渲染计划版本或帧率')
     duration = number(plan['duration'], minimum=.01)
+    if 'recorded_tail_scope' in plan:
+        from .gift_scope import recorded_tail
+        scope = plan['recorded_tail_scope']
+        root = Path(scope['session'])
+        if (sha_file(root/'offline/manifest.json') != scope['manifest_sha256'] or
+                any(scope[k] != value for k, value in recorded_tail(root).items())):
+            raise ValueError('单事件尾段范围与冻结录像清单不符')
+        wall_start = absolute_time(plan['source_at'])
+        if 'source_start' not in plan:
+            wall_start -= plan['overlay']['at']
+        if wall_start+duration > scope['recorded_end']+1e-6:
+            raise ValueError('场景取片超出同一连续录制尾段，不能跨场取片')
     dimensions('x'.join(str(n) for n in plan['canvas']))
     overlay = plan['overlay']
     if overlay['placement'] not in ('center-fit', 'left-fit', 'right-fit'):
@@ -348,6 +380,8 @@ def configure_parser(commands):
             item.add_argument('--output', type=Path, required=True)
         item.add_argument('--at')
         item.add_argument('--event-id', help='与场次一起定位GUARD_BUY并绑定原始续舰消息')
+        item.add_argument('--include-recorded-tail', action='store_true',
+                          help='允许绑定cutoff后同一连续录制内的尾段事件')
         item.add_argument('--username', help='明确文件模式的动态昵称；事件模式从原始消息读取')
         item.add_argument('--font', type=Path, help='显式指定本机TTF/OTF/TTC字体，计划固定SHA256')
         item.add_argument('--asset', type=Path)

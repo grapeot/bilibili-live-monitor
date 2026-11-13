@@ -254,6 +254,8 @@ def configure_parser(commands):
         sources.add_argument('--cdp-url')
         item.add_argument('--refresh', action='store_true')
         if action == 'fetch-event':
+            item.add_argument('--include-recorded-tail', action='store_true',
+                              help='允许绑定cutoff后同一连续录制内的尾段事件')
             item.add_argument('--card-background', type=Path, help='已核对来源的结果卡背景PNG')
             item.add_argument('--card-digits', type=Path, help='0.png至9.png的平台数字素材目录')
 
@@ -266,10 +268,12 @@ def main(args):
                 from .gift_blind import fetch_event
                 result = fetch_event(args.cache, args.session, args.event_id, catalog=args.catalog,
                                      cdp_url=args.cdp_url, refresh=args.refresh,
-                                     card_background=args.card_background, card_digits=args.card_digits)
+                                     card_background=args.card_background, card_digits=args.card_digits,
+                                     include_recorded_tail=getattr(args, 'include_recorded_tail', False))
                 print(json.dumps(result, ensure_ascii=False, indent=2))
                 return 0
-            event = guard_event(args.session, args.event_id)
+            event = guard_event(args.session, args.event_id,
+                                include_recorded_tail=getattr(args, 'include_recorded_tail', False))
             result = fetch(args.cache, event['room_id'], event['gift_id'], event['count'],
                            effect_id=event['effect_id'], gift_name=event['gift_name'],
                            catalog=args.catalog, cdp_url=args.cdp_url, refresh=args.refresh)

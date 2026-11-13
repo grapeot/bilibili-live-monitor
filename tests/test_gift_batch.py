@@ -192,3 +192,110 @@ def test_source_manifest_is_frozen(batch_case):
     manifest.write_text(manifest.read_text()+'\n')
     with pytest.raises(ValueError, match='清单已改变'):
         gift_batch.validate_batch(plan)
+
+
+def test_five_orders_after_cutoff_reported_then_explicitly_rendered(batch_case, tmp_path):
+    args, database = batch_case
+    args.event_region = []
+    manifest = args.session/'offline/manifest.json'
+    value = json.loads(manifest.read_text())
+    origin = absolute_time('2030-01-01T00:00:00Z')
+    value['cutoff'] = origin+1.5
+    manifest.write_text(json.dumps(value))
+    original = manifest.read_bytes()
+    with sqlite3.connect(database) as db:
+        gift = db.execute('SELECT data FROM timeline WHERE id=1').fetchone()[0]
+        db.execute('DELETE FROM timeline')
+        for ident, second in [(1,.8),(8,1.6),(9,1.7),(10,1.9),(11,1.9),(12,2)]:
+            db.execute('INSERT INTO timeline VALUES (?,?,?,?,?,?)',
+                       (ident,'123456','gift',datetime.fromtimestamp(origin+second,timezone.utc).isoformat(),
+                        f'unique-order:{ident}',gift))
+    report = gift_batch.make_batch(args)
+    assert [e['event_id'] for e in report['inventory']] == [1]
+    assert [e['event_id'] for e in report['recorded_tail']['events']] == [8,9,10,11,12]
+    assert report['recorded_tail']['included'] is False
+    args.include_recorded_tail = True
+    included = gift_batch.make_batch(args)
+    assert len(included['inventory']) == 6
+    assert all(e['status']=='planned' for e in included['inventory']), [(e['event_id'],e['status'],e.get('reason')) for e in included['inventory']]
+    assert included['recorded_tail']['included'] is True
+    result = gift_batch.render_batch(included,tmp_path/'with-tail')
+    assert result['verified'] and result['rendered_events']==6
+    assert len(result['recorded_tail']['events'])==5
+    assert manifest.read_bytes()==original
+    edited = copy.deepcopy(included)
+    edited['inventory'] = [e for e in edited['inventory'] if e['event_id']!=12]
+    for scene in edited['scenes']:
+        scene['overlays'] = [e for e in scene['overlays'] if e['event_id']!=12]
+    with pytest.raises(ValueError,match='尾段礼物'):
+        gift_batch.validate_batch(edited)
+
+
+@pytest.mark.parametrize('next_start,next_group,expected,reason', [
+    (2,'same',3,'recording_end'),
+    (2.1,'same',2,'recording_gap_or_overlap'),
+    (1.8,'same',1.8,'recording_gap_or_overlap'),
+    (2,'next',2,'different_recording_run'),
+])
+def test_tail_stops_at_gap_overlap_or_other_capture(batch_case,next_start,next_group,expected,reason):
+    args,_ = batch_case
+    from bilibili_live_monitor.gift_scope import recorded_tail
+    path = args.session/'offline/manifest.json'
+    value = json.loads(path.read_text())
+    origin = value['rows'][0]['wall_start']
+    row = value['rows'][0]
+    value.update(cutoff=origin+1.5,rows=[
+        {**row,'duration_sec':2,'run_group':'same'},
+        {**row,'wall_start':origin+next_start,'duration_sec':1,'run_group':next_group}])
+    path.write_text(json.dumps(value))
+    scope = recorded_tail(args.session)
+    assert scope['recorded_end']==origin+expected
+    assert scope['stop_reason']==reason
+
+
+def test_no_tail_when_cutoff_is_in_recording_gap(batch_case):
+    args,_ = batch_case
+    from bilibili_live_monitor.gift_scope import recorded_tail
+    path = args.session/'offline/manifest.json'
+    value = json.loads(path.read_text())
+    value['cutoff'] += 1
+    path.write_text(json.dumps(value))
+    scope = recorded_tail(args.session)
+    assert scope['recorded_end']==value['cutoff']
+    assert scope['stop_reason']=='no_recording_at_cutoff'
+
+
+@pytest.mark.parametrize('same_run', [True,False])
+def test_cutoff_at_capture_boundary_uses_preceding_run(batch_case,same_run):
+    args,_ = batch_case
+    from bilibili_live_monitor.gift_scope import recorded_tail
+    path = args.session/'offline/manifest.json'
+    value = json.loads(path.read_text())
+    row = value['rows'][0]
+    origin = row['wall_start']
+    value.update(cutoff=origin+2,rows=[{**row,'duration_sec':2,'run_group':'first'},
+        {**row,'wall_start':origin+2,'duration_sec':2,'run_group':'first' if same_run else 'next'}])
+    path.write_text(json.dumps(value))
+    scope = recorded_tail(args.session)
+    assert scope['recorded_end']==origin+(4 if same_run else 2)
+
+
+def test_tail_effect_cannot_take_context_from_next_recording_run(batch_case):
+    args,database = batch_case
+    args.event_region = []
+    args.include_recorded_tail = True
+    path = args.session/'offline/manifest.json'
+    value = json.loads(path.read_text())
+    row = value['rows'][0]
+    origin = row['wall_start']
+    value.update(cutoff=origin+1,rows=[{**row,'duration_sec':2,'run_group':'first'},
+        {**row,'wall_start':origin+2,'duration_sec':2,'run_group':'next'}])
+    path.write_text(json.dumps(value))
+    with sqlite3.connect(database) as db:
+        db.execute('DELETE FROM timeline WHERE id!=1')
+        db.execute('UPDATE timeline SET at_utc=? WHERE id=1',
+                   (datetime.fromtimestamp(origin+1.5,timezone.utc).isoformat(),))
+    plan = gift_batch.make_batch(args)
+    assert plan['inventory'][0]['status']=='uncovered'
+    assert '不能跨场' in plan['inventory'][0]['reason']
+    assert not plan['scenes']
