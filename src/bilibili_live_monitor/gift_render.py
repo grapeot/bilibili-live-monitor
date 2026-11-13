@@ -10,6 +10,8 @@ from pathlib import Path
 
 from .archive_media import file_stat
 from .gift_assets import cache_default, cached_asset, load_asset, sha_file, validate_config, write_json
+from .gift_dynamic import render_rgba, text_images, validate_dynamic
+from .gift_event import guard_event
 from .gift_media import absolute_time, aspect, dimensions, number, prepare_base, session_config, source_clips
 from .trailer import probe, run
 
@@ -49,32 +51,54 @@ def region(value, canvas):
 
 
 def make_plan(args):
+    binding = None
+    at, room, gift_id, count = (args.at, getattr(args, 'room', None),
+                               getattr(args, 'gift_id', None), getattr(args, 'count', 1))
+    if getattr(args, 'event_id', None) is not None:
+        if not args.session or at is not None or room or gift_id or count != 1 or getattr(args, 'username', None):
+            raise ValueError('--event-id须与--session使用，且不混用时间、礼物、数量或昵称覆盖')
+        binding = guard_event(args.session, args.event_id)
+        at, room, gift_id, count = (binding[k] for k in ('at', 'room_id', 'gift_id', 'count'))
+    if at is None:
+        raise ValueError('请提供--at，或--session与--event-id')
     if args.asset:
         asset_path = Path(args.asset).resolve(strict=True)
         asset = load_asset(asset_path)
     else:
-        room = args.room
         if args.session:
             _, config = session_config(args.session)
             room = config['room_id']
-        if not room or not args.gift_id:
+        if not room or not gift_id:
             raise ValueError('请提供--asset，或--room/--gift-id（场次自动提供房间）')
         try:
-            asset_path, asset = cached_asset(args.cache, room, args.gift_id, args.count)
+            asset_path, asset = cached_asset(args.cache, room, gift_id, count,
+                                              binding['effect_id'] if binding else None)
         except FileNotFoundError as error:
             raise ValueError('礼物未缓存；先运行gift-assets fetch。render/plan均不联网') from error
+    if binding and any(asset[k] != binding[k] for k in ('room_id', 'gift_id', 'count', 'effect_id')):
+        raise ValueError('素材不属于所选续舰事件')
     before, after = number(args.before), number(args.after)
-    info = validate_config(json.loads(Path(asset['config']['path']).read_text()))
+    config = json.loads(Path(asset['config']['path']).read_text())
+    info = validate_config(config)
+    dynamic = None
+    if validate_dynamic(config):
+        font_path = getattr(args, 'font', None)
+        if not font_path:
+            raise ValueError('动态文字须显式提供--font；文件模式还须--username')
+        font_path = Path(font_path).resolve(strict=True)
+        username = binding['username'] if binding else getattr(args, 'username', None)
+        text_images(config, username, font_path)
+        dynamic = {'username': username, 'font': {'path': str(font_path), 'sha256': sha_file(font_path)}}
     media = probe(Path(asset['media']['path']))
     videos = [s for s in media['streams'] if s['codec_type'] == 'video']
     if len(videos) != 1:
         raise ValueError('特效需要单路视频')
-    validate_config({'info': info}, (videos[0]['width'], videos[0]['height']))
+    validate_config(config, (videos[0]['width'], videos[0]['height']))
     if abs(float(media['format']['duration']) - info['f'] / info['fps']) > .2:
         raise ValueError('特效时长与配套JSON不符')
     effect_duration = info['f'] / info['fps']
     duration = number(before + effect_duration + after)
-    clips = source_clips(base=args.base, session=args.session, at=args.at, before=before,
+    clips = source_clips(base=args.base, session=args.session, at=at, before=before,
                          duration=duration, display_aspect=args.base_display_aspect)
     canvas = dimensions(args.canvas)
     if canvas is None:
@@ -82,14 +106,19 @@ def make_plan(args):
         height = clips[0]['decoded_size'][1]
         canvas = (round(float(ratio) * height / 2) * 2, height)
         dimensions(f'{canvas[0]}x{canvas[1]}')
-    return {'schema_version': 1, 'clips': clips, 'canvas': list(canvas),
+    plan = {'schema_version': 1, 'clips': clips, 'canvas': list(canvas),
             'duration': duration, 'fps': 30, 'asset_path': str(asset_path),
             'asset_sha256': sha_file(asset_path), 'asset_version': asset['version'],
             'gift_id': asset['gift_id'], 'count': asset['count'],
             'overlay': {'at': before, 'duration': effect_duration,
                         'placement': args.placement, 'region': region(args.region, canvas)},
-            'source_at': args.at, 'source_kind': 'session' if args.session else 'file',
+            'source_at': at, 'source_kind': 'session' if args.session else 'file',
             'effect_audio': 'omitted', 'historical_web_playback': False}
+    if binding:
+        plan['event_binding'] = binding
+    if dynamic:
+        plan['dynamic'] = dynamic
+    return plan
 
 
 def validate_plan(plan):
@@ -111,7 +140,24 @@ def validate_plan(plan):
     asset = load_asset(asset_path)
     if asset['version'] != plan['asset_version']:
         raise ValueError('计划引用的礼物版本不符')
-    info = validate_config(json.loads(Path(asset['config']['path']).read_text()))
+    config = json.loads(Path(asset['config']['path']).read_text())
+    info = validate_config(config)
+    dynamic = plan.get('dynamic')
+    if validate_dynamic(config):
+        if not isinstance(dynamic, dict):
+            raise ValueError('计划缺少动态文字绑定')
+        font = dynamic['font']
+        if sha_file(font['path']) != font['sha256']:
+            raise ValueError('计划引用的字体已改变')
+        text_images(config, dynamic['username'], font['path'])
+    elif dynamic:
+        raise ValueError('静态素材不能包含动态文字绑定')
+    if plan.get('event_binding'):
+        binding = plan['event_binding']
+        if any(binding[k] != asset[k] for k in ('room_id', 'gift_id', 'count', 'effect_id')):
+            raise ValueError('计划事件与素材不符')
+        if dynamic and dynamic['username'] != binding['username']:
+            raise ValueError('计划昵称与事件不符')
     if abs(effect_length - info['f'] / info['fps']) > .001:
         raise ValueError('计划特效时长与素材不符')
     if not 1 <= len(plan['clips']) <= 100:
@@ -140,6 +186,13 @@ def render(plan, output):
     for name, key in (('effect.mp4', 'media'), ('effect.json', 'config')):
         shutil.copyfile(asset[key]['path'], assets / name)
     write_json(assets / 'version.json', asset)
+    dynamic = plan.get('dynamic')
+    if dynamic:
+        font = assets / ('font' + Path(dynamic['font']['path']).suffix)
+        shutil.copyfile(dynamic['font']['path'], font)
+        if sha_file(font) != dynamic['font']['sha256']:
+            raise ValueError('复制期间字体改变')
+        write_json(assets / 'bindings.json', dynamic)
     width, height = plan['canvas']
     parts = []
     for index, clip in enumerate(plan['clips']):
@@ -170,13 +223,20 @@ def render(plan, output):
     ew, eh = max(2, int(rw * scale / 2) * 2), max(2, int(rh * scale / 2) * 2)
     left = {'left-fit': x, 'right-fit': x + w - ew, 'center-fit': x + (w - ew) // 2}[overlay['placement']]
     top = y + (h - eh) // 2
-    graph = (f'[1:v]split=2[r0][a0];[r0]crop={rw}:{rh}:{rx}:{ry},format=rgb24[r];'
-             f'[a0]crop={aw}:{ah}:{ax}:{ay},scale={rw}:{rh}:flags=bilinear,format=gray[a];'
-             f'[r][a]alphamerge,scale={ew}:{eh}:flags=lanczos,setsar=1,'
+    effect_input = assets / 'effect.mp4'
+    if dynamic:
+        effect_input = render_rgba(effect_input, json.loads((assets / 'effect.json').read_text()),
+                                   dynamic['username'], font, output / 'effect-rgba.mov')
+        unpack = '[1:v]'
+    else:
+        unpack = (f'[1:v]split=2[r0][a0];[r0]crop={rw}:{rh}:{rx}:{ry},format=rgb24[r];'
+                  f'[a0]crop={aw}:{ah}:{ax}:{ay},scale={rw}:{rh}:flags=bilinear,format=gray[a];'
+                  '[r][a]alphamerge,')
+    graph = (unpack + f'scale={ew}:{eh}:flags=lanczos,setsar=1,'
              f'setpts=PTS-STARTPTS+{overlay["at"]}/TB[g];'
              f'[0:v][g]overlay={left}:{top}:eof_action=pass:repeatlast=0:format=auto,format=yuv420p[v]')
     video = output / 'video.mp4'
-    run(['ffmpeg', '-nostdin', '-v', 'error', '-xerror', '-i', str(base), '-i', str(assets / 'effect.mp4'),
+    run(['ffmpeg', '-nostdin', '-v', 'error', '-xerror', '-i', str(base), '-i', str(effect_input),
          '-filter_complex_threads', '2', '-filter_complex', graph, '-map', '[v]', '-map', '0:a:0',
          '-t', str(plan['duration']), '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '18',
          '-pix_fmt', 'yuv420p', '-c:a', 'copy', '-movflags', '+faststart', str(video)])
@@ -190,6 +250,8 @@ def render(plan, output):
     for part in parts:
         part.unlink()
     concat.unlink()
+    if dynamic:
+        effect_input.unlink()
     return result
 
 
@@ -235,6 +297,9 @@ def configure_parser(commands):
             inputs.add_argument('--plan', type=Path)
             item.add_argument('--output', type=Path, required=True)
         item.add_argument('--at')
+        item.add_argument('--event-id', help='与场次一起定位GUARD_BUY并绑定原始续舰消息')
+        item.add_argument('--username', help='明确文件模式的动态昵称；事件模式从原始消息读取')
+        item.add_argument('--font', type=Path, help='显式指定本机TTF/OTF/TTC字体，计划固定SHA256')
         item.add_argument('--asset', type=Path)
         item.add_argument('--cache', type=Path, default=cache_default())
         item.add_argument('--room')
@@ -260,13 +325,13 @@ def main(args):
             if getattr(args, 'plan', None):
                 plan = json.loads(args.plan.read_text())
             else:
-                if args.at is None:
+                if args.at is None and not getattr(args, 'event_id', None):
                     raise ValueError('请提供--at：本地文件为秒数，场次为带时区的时间')
                 plan = make_plan(args)
             result = plan if args.action == 'plan' else render(plan, args.output)
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
-    except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
+    except (OSError, ValueError, KeyError, sqlite3.Error, subprocess.SubprocessError) as error:
         print(json.dumps({'error_type': type(error).__name__, 'error': str(error)}, ensure_ascii=False),
               file=sys.stderr)
         return 1
