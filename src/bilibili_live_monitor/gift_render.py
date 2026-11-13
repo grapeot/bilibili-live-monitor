@@ -1,0 +1,272 @@
+"""按冻结计划离线叠加单个礼物；场次事件供skill按需批量编排。"""
+import json
+import shutil
+import sqlite3
+import subprocess
+import sys
+from datetime import datetime, timezone
+from fractions import Fraction
+from pathlib import Path
+
+from .archive_media import file_stat
+from .gift_assets import cache_default, cached_asset, load_asset, sha_file, validate_config, write_json
+from .gift_media import absolute_time, aspect, dimensions, number, prepare_base, session_config, source_clips
+from .trailer import probe, run
+
+
+def events(session):
+    root, config = session_config(session)
+    start = absolute_time(config['start_utc'])
+    manifest_path = root / 'offline/manifest.json'
+    cutoff = (json.loads(manifest_path.read_text())['cutoff'] if manifest_path.exists()
+              else datetime.now(timezone.utc).timestamp())
+    database = Path(config['database']).resolve(strict=True)
+    lower = datetime.fromtimestamp(start, timezone.utc).isoformat()
+    upper = datetime.fromtimestamp(cutoff, timezone.utc).isoformat()
+    with sqlite3.connect(database.as_uri() + '?mode=ro', uri=True) as db:
+        db.execute('PRAGMA query_only=ON')
+        rows = db.execute('SELECT id,at_utc,data FROM timeline WHERE room_id=? AND kind=? AND at_utc>=? '
+                          'AND at_utc<? ORDER BY at_utc,id',
+                          (str(config['room_id']), 'gift', lower, upper)).fetchall()
+    result = []
+    for ident, at, data in rows:
+        if not start <= absolute_time(at) < cutoff:
+            continue
+        value = json.loads(data).get('gift', {})
+        gift_id = value.get('gift_id')
+        result.append({'event_id': ident, 'at': at, 'gift_id': gift_id, 'count': value.get('num', 1),
+                       'gift_name': value.get('gift_name'),
+                       'status': 'candidate' if gift_id else 'no_gift_id'})
+    return {'room_id': config['room_id'], 'session': str(root), 'cutoff': cutoff, 'events': result}
+
+
+def region(value, canvas):
+    rect = [0, 0, *canvas] if value is None else [int(n) for n in value.split(',')]
+    if (len(rect) != 4 or min(rect[:2]) < 0 or min(rect[2:]) < 2
+            or rect[0] + rect[2] > canvas[0] or rect[1] + rect[3] > canvas[1]):
+        raise ValueError('特效区域须为画布内的x,y,w,h')
+    return rect
+
+
+def make_plan(args):
+    if args.asset:
+        asset_path = Path(args.asset).resolve(strict=True)
+        asset = load_asset(asset_path)
+    else:
+        room = args.room
+        if args.session:
+            _, config = session_config(args.session)
+            room = config['room_id']
+        if not room or not args.gift_id:
+            raise ValueError('请提供--asset，或--room/--gift-id（场次自动提供房间）')
+        try:
+            asset_path, asset = cached_asset(args.cache, room, args.gift_id, args.count)
+        except FileNotFoundError as error:
+            raise ValueError('礼物未缓存；先运行gift-assets fetch。render/plan均不联网') from error
+    before, after = number(args.before), number(args.after)
+    info = validate_config(json.loads(Path(asset['config']['path']).read_text()))
+    media = probe(Path(asset['media']['path']))
+    videos = [s for s in media['streams'] if s['codec_type'] == 'video']
+    if len(videos) != 1:
+        raise ValueError('特效需要单路视频')
+    validate_config({'info': info}, (videos[0]['width'], videos[0]['height']))
+    if abs(float(media['format']['duration']) - info['f'] / info['fps']) > .2:
+        raise ValueError('特效时长与配套JSON不符')
+    effect_duration = info['f'] / info['fps']
+    duration = number(before + effect_duration + after)
+    clips = source_clips(base=args.base, session=args.session, at=args.at, before=before,
+                         duration=duration, display_aspect=args.base_display_aspect)
+    canvas = dimensions(args.canvas)
+    if canvas is None:
+        ratio = aspect(clips[0]['display_aspect'])
+        height = clips[0]['decoded_size'][1]
+        canvas = (round(float(ratio) * height / 2) * 2, height)
+        dimensions(f'{canvas[0]}x{canvas[1]}')
+    return {'schema_version': 1, 'clips': clips, 'canvas': list(canvas),
+            'duration': duration, 'fps': 30, 'asset_path': str(asset_path),
+            'asset_sha256': sha_file(asset_path), 'asset_version': asset['version'],
+            'gift_id': asset['gift_id'], 'count': asset['count'],
+            'overlay': {'at': before, 'duration': effect_duration,
+                        'placement': args.placement, 'region': region(args.region, canvas)},
+            'source_at': args.at, 'source_kind': 'session' if args.session else 'file',
+            'effect_audio': 'omitted', 'historical_web_playback': False}
+
+
+def validate_plan(plan):
+    if plan.get('schema_version') != 1 or plan.get('fps') != 30:
+        raise ValueError('不支持的渲染计划版本或帧率')
+    duration = number(plan['duration'], minimum=.01)
+    dimensions('x'.join(str(n) for n in plan['canvas']))
+    overlay = plan['overlay']
+    if overlay['placement'] not in ('center-fit', 'left-fit', 'right-fit'):
+        raise ValueError('特效放置方式无效')
+    region(','.join(str(n) for n in overlay['region']), plan['canvas'])
+    at = number(overlay['at'])
+    effect_length = number(overlay['duration'], minimum=.01)
+    if at + effect_length > duration + .001:
+        raise ValueError('特效超出输出时间线')
+    asset_path = Path(plan['asset_path'])
+    if sha_file(asset_path) != plan['asset_sha256']:
+        raise ValueError('计划引用的礼物版本文件已改变')
+    asset = load_asset(asset_path)
+    if asset['version'] != plan['asset_version']:
+        raise ValueError('计划引用的礼物版本不符')
+    info = validate_config(json.loads(Path(asset['config']['path']).read_text()))
+    if abs(effect_length - info['f'] / info['fps']) > .001:
+        raise ValueError('计划特效时长与素材不符')
+    if not 1 <= len(plan['clips']) <= 100:
+        raise ValueError('底层片段数量无效')
+    for clip in plan['clips']:
+        number(clip['start'], maximum=10**9)
+        number(clip['duration'], minimum=.001)
+        aspect(clip['display_aspect'])
+        if file_stat(clip['path']) != clip['stat']:
+            raise ValueError('计划引用的底层素材已改变')
+        receipt = clip.get('archive_receipt')
+        if receipt and file_stat(receipt['path']) != receipt['stat']:
+            raise ValueError('计划引用的归档回执已改变')
+    if abs(sum(c['duration'] for c in plan['clips']) - duration) > .06:
+        raise ValueError('底层片段总长与计划不符')
+    return asset, info
+
+
+def render(plan, output):
+    asset, info = validate_plan(plan)
+    output = Path(output).resolve()
+    output.mkdir(parents=True, exist_ok=False)
+    write_json(output / 'plan.json', plan)
+    assets = output / 'assets'
+    assets.mkdir()
+    for name, key in (('effect.mp4', 'media'), ('effect.json', 'config')):
+        shutil.copyfile(asset[key]['path'], assets / name)
+    write_json(assets / 'version.json', asset)
+    width, height = plan['canvas']
+    parts = []
+    for index, clip in enumerate(plan['clips']):
+        ratio = Fraction(clip['display_aspect'])
+        # Establish square-pixel display geometry BEFORE fitting into the output canvas.
+        fit_h = min(height, width / float(ratio))
+        fit_w, fit_h = max(2, int(fit_h * float(ratio) / 2) * 2), max(2, int(fit_h / 2) * 2)
+        filters = (f'scale={fit_w}:{fit_h}:flags=lanczos,setsar=1,'
+                   f'pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30')
+        part = output / f'part-{index:03d}.mkv'
+        run(['ffmpeg', '-nostdin', '-v', 'error', '-xerror', '-ss', str(clip['start']),
+             '-i', clip['path'], '-t', str(clip['duration']), '-map', '0:v:0', '-map', '0:a:0',
+             '-vf', filters, '-af', 'aresample=48000,asetpts=PTS-STARTPTS',
+             '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '18', '-pix_fmt', 'yuv420p',
+             '-c:a', 'pcm_s16le', '-ac', '2', str(part)])
+        parts.append(part)
+    # concat demuxer paths are generated relative names, never unescaped user paths.
+    concat = output / 'parts.txt'
+    concat.write_text(''.join(f"file '{part.name}'\n" for part in parts))
+    base = output / 'base.mp4'
+    run(['ffmpeg', '-nostdin', '-v', 'error', '-f', 'concat', '-safe', '1', '-i', str(concat),
+         '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', str(base)])
+    rx, ry, rw, rh = info['rgbFrame']
+    ax, ay, aw, ah = info['aFrame']
+    overlay = plan['overlay']
+    x, y, w, h = overlay['region']
+    scale = min(w / rw, h / rh)
+    ew, eh = max(2, int(rw * scale / 2) * 2), max(2, int(rh * scale / 2) * 2)
+    left = {'left-fit': x, 'right-fit': x + w - ew, 'center-fit': x + (w - ew) // 2}[overlay['placement']]
+    top = y + (h - eh) // 2
+    graph = (f'[1:v]split=2[r0][a0];[r0]crop={rw}:{rh}:{rx}:{ry},format=rgb24[r];'
+             f'[a0]crop={aw}:{ah}:{ax}:{ay},scale={rw}:{rh}:flags=bilinear,format=gray[a];'
+             f'[r][a]alphamerge,scale={ew}:{eh}:flags=lanczos,setsar=1,'
+             f'setpts=PTS-STARTPTS+{overlay["at"]}/TB[g];'
+             f'[0:v][g]overlay={left}:{top}:eof_action=pass:repeatlast=0:format=auto,format=yuv420p[v]')
+    video = output / 'video.mp4'
+    run(['ffmpeg', '-nostdin', '-v', 'error', '-xerror', '-i', str(base), '-i', str(assets / 'effect.mp4'),
+         '-filter_complex_threads', '2', '-filter_complex', graph, '-map', '[v]', '-map', '0:a:0',
+         '-t', str(plan['duration']), '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '18',
+         '-pix_fmt', 'yuv420p', '-c:a', 'copy', '-movflags', '+faststart', str(video)])
+    preview_at = overlay['at'] + overlay['duration'] / 2
+    run(['ffmpeg', '-nostdin', '-v', 'error', '-ss', str(preview_at), '-i', str(base),
+         '-ss', str(preview_at), '-i', str(video), '-filter_complex',
+         '[0:v]scale=640:-2[l];[1:v]scale=640:-2[r];[l][r]hstack[v]',
+         '-map', '[v]', '-frames:v', '1', '-update', '1', str(output / 'preview.jpg')])
+    result = verify(output)
+    # These are only this task's expendable normalized intermediates.
+    for part in parts:
+        part.unlink()
+    concat.unlink()
+    return result
+
+
+def verify(output):
+    output = Path(output).resolve(strict=True)
+    plan = json.loads((output / 'plan.json').read_text())
+    info = probe(output / 'video.mp4')
+    streams = info['streams']
+    video = next(s for s in streams if s['codec_type'] == 'video')
+    if (len(streams) != 2 or not any(s['codec_type'] == 'audio' for s in streams)
+            or [video['width'], video['height']] != plan['canvas']
+            or video.get('sample_aspect_ratio') != '1:1'
+            or abs(float(info['format']['duration']) - plan['duration']) > .15):
+        raise ValueError('成片画幅、音轨或时长验收失败')
+    run(['ffmpeg', '-nostdin', '-v', 'error', '-xerror', '-i', str(output / 'video.mp4'),
+         '-map', '0:v:0', '-map', '0:a:0', '-f', 'null', '-'])
+    result = {'verified': True, 'video': str(output / 'video.mp4'), 'canvas': plan['canvas'],
+              'duration': float(info['format']['duration']), 'asset_version': plan['asset_version'],
+              'source_files_unchanged': all(file_stat(c['path']) == c['stat'] for c in plan['clips']),
+              'sha256': sha_file(output / 'video.mp4'), 'visual_review_required': True}
+    if not result['source_files_unchanged']:
+        raise ValueError('渲染期间来源发生变化')
+    write_json(output / 'verification.json', result)
+    return result
+
+
+def configure_parser(commands):
+    parser = commands.add_parser('gift-render', help='离线礼物动画合成与场次事件枚举')
+    actions = parser.add_subparsers(dest='action', required=True)
+    listing = actions.add_parser('events')
+    listing.add_argument('--session', type=Path, required=True)
+    check = actions.add_parser('verify')
+    check.add_argument('--output', type=Path, required=True)
+    prepare = actions.add_parser('prepare', help='在新的私有目录准备原始分片解码头；不写生产目录')
+    prepare.add_argument('--base', type=Path, required=True)
+    prepare.add_argument('--output', type=Path, required=True)
+    for action in ('plan', 'render'):
+        item = actions.add_parser(action)
+        inputs = item.add_mutually_exclusive_group(required=True)
+        inputs.add_argument('--base', type=Path)
+        inputs.add_argument('--session', type=Path)
+        if action == 'render':
+            inputs.add_argument('--plan', type=Path)
+            item.add_argument('--output', type=Path, required=True)
+        item.add_argument('--at')
+        item.add_argument('--asset', type=Path)
+        item.add_argument('--cache', type=Path, default=cache_default())
+        item.add_argument('--room')
+        item.add_argument('--gift-id')
+        item.add_argument('--count', type=int, default=1)
+        item.add_argument('--before', type=float, default=6)
+        item.add_argument('--after', type=float, default=6)
+        item.add_argument('--base-display-aspect')
+        item.add_argument('--canvas')
+        item.add_argument('--placement', choices=('center-fit', 'left-fit', 'right-fit'), default='center-fit')
+        item.add_argument('--region')
+
+
+def main(args):
+    try:
+        if args.action == 'prepare':
+            result = prepare_base(args.base, args.output)
+        elif args.action == 'events':
+            result = events(args.session)
+        elif args.action == 'verify':
+            result = verify(args.output)
+        else:
+            if getattr(args, 'plan', None):
+                plan = json.loads(args.plan.read_text())
+            else:
+                if args.at is None:
+                    raise ValueError('请提供--at：本地文件为秒数，场次为带时区的时间')
+                plan = make_plan(args)
+            result = plan if args.action == 'plan' else render(plan, args.output)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
+    except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
+        print(json.dumps({'error_type': type(error).__name__, 'error': str(error)}, ensure_ascii=False),
+              file=sys.stderr)
+        return 1
