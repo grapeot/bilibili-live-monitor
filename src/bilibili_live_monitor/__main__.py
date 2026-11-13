@@ -8,6 +8,10 @@ from .activity import configure_parser as configure_activity
 from .activity import main as activity_main
 from .browser import Browser
 from .config import load_settings
+from .gift_assets import configure_parser as configure_gift_assets
+from .gift_assets import main as gift_assets_main
+from .gift_render import configure_parser as configure_gift_render
+from .gift_render import main as gift_render_main
 from .live_share_control import configure_parser as configure_live_share
 from .live_share_control import main as live_share_main
 from .media_codec import configure_parser as configure_media_codec
@@ -41,7 +45,13 @@ def main():
     configure_live_share(commands)
     configure_archive(commands)
     configure_media_codec(commands)
+    configure_gift_assets(commands)
+    configure_gift_render(commands)
     args = parser.parse_args()
+    if args.command == 'gift-assets':
+        return gift_assets_main(args)
+    if args.command == 'gift-render':
+        return gift_render_main(args)
     if args.command == 'offline-asr':
         return offline_asr_main(args)
     if args.command == 'archive':
