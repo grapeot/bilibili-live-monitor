@@ -26,7 +26,7 @@ bili-live gift-assets fetch --room 123456 --gift-id 123 --count 1 \
 
 默认缓存为 `XDG_CACHE_HOME/bilibili-live-monitor/gift-assets`（未设置时为 `~/.cache/bilibili-live-monitor/gift-assets`）。缓存命中不联网；缺失或显式 `--refresh` 时，提供 `--catalog /PRIVATE/catalog.json` 快照，或 `--cdp-url` 只读读取已打开且唯一的该房间网页。这两个来源参数互斥。CDP 不创建、重载或关闭页面，不送礼；网页 Vue 结构变更直接报错。
 
-catalog 支持 `{"gifts":[...],"effects":[...]}` 或 `{"assets":{"giftAssets":...,"effectAssetsList":...}}`。数量按 `countMap` 精确匹配，非零覆盖普通 `effectId`，零值回退。仅下载目标礼物所需 MP4 与 JSON，按内容 SHA256 去重；目录快照、固定版本与最新索引分开保存，刷新不改旧版本。stdout 返回 `cache_hit`、`asset`（版本记录路径）、`version`。当前仅支持 MP4 加配套 JSON，SVGA、Spine 和动态替换元素明确报错，不假称已支持。
+catalog 支持 `{"gifts":[...],"effects":[...]}` 或 `{"assets":{"giftAssets":...,"effectAssetsList":...}}`。数量按 `countMap` 精确匹配，非零覆盖普通 `effectId`，零值回退。仅下载目标礼物所需 MP4 与 JSON，按内容 SHA256 去重；目录快照、固定版本与最新索引分开保存，刷新不改旧版本。stdout 返回 `cache_hit`、`asset`（版本记录路径）、`version`。支持 MP4 加配套 JSON，以及下述已知舰长昵称文字槽；SVGA、Spine、图片替换及未知动态元素明确报错，不假称已支持。
 
 ### 场次候选盘点
 
@@ -72,6 +72,40 @@ bili-live gift-render render --base /PRIVATE/prepared/prepared.mkv --at 30 \
 `prepare` 的输出目录必须全新且在原始录像目录之外。它只复制原片并按可信历史参数准备解码头；较长参数头需要重建 Matroska Tracks 长度并移除失效索引，不重新编码媒体。准备后逐包核对内容及时间戳，生产原片与 `.codec-media` 不变。返回 `prepared` 路径与 `preparation.json`，不把解码头准备等同于整片画幅稳定或完整解码通过；后续计划仍检查目标时间段的画幅和覆盖。片内仍有参数切换时，应选择稳定区间或另行拆分。
 
 跨分片合成的中间音频使用 PCM，拼接后只编码一次 AAC，避免逐片 AAC 的延迟／尾部填充在接缝产生新增静音。成片仍保留底层声音，不混入礼物音轨。
+
+## 舰长事件绑定与动态昵称
+
+### 事件素材抓取与绑定校验
+
+- 事件 ID 来自 `gift-render events`，须属于所选场次和房间。
+- 只支持有平台时间的 `GUARD_BUY`，按房间、UID、平台时间、`gift_id`、数量、`guard_level` 匹配唯一 `USER_TOAST_MSG_V2`，从 `ship_effect_id` 获取动画号，不从礼物号或昵称猜测。绑定缺失、多义、未支持素材均拒绝。
+- 抓取事件素材（亦可用 `--cdp-url` 代替 `--catalog`，只读已经打开且唯一的该房页面）：
+
+```bash
+bili-live gift-assets fetch-event --session /PRIVATE/live_sessions/SESSION_DIR \
+  --event-id 42 --cache /PRIVATE/cache --catalog /PRIVATE/catalog.json
+```
+
+### 事件渲染、计划固化与独立底片模式
+
+按事件渲染，从事件绑定昵称、时刻和数量，不混用 `--at`、`--gift-id`、`--room`、`--count` 覆盖或 `--username`：
+
+```bash
+bili-live gift-render render --session /PRIVATE/live_sessions/SESSION_DIR \
+  --event-id 42 --cache /PRIVATE/cache --font /PRIVATE/font.ttf --output /PRIVATE/result
+```
+
+- 默认保留动画前后各6秒，可照普通模式选 `--region` 和 `--canvas`，不自动判 PK 左右；PK 合流本身是一条录像。
+- `--event-id` 同样支持 `plan`；固定计划后使用 `render --plan ...`。事件素材按动画 ID 单独索引，不覆盖普通礼物索引。
+- 字体 SHA256 与昵称进入计划，字体变更拒绝；输出 `assets` 保留字体副本与 `bindings.json`。
+- 独立 `--base` 文件模式可用 `--asset` 加 `--at 6 --username TestUser --font /PRIVATE/font.ttf` 明确昵称，不能把这当历史事件核验。
+
+### 动态合成规范与边界
+
+- 当前只支持 `srcTag` 为 `live.guard.open.animation.user.name` 的 `txt`、`fitXY`、单色无额外 `style`；字体须显式指定，不从操作系统默认字体猜测。
+- 按 JSON 的 `frame`/`mFrame` 逐帧位置与遮罩合成，未知语义、图片及盲盒结果卡仍拒绝；源素材 MP4/JSON 不修改。
+- 合成按时间戳归零对齐，动画保留 JSON 帧率，输出30fps；25/30fps底片配30fps动画通过离线测试，不改播放速度。不混入特效独立音轨。
+- 输出包含真实昵称及本机路径，必须留在私有目录。字体与排队延迟不保证与历史网页相同，不自动送礼、发布或接入录制收尾。
 
 ## 输出规格
 
