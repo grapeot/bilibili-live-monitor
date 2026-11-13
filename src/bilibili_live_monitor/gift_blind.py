@@ -153,6 +153,7 @@ def fetch_event(cache, session, event_id, *, catalog=None, cdp_url=None, refresh
                      'icons': [fetch_image(cache, i['image_url'], refresh) for i in binding['results']]}
         write_json(index, resources)
     resources = load_resources(cache, binding)
+    validate_resources(resources, asset)
     return {**asset_result, 'event': binding, 'resources': str(index),
             'resources_sha256': hashlib.sha256(canonical(resources)).hexdigest()}
 
@@ -172,7 +173,7 @@ def load_resources(cache, binding):
     return resources
 
 
-def validate_resources(resources):
+def validate_resources(resources, asset=None):
     binding = resources['binding']
     if bind_event(binding['session'], binding['event_id']) != binding:
         raise ValueError('盲盒原始消息或结果绑定已改变')
@@ -181,7 +182,10 @@ def validate_resources(resources):
     catalog = resources['catalog']
     if sha_file(catalog['path']) != catalog['sha256']:
         raise ValueError('盲盒结果特效目录已改变')
-    check_result_effects(binding, normalize_catalog(json.loads(Path(catalog['path']).read_text())))
+    snapshot = json.loads(Path(catalog['path']).read_text())
+    if asset is not None and hashlib.sha256(canonical(snapshot)).hexdigest() != asset['catalog_sha256']:
+        raise ValueError('盲盒资源目录与实际素材版本不符；须重新fetch-event --refresh')
+    check_result_effects(binding, normalize_catalog(snapshot))
     for icon, result in zip(resources['icons'], binding['results'], strict=True):
         if icon.get('url') != result['image_url']:
             raise ValueError('结果卡图标与原始结果身份不符')
@@ -190,8 +194,8 @@ def validate_resources(resources):
             raise ValueError('结果卡图片指纹不符')
 
 
-def card_images(config, resources):
-    validate_resources(resources)
+def card_images(config, resources, asset=None):
+    validate_resources(resources, asset)
     sources = validate_dynamic(config)
     if len(sources) != 1 or sources[0]['srcTag'] != BLIND_TAG:
         raise ValueError('普通盲盒需要唯一的已知结果图片槽')

@@ -195,3 +195,28 @@ def test_result_icons_cannot_be_reordered(blind_case):
     resources['icons'][0], resources['icons'][1] = resources['icons'][1], resources['icons'][0]
     with pytest.raises(ValueError,match='图标与原始结果身份'):
         gift_batch.validate_batch(plan)
+
+
+def test_refreshed_asset_cannot_use_old_blind_catalog(blind_case):
+    args,_ = blind_case
+    single = Namespace(**vars(args),asset=None,base=None,at=None,event_id=1,
+                       room=None,gift_id=None,count=1,username=None,base_display_aspect=None,
+                       region=None,placement='center-fit')
+    old = gift_render.make_plan(single)
+    catalog = json.loads(args.catalog.read_text())
+    catalog['gifts'].append({'id':120,'name':'Result0','effectId':888})
+    args.catalog.write_text(json.dumps(catalog))
+    refreshed = gift_assets.fetch(args.cache,123456,789,1,catalog=args.catalog,refresh=True)
+    with pytest.raises(ValueError,match='资源目录与实际素材版本不符'):
+        gift_render.make_plan(single)
+    from copy import deepcopy
+    mixed = deepcopy(old)
+    mixed['asset_path'] = refreshed['asset']
+    mixed['asset_sha256'] = gift_assets.sha_file(refreshed['asset'])
+    mixed['asset_version'] = gift_assets.load_asset(refreshed['asset'])['version']
+    with pytest.raises(ValueError,match='资源目录与实际素材版本不符'):
+        gift_render.validate_plan(mixed)
+    args.catalog = None
+    batch = gift_batch.make_batch(args)
+    assert all(i['status']=='uncovered' and '资源目录' in i['reason'] for i in batch['inventory'])
+    gift_render.validate_plan(old)

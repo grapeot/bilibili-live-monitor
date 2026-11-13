@@ -93,7 +93,7 @@ def make_plan(args):
         if not binding or 'results' not in binding:
             raise ValueError('盲盒图片槽须通过--session与--event-id绑定原始结果')
         resources = load_resources(args.cache, binding)
-        card_images(config, resources)
+        card_images(config, resources, asset)
         dynamic = {'kind': 'blind', 'resources': resources}
     elif sources:
         font_path = getattr(args, 'font', None)
@@ -166,7 +166,7 @@ def validate_plan(plan):
             binding = resources['binding']
             if any(binding[k] != asset[k] for k in ('room_id', 'gift_id', 'count')):
                 raise ValueError('盲盒素材与原始批次不符')
-            card_images(config, resources)
+            card_images(config, resources, asset)
         else:
             font = dynamic['font']
             if sha_file(font['path']) != font['sha256']:
