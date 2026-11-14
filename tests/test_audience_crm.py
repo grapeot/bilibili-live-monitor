@@ -278,7 +278,7 @@ def test_symlink_workspace_can_finish(tmp_path):
     assert finish(cfg, directory)['status'] == 'completed'
 
 
-def test_timeout_stops_audience_session_tree(tmp_path, monkeypatch):
+def test_timeout_preserves_audience_session_tree(tmp_path, monkeypatch):
     from bilibili_live_monitor import session_runner
     from bilibili_live_monitor.live_share import atomic_json
     cfg = {'workspace': str(tmp_path), 'ai_session': 'live', 'talk_finalize': False, 'finalize_parallel': False}
@@ -289,4 +289,8 @@ def test_timeout_stops_audience_session_tree(tmp_path, monkeypatch):
     stopped = []
     monkeypatch.setattr(session_runner, 'stop_ai', lambda _, ident, **kw: stopped.append((ident, kw['children'])) or True)
     assert session_runner.run(tmp_path / 'config.json') == 1
-    assert ('audience', True) in stopped
+    assert stopped == []
+    saved = json.loads((tmp_path / 'workflow.json').read_text())
+    assert saved['stage'] == 'attention'
+    assert saved['audience_session'] == 'audience'
+    assert saved['automation_paused']['reason'] == 'finish_timeout'

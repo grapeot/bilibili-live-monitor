@@ -8,6 +8,7 @@ from pathlib import Path
 from .audience_finalize import advance
 from .live_share import atomic_json, epoch
 from .live_share_control import load_config
+from .session_budget import BudgetPaused, check_budget
 
 
 def tick(settings):
@@ -51,17 +52,20 @@ def tick(settings):
                 break
         if active is None:
             return {'status': 'idle'}
+        if active.get('automation_paused'):
+            return {'status': 'paused', 'key': active['key'], 'pause': active['automation_paused']}
         if active.get('attention'):
             return {'status': 'attention', 'key': active['key'], 'error': active['attention']}
         session = load_config(active['session_config'])
         state_path = Path(active['state_file'])
         state = json.loads(state_path.read_text()) if state_path.exists() else {}
+        state.setdefault('finish_deadline', active['started_at'] + settings.get('timeout_seconds', 21600))
+        atomic_json(state_path, state)
         session.update(audience_crm_config=active['config'], audience_state_path=str(state_path))
         try:
             if active.get('last_error'):
                 raise ValueError(active['last_error'])
-            if time.time() - active['started_at'] > settings.get('timeout_seconds', 21600):
-                raise ValueError('CRM更新超过预算')
+            check_budget(session, state)
             complete = advance(session, state)
             atomic_json(state_path, state)
             if complete:
@@ -70,6 +74,14 @@ def tick(settings):
                 atomic_json(active_path, None)
                 return result
             return {'status': 'running', 'key': active['key']}
+        except BudgetPaused:
+            pause = state.setdefault('automation_paused', {
+                'reason': 'finish_timeout', 'paused_at': time.time(),
+                'finish_deadline': state['finish_deadline']})
+            atomic_json(state_path, state)
+            active['automation_paused'] = pause
+            atomic_json(active_path, active)
+            return {'status': 'paused', 'key': active['key'], 'pause': pause}
         except Exception as error:
             # 外部适配器也必须先停止本次CRM会话树，再声明attention。
             from .session_runner import stop_ai

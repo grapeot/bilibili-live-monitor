@@ -230,7 +230,11 @@ python -m bilibili_live_monitor.broadcast_email --env-file /PRIVATE/notify.env -
 
 `health_enabled:false`可在本场私有config禁用巡检。调度故障独立记入`health_schedule_error`，publisher继续运行并在后续周期补链。音频采集隔离修改属于常驻采集代码，需采集服务加载新版本；仅重载publisher不能使其生效。
 
-单场文件锁排除重复实例。backend 恢复后按 label 找已有进程，子进程恢复原工作区；离线 ASR 保留已完成文件，终审继续使用该场的会话。收尾超时或超过复核预算时保留 `attention`、错误及现有页面，不报告最终成功。
+单场文件锁排除重复实例。backend 恢复后按 label 找已有进程，子进程恢复原工作区；离线 ASR 保留已完成文件，终审继续使用该场的会话。超过复核批次预算等普通错误沿用原清理与 `attention` 流程，不报告最终成功。
+
+`finish_timeout` 默认21600秒，从 `live` 进入 `stopping` 时冻结 `finish_deadline`，不因进度或重启续期。预算耗尽后，runner 将 `stage=attention` 并持久保存 `automation_paused`（`reason=finish_timeout`、原 `stage`、`paused_at`、`finish_deadline`），退出自动推进；不 abort 协调会话、不停止已派发 Cursor、不发布异常页。新建会话、协调任务提交、Cursor 启动及重试、自动发布检查同一预算；已派发单片仍保留45分钟上限。manager 与健康巡检不自动恢复此终态。
+
+独立 `audience_watch` 使用自身 `state_file` 中冻结的期限，不借用原 `completed` 场次期限；暂停时保留 `active` 并返回 `paused`，阻止继续推进其他任务。人工恢复须先检查旧写入者和已有成果，再显式清除暂停标记、恢复原阶段并给新的有限期限；独立 watch 还需清除 `active.automation_paused`。这不是自动恢复命令。代码合并或 pull 不等于部署，固定 release 的运行任务只有加载相应新版代码后才采用新行为。
 
 私有 `workflow.json` 记录阶段、URL就绪、错误和收尾进度，`state.json` 记录看板截止点；`/api/automation` 提供逐场工作流状态。验收应覆盖断线重启不重复建场、同线程通知、下播先停止AI、源文件封口、离线转写进入页面、原URL不变和最终停止轮询。合成测试不代替真实部署、邮件送达与模型质量验收。
 

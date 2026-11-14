@@ -51,6 +51,8 @@ def advance(session, state):
     """返回True才允许本场收尾；失败不改旧档案，不重复提交不确定的任务。"""
     if not session.get('audience_crm_config'):
         return True
+    from .session_budget import check_budget
+    check_budget(session, state)
     from .session_ai import ai_control
     from .session_finalize import dispatch
     from .session_runner import ensure_ai, stop_ai
@@ -64,8 +66,12 @@ def advance(session, state):
     if not marker.exists():
         config['_include_session'] = session['_config_path']
         directory, plan = crm.prepare(config, crm.load_material(config))
-        atomic_json(marker, {'run': str(directory), 'plan_id': plan['id']})
+        atomic_json(marker, {'run': str(directory), 'plan_id': plan['id'],
+                            'budget_state_path': str(state_path)})
     saved = json.loads(marker.read_text())
+    if saved.get('budget_state_path') != str(state_path):
+        saved['budget_state_path'] = str(state_path)
+        atomic_json(marker, saved)
     directory = Path(saved['run'])
     accepted = directory / 'accepted.json'
     if accepted.exists():
@@ -77,6 +83,7 @@ def advance(session, state):
         from .cursor_finalize import require_run_stopped
         require_run_stopped(directory)
         if config.get('publish_on_finalize') and not session.get('local_only', False):
+            check_budget(session, state)
             from .audience_publish import publish
             result = publish(config)
         else:

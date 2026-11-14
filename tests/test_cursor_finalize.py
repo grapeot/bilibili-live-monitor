@@ -113,10 +113,15 @@ def test_ambiguous_launch_never_reposts(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize('kind', ['finalize', 'talk_finalize'])
 @pytest.mark.parametrize('failure', [None, 'exit', 'no_result', 'model', 'coverage', 'fingerprint'])
-def test_owned_worker_receipt_and_acceptance(tmp_path, monkeypatch, kind, failure):
+@pytest.mark.parametrize('paused', [False, True])
+def test_owned_worker_receipt_and_acceptance(tmp_path, monkeypatch, kind, failure, paused):
     config, plan, root = setup(tmp_path, kind)
     monkeypatch.setattr(cursor, 'post', lambda *a: {'pid': 123, 'diagnose_on_failure': False})
     state = cursor.launch(config, kind, '000')
+    if paused:
+        atomic_json(Path(config['workspace']) / 'workflow.json', {
+            'stage': 'attention', 'finish_deadline': 0,
+            'automation_paused': {'reason': 'finish_timeout'}})
     shard = plan['shards'][0]
     inputs = json.loads(Path(shard['input']).read_text())
     rows = []
@@ -145,6 +150,7 @@ def test_owned_worker_receipt_and_acceptance(tmp_path, monkeypatch, kind, failur
             kwargs['stdout'].write(('\n'.join(json.dumps(e) for e in events) + '\n').encode())
             atomic_json(root / 'cursor_workers/000.result.json', {'plan_id': plan['id'], 'reviews': rows})
         def wait(self, timeout):
+            assert timeout == 2700  # 整场自动推进暂停不改变已派发单片的45分钟上限。
             return 1 if failure == 'exit' else 0
     monkeypatch.setattr(cursor.subprocess, 'Popen', Process)
     monkeypatch.setattr(cursor, 'stop_group', lambda p: None)

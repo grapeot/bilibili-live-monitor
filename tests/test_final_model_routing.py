@@ -45,7 +45,8 @@ def test_serial_final_dispatch_uses_final_model_without_changing_realtime(tmp_pa
 
 
 def test_shared_dispatch_preserves_explicit_crm_coordinator(tmp_path, monkeypatch):
-    config = {'model': 'crm-provider/coordinator', 'final_model': 'final-provider/final-model',
+    config = {'workspace': str(tmp_path),
+              'model': 'crm-provider/coordinator', 'final_model': 'final-provider/final-model',
               'opencode_python': '/synthetic/python', 'opencode_cwd': str(tmp_path)}
     calls = []
     monkeypatch.setattr(final.subprocess, 'run', lambda command, **kwargs:
