@@ -38,7 +38,8 @@ def gift_class():
                           (3, 'original_gift_name', 'str'), (6, 'original_gift_price', 'uint?')])
     message('Item', [(1, 'gift_id', 'uint'), (2, 'gift_name', 'str'), (3, 'num', 'uint'),
                      (5, 'price', 'uint?'), (7, 'total_coin', 'uint?'), (8, 'coin_type', 'str'),
-                     (9, 'tid', 'str'), (10, 'timestamp', 'uint')])
+                     (9, 'tid', 'str'), (10, 'timestamp', 'uint'), (35, 'gift_info', 'Snapshot')])
+    message('Snapshot', [(1, 'img_basic', 'str'), (2, 'webp', 'str'), (3, 'effect_id', 'uint')])
     message('Gift', [(1, 'uid', 'uint'), (2, 'uname', 'str'), (9, 'blind_gift', 'BlindGift'),
                      (10, 'items', 'Item[]'), (15, 'sender', 'User')])
     pool = descriptor_pool.DescriptorPool()

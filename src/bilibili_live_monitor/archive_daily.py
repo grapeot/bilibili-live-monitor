@@ -48,8 +48,13 @@ def plan(roots):
 def process(item, locks, *, trash_originals):
     started = time.monotonic()
     try:
-        result = (archive.encode(item, locks) if item['action'] == 'encode'
-                  else {'source': item['source'], 'status': 'already_archived'})
+        try:
+            result = (archive.encode(item, locks) if item['action'] == 'encode'
+                      else {'source': item['source'], 'status': 'already_archived'})
+        except archive.ArchiveSkip as skip:
+            result = archive.retain_original(item, skip)
+            result['seconds'] = round(time.monotonic() - started, 3)
+            return result
         # 核对旧manifest身份以及实际归档读取入口，之后才允许Trash。
         target = archived_input(item['legacy_row'])
         if target.stat().st_size >= item['source_stat']['size']:
@@ -90,7 +95,9 @@ def run(roots, *, execute=False, workers=2, trash_originals=False, report_dir=No
                    or trash_originals and item['action'] == 'archived' and Path(item['source']).is_file()]
         pending = pending[:max_files] if max_files is not None else pending
         summary = {'read_only': not execute, 'workers': workers, 'trash_originals': trash_originals,
-                   'inventory': dict(Counter(item['action'] for item in items)),
+                    'inventory': dict(Counter(item['action'] for item in items)),
+                   'skip_reasons': dict(Counter(item['reason'] for item in items if item['action'] == 'skip')),
+                   'retained_warnings': sum(bool(item.get('warning')) for item in items if item['action'] == 'skip'),
                    'planned': len(pending), 'source_bytes': sum(item['source_stat']['size'] for item in pending),
                    'duration_seconds': sum(item.get('duration') or 0 for item in pending)}
         if not execute:
