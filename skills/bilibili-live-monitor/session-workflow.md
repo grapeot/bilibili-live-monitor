@@ -145,6 +145,8 @@ python -m bilibili_live_monitor.audience_watch --config .local/example-watch.jso
 
 观察器对原直播 workflow 保持只读，使用独立状态与回执，不修改原 workflow 状态与通知账本，每次运行至多推进一个活跃的 completed 场次。上一轮子会话树尚未确认停止时不推进新工作；attention 回执需核查，不能对结果不确定的提交盲目重发。外部调度器的周期调用单独启用，适配器代码落地不代表自动调度已在运行。
 
+Cursor 适配器清理失败会记为 `cleanup_failed`，在确认旧写入者退出前仍占用并发名额。适配器已退出而分片回执未收尾时，须核对冻结计划、完整启动身份、Launcher 终态及进程组确实消失，才能对账为失败并按原重试合同恢复；候选文件或日志 success 不等于已验收。运维恢复事务可在观察器 workspace 放置带 `recovery_id` 的 `recovery_hold.json`，让周期检查保持 `recovery_hold`；仅创建该标记的恢复事务可在核验并提交原 active 后撤销，不能手工移除来跳过停止检查。
+
 ## 通知适配器
 
 ### 单房内容模式与录制策略
