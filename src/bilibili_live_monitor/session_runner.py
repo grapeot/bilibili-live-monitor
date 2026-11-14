@@ -168,7 +168,7 @@ def advance(config, state, now):
             state.update(media_signature=signature, stable_since=now)
             return
         platform = watch.request(config['api'] + '/api/platform')
-        candidate = next((c for c in platform['candidates'] if c.get('room_id') == config['room_id']), {})
+        candidate = next((c for c in platform['candidates'] if c.get('room_id') == config.get('platform_room_id', config['room_id'])), {})
         source = next((s for s in platform['sources'] if s.get('room_id') == config['room_id']), {})
         same_live = candidate.get('live_status') == 1 and candidate.get('live_start') == config['live_start']
         if same_live or (source.get('status') != 'stopped' and candidate.get('live_start') == config['live_start']):

@@ -40,7 +40,7 @@ def inspect(config, previous, now):
     state = request(config['api'] + '/api/state')
     platform = request(config['api'] + '/api/platform')
     room = next((r for r in state['rooms'] if r['room_id'] == config['room_id']), {})
-    candidate = next((r for r in platform['candidates'] if r['room_id'] == config['room_id']), {})
+    candidate = next((r for r in platform['candidates'] if r['room_id'] == config.get('platform_room_id', config['room_id'])), {})
     with sqlite3.connect(Path(config['database']).resolve().as_uri() + '?mode=ro', uri=True) as db:
         db.execute('PRAGMA query_only=ON')
         latest, latest_text, latest_success = db.execute('''SELECT max(json_extract(data,'$.end_utc')),
@@ -99,7 +99,7 @@ def inspect(config, previous, now):
         result['recoveries'].append(now)
         atomic_json(workspace / 'health.json', result)
         try:
-            request(config['api'] + '/api/platform/candidates/' + config['room_id'] + '/resume', {})
+            request(config['api'] + '/api/platform/candidates/' + config.get('platform_room_id', config['room_id']) + '/resume', {})
             result['recovery'] = 'room_resume_requested'
         except Exception as error:
             result['recovery_error'] = f'{type(error).__name__}: {error}'[:500]
