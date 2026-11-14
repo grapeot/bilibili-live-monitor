@@ -23,6 +23,7 @@ from .live_share_control import (
     verify_snapshot,
 )
 from .session_ai import ai_control
+from .session_budget import BudgetPaused, check_budget
 from .session_offline import recording_files, run_offline
 
 
@@ -70,6 +71,7 @@ def stop_ai(config, session, *, children=False):
 
 
 def ensure_ai(config, purpose):
+    check_budget(config)
     title = f'{purpose} {config["label"]} {config["workflow_key"]}'
     return ai_control(config, 'create', project=config['opencode_project'], title=title)['id']
 
@@ -98,6 +100,7 @@ def mark_attention(config):
 
 
 def advance(config, state, now):
+    check_budget(config, state, now=now)
     workspace = Path(config['workspace'])
     config_path = workspace / 'config.json'
     phase = state.setdefault('stage', 'created')
@@ -287,9 +290,11 @@ def advance(config, state, now):
             state['final_timeline'] = commit(config, state['cutoff'])
             verify(config, state['cutoff'])
         if config.get('audience_crm_config'):
+            check_budget(config, state)
             from .audience_finalize import advance as advance_audience
             if not advance_audience(config, state):
                 return
+        check_budget(config, state)
         watch.publish(config, workspace / 'public')
         verify_remote(config)
         state['final_artifacts'] = {name: hashlib.sha256((workspace / name).read_bytes()).hexdigest()
@@ -316,6 +321,12 @@ def run(path):
         while state['stage'] not in ('completed', 'attention'):
             started = time.time()
             config = load_config(path)
+            try:
+                check_budget(config, state, now=started)
+            except BudgetPaused:
+                pause_budget(state, started)
+                atomic_json(status_path, state)
+                break
             if started >= next_health_check:
                 from .session_health import ensure_scheduled
                 try:
@@ -325,11 +336,11 @@ def run(path):
                     state['health_schedule_error'] = f'{type(error).__name__}: {error}'[:500]
                 next_health_check = started + 300
             try:
-                if started > state.get('finish_deadline', float('inf')):
-                    raise ValueError('离线收尾超过本场预算')
                 advance(config, state, started)
                 state['last_error'] = None
                 state['consecutive_errors'] = 0
+            except BudgetPaused:
+                pause_budget(state, time.time())
             except Exception as error:
                 state['last_error'] = f'{type(error).__name__}: {error}'[:500]
                 state['consecutive_errors'] = state.get('consecutive_errors', 0) + 1
@@ -360,6 +371,14 @@ def run(path):
             if state['stage'] not in ('completed', 'attention'):
                 time.sleep(max(1, (60 if state['stage'] == 'live' or state.get('last_error') else 10) - (time.time() - started)))
         return 0 if state['stage'] == 'completed' else 1
+
+
+def pause_budget(state, now):
+    # 不abort协调会话、不停止Cursor、不发布异常页面；终态阻止manager/health自动恢复。
+    state.setdefault('automation_paused', {'reason': 'finish_timeout', 'stage': state['stage'],
+                     'paused_at': iso(now), 'finish_deadline': state.get('finish_deadline')})
+    state.update(stage='attention', updated_at=iso(now),
+                 last_error='离线收尾自动推进预算已用尽，保留现场等待人工处理')
 
 
 def main():

@@ -203,6 +203,8 @@ def submit(config, session, on_handoff=lambda: None):
 
 
 def dispatch(config, session, prompt, root, on_handoff):
+    from .session_budget import check_budget
+    check_budget(config)
     from .cursor_finalize import coordinator_prompt
     prompt = coordinator_prompt(config, prompt, root)
     path = root / 'prompt.md'

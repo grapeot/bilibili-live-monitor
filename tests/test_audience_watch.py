@@ -82,7 +82,7 @@ def test_failed_stop_never_advances_again_and_other_room_continues_after_cleanup
     assert stops == [('owned-session', True), ('owned-session', True)]
 
 
-def test_timeout_stops_owned_tree_without_advancing(tmp_path, monkeypatch):
+def test_timeout_persistently_pauses_without_stopping_owned_tree(tmp_path, monkeypatch):
     from bilibili_live_monitor import session_runner
     settings, _ = setup(tmp_path)
     monkeypatch.setattr(watch, 'advance', lambda session, state: state.update(audience_session='owned-session'))
@@ -91,8 +91,13 @@ def test_timeout_stops_owned_tree_without_advancing(tmp_path, monkeypatch):
     stopped = []
     monkeypatch.setattr(session_runner, 'stop_ai', lambda session, identifier, **kwargs: stopped.append((identifier, kwargs)) or True)
     monkeypatch.setattr(watch, 'advance', lambda *_: (_ for _ in ()).throw(AssertionError('超时后不能推进')))
-    assert watch.tick(settings)['status'] == 'attention'
-    assert stopped == [('owned-session', {'children': True})]
+    assert watch.tick(settings)['status'] == 'paused'
+    assert watch.tick(settings)['status'] == 'paused'
+    assert stopped == []
+    active = json.loads((Path(settings['workspace']) / 'active.json').read_text())
+    state = json.loads(Path(active['state_file']).read_text())
+    assert state['audience_session'] == 'owned-session'
+    assert state['automation_paused']['reason'] == 'finish_timeout'
 
 
 def test_stop_retries_preserve_original_error_and_expose_cleanup_failure(tmp_path, monkeypatch):
@@ -116,6 +121,24 @@ def test_recovery_hold_prevents_selection_or_advance(tmp_path, monkeypatch):
     monkeypatch.setattr(watch, 'advance', lambda *a: (_ for _ in ()).throw(AssertionError('must not advance')))
     assert watch.tick(settings) == {'status': 'recovery_hold', 'recovery_id': 'owned-recovery'}
     assert not (root / 'active.json').exists()
+
+
+def test_independent_budget_survives_config_changes_and_boundary_pause(tmp_path, monkeypatch):
+    from bilibili_live_monitor.session_budget import BudgetPaused, check_budget
+    settings, originals = setup(tmp_path)
+    def advance(session, state):
+        check_budget(session)  # 与ensure_ai/dispatch相同的磁盘读取路径。
+        state['audience_session'] = 'owned-session'
+        raise BudgetPaused('publication boundary')
+    monkeypatch.setattr(watch, 'advance', advance)
+    assert watch.tick(settings)['status'] == 'paused'
+    active = json.loads((Path(settings['workspace']) / 'active.json').read_text())
+    deadline = json.loads(Path(active['state_file']).read_text())['finish_deadline']
+    assert deadline == active['started_at'] + 21600
+    settings['timeout_seconds'] = 99999999999
+    assert watch.tick(settings)['status'] == 'paused'
+    assert json.loads(Path(active['state_file']).read_text())['finish_deadline'] == deadline
+    assert all(path.read_bytes() == value for path, value in originals.items())
 
 
 def test_actual_worker_reconcile_error_reaches_watch_then_cleanup_succeeds(tmp_path, monkeypatch):

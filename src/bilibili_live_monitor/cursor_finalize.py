@@ -63,12 +63,15 @@ def post(config, payload):
 
 
 def launch(config, kind, shard_id, resume_session=None):
+    from .session_budget import check_budget
+    check_budget(config, kind=kind)
     root, plan, shard = context(config, kind, shard_id)
     runs = root / 'cursor_workers'
     runs.mkdir(exist_ok=True)
     receipt = runs / f'{shard_id}.json'
     with (runs / 'launch.lock').open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
+        check_budget(config, kind=kind)
         if (runs / 'stop.json').exists():
             raise ValueError('本场已停止派发，须先检查停止原因')
         if receipt.exists():
@@ -248,11 +251,14 @@ def worker(config, kind, shard_id, token):
 
 def retry(config, kind, shard_id):
     """明确失败且无写入者后，有界续接同模型；保留前次完整证据。"""
+    from .session_budget import check_budget
+    check_budget(config, kind=kind)
     root, _, shard = context(config, kind, shard_id)
     runs = root / 'cursor_workers'
     with (runs / 'launch.lock').open('a') as registry, (runs / f'{shard_id}.lock').open('a') as lock:
         fcntl.flock(registry, fcntl.LOCK_EX)
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        check_budget(config, kind=kind)
         if (runs / 'stop.json').exists():
             raise ValueError('本场已停止，不能重试')
         path = runs / f'{shard_id}.json'
