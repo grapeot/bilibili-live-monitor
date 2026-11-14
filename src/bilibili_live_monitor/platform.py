@@ -415,7 +415,8 @@ class Platform:
             options = self.capture_options(candidate)
             room = await self.monitor.add(candidate['url'], self.settings.chunk_seconds,
                                           retry_attempts=candidate['attempts'], **options)
-            candidate['room_id'] = room['room_id']
+            # 状态接口已解析的规范号是控制身份；页面短号只属于采集来源。
+            candidate.setdefault('room_id', room['room_id'])
             candidate['started_epoch'] = time.time()
             candidate['start_seconds'] = room.get('recorded_seconds', 0)
             self.active[candidate['url']] = room['room_id']
