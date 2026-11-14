@@ -733,3 +733,8 @@
 - 将音乐、杂谈及观众查证的 Cursor CLI 分片执行接入主线：Launcher 托管、并发控制、回执、候选验收及停止栅栏。
 - 音乐与杂谈的 OpenCode 总协调通过显式 `final_model` 独立选择；Cursor 分片仍固定使用 Grok，不允许遗漏模型而继承实时路由。
 - 验证结果以本次测试输出与 PR CI 为准。
+# 场次汇总缺失指标修复（2026-11-14）
+
+```json
+{"change":"partial-archive-metrics","entry":"archive_metrics.aggregate_metrics","consumer":"archive_summary.summaries 与外部主页同步适配器","missing_fields":"null，逐字段独立计算","followers_delta":"至少两条场内观测；不借用昨日值，不用单点伪造零增长","gift_identity":"未知金额或付费身份不伪造完整分账","deployment":"独立于合并；外部同步适配器与构建校验须一并支持 null"}
+```
