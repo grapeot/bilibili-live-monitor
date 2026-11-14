@@ -15,6 +15,9 @@ def tick(settings):
     root.mkdir(parents=True, exist_ok=True)
     with (root / '.lock').open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        hold = root / 'recovery_hold.json'
+        if hold.exists():
+            return {'status': 'recovery_hold', 'recovery_id': json.loads(hold.read_text())['recovery_id']}
         candidates = []
         rooms = set()
         for target in settings['targets']:
@@ -70,12 +73,14 @@ def tick(settings):
         except Exception as error:
             # 外部适配器也必须先停止本次CRM会话树，再声明attention。
             from .session_runner import stop_ai
-            message = f'{type(error).__name__}: {error}'
+            message = active.get('last_error') or f'{type(error).__name__}: {error}'
             try:
                 stopped = stop_ai(session, state.get('audience_session'), children=True)
                 from .cursor_finalize import stop_workers
                 stopped = stop_workers(session, kinds=('audience_finalize',)) and stopped
-            except Exception:
+                active.pop('stop_error', None)
+            except Exception as stop_error:
+                active['stop_error'] = f'{type(stop_error).__name__}: {stop_error}'
                 stopped = False
             atomic_json(state_path, state)
             active['last_error'] = message

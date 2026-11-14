@@ -78,7 +78,7 @@ def launch(config, kind, shard_id, resume_session=None):
         active = [json.loads(p.read_text()) for p in runs.glob('*.json')
                   if p.stem.isdigit()]
         cap = min(10, plan.get('concurrency', 10))
-        if sum(r.get('state') in ('submitting', 'starting', 'running') for r in active) >= cap:
+        if sum(r.get('state') in ('submitting', 'starting', 'running', 'cleanup_failed') for r in active) >= cap:
             raise ValueError('并发已满，等待现有分片退出，不重复派发')
         token = uuid.uuid4().hex
         state = {'state': 'submitting', 'token': token, 'shard': shard_id,
@@ -128,6 +128,19 @@ music模式可在结果另列song_sources供总协调审核；talk模式严格�
 只完成本片后退出。'''
 
 
+def group_exists(pgid):
+    """EPERM可能是权限或系统边界；只在完整进程表证实空组时认为已退出。"""
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        result = subprocess.run(['ps', '-axo', 'pgid='], capture_output=True,
+                                text=True, check=True, timeout=10)
+        return str(pgid) in result.stdout.split()
+    return True
+
+
 def stop_group(proc):
     """组长退出不代表子进程退出；始终清理本次创建的独立进程组。"""
     try:
@@ -137,10 +150,16 @@ def stop_group(proc):
         pass
     except ProcessLookupError:
         pass
+    except PermissionError:
+        if group_exists(proc.pid):
+            raise
     try:
         os.killpg(proc.pid, signal.SIGKILL)
     except ProcessLookupError:
         pass
+    except PermissionError:
+        if group_exists(proc.pid):
+            raise
     proc.wait(timeout=10)
 
 
@@ -195,9 +214,16 @@ def worker(config, kind, shard_id, token):
                 code = 124
             finally:
                 # 即使组长正常退出，也不能留下后台子进程继续写结果。
-                stop_group(proc)
-                for sig, handler in old.items():
-                    signal.signal(sig, handler)
+                try:
+                    stop_group(proc)
+                except Exception as error:
+                    state.update(state='cleanup_failed', exit_code=proc.returncode,
+                                 ended_at=time.time(), error=type(error).__name__)
+                    atomic_json(path, state)
+                    raise
+                finally:
+                    for sig, handler in old.items():
+                        signal.signal(sig, handler)
         state.update(exit_code=code, ended_at=time.time(), state='failed')
         events = []
         for line in stdout.read_text().splitlines():
@@ -233,13 +259,8 @@ def retry(config, kind, shard_id):
         state = json.loads(path.read_text())
         if state.get('state') not in ('failed', 'interrupted') or Path(shard['result']).exists():
             raise ValueError('仅明确失败且尚未转正的分片可重试')
-        if state.get('pgid'):
-            try:
-                os.killpg(state['pgid'], 0)
-            except ProcessLookupError:
-                pass
-            else:
-                raise ValueError('前次进程组仍存在，不能重试')
+        if state.get('pgid') and group_exists(state['pgid']):
+            raise ValueError('前次进程组仍存在，不能重试')
         history = runs / 'history' / shard_id
         attempts = list(history.iterdir()) if history.exists() else []
         if len(attempts) >= 2:
@@ -332,6 +353,42 @@ def require_run_stopped(root):
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
 
+def reconcile_worker(config, kind, shard_id):
+    """以Launcher终态、完整命令身份和已消失进程组对账；不把候选升级为成功。"""
+    from .live_share_watch import request
+    root, plan, _ = context(config, kind, shard_id)
+    runs = root / 'cursor_workers'
+    path = runs / f'{shard_id}.json'
+    with (runs / f'{shard_id}.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        state = json.loads(path.read_text())
+        if state.get('state') not in ('starting', 'running', 'cleanup_failed'):
+            return False
+        launch = json.loads((runs / f'{shard_id}.launch.json').read_text())
+        base = config.get('launcher', 'http://127.0.0.1:7997').rstrip('/')
+        job = request(base + f'/processes/{launch["pid"]}')
+        argv = shlex.split(job['command']) if isinstance(job['command'], str) else job['command']
+        expected = ['-m', 'bilibili_live_monitor.cursor_finalize', 'worker',
+                    '--config', config['_config_path'], '--kind', kind,
+                    '--shard', shard_id, '--token', state['token']]
+        if (argv != [sys.executable, *expected]
+                or job.get('pid') != launch['pid']
+                or state.get('adapter_pid') != launch['pid']
+                or state.get('plan_id') != plan['id'] or not state.get('pgid')):
+            raise ValueError('Cursor停止对账身份缺失或不匹配：' + shard_id)
+        if job.get('status') not in ('exited', 'killed') or group_exists(state['pgid']):
+            return False
+        if job.get('exit_code') is None or not job.get('exited_at'):
+            raise ValueError('Launcher终态缺少退出证据：' + shard_id)
+        before = runs / f'{shard_id}.reconcile.before.json'
+        if not before.exists():
+            atomic_json(before, state)
+        state.update(state='failed', error='adapter_exited_without_terminal_receipt',
+                     adapter_exit_code=job['exit_code'], reconciled_at=time.time())
+        atomic_json(path, state)
+        return True
+
+
 def stop_workers(config, *, kinds=KINDS):
     """runner异常收尾时只停止本场、同token的Launcher适配器。"""
     from .live_share_watch import request
@@ -370,7 +427,8 @@ def stop_workers(config, *, kinds=KINDS):
                     state.update(state='cancelled_before_start', ended_at=time.time())
                     atomic_json(path, state)
                 else:
-                    stopped = False  # 已开始的写入者缺清理回执不能猜停。
+                    reconciled = reconcile_worker(config, kind, path.stem)
+                    stopped = reconciled and stopped
     return stopped
 
 

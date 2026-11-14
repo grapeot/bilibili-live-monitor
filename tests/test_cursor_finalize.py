@@ -287,3 +287,152 @@ def test_retry_refuses_a_live_prior_process_group(tmp_path, monkeypatch):
     monkeypatch.setattr(cursor.os, 'killpg', lambda *a: None)
     with pytest.raises(ValueError, match='进程组仍存在'):
         cursor.retry(config, 'finalize', '000')
+
+
+@pytest.mark.parametrize('members,raises', [('', False), ('1234\n', True)])
+def test_permission_error_only_ignored_for_proven_empty_group(monkeypatch, members, raises):
+    from types import SimpleNamespace
+    def denied(*args):
+        raise PermissionError('denied')
+    monkeypatch.setattr(cursor.os, 'killpg', denied)
+    monkeypatch.setattr(cursor.subprocess, 'run', lambda *a, **kw: SimpleNamespace(stdout=members))
+    process = SimpleNamespace(pid=1234, wait=lambda **kw: 0)
+    if raises:
+        with pytest.raises(PermissionError):
+            cursor.stop_group(process)
+    else:
+        cursor.stop_group(process)
+
+
+@pytest.mark.parametrize('mismatch,live', [(False, False), (True, False), (False, True)])
+def test_orphan_reconciliation_requires_identity_and_no_group(tmp_path, monkeypatch, mismatch, live):
+    from bilibili_live_monitor import live_share_watch as watch
+    config, _, root = setup(tmp_path)
+    monkeypatch.setattr(cursor, 'post', lambda *a: {'pid': 123, 'diagnose_on_failure': False})
+    state = cursor.launch(config, 'finalize', '000')
+    state.update(state='running', adapter_pid=123, pgid=456)
+    path = root / 'cursor_workers/000.json'
+    atomic_json(path, state)
+    job = {'pid': 123, 'status': 'exited', 'exit_code': 1, 'exited_at': '2030-01-01',
+           'command': [cursor.sys.executable, '-m', 'bilibili_live_monitor.cursor_finalize', 'worker',
+                       '--config', config['_config_path'], '--kind', 'finalize',
+                       '--shard', '000', '--token', 'other' if mismatch else state['token']]}
+    monkeypatch.setattr(watch, 'request', lambda *a: job)
+    monkeypatch.setattr(cursor, 'group_exists', lambda *a: live)
+    if mismatch:
+        with pytest.raises(ValueError, match='身份'):
+            cursor.reconcile_worker(config, 'finalize', '000')
+    else:
+        assert cursor.reconcile_worker(config, 'finalize', '000') == (not live)
+    saved = json.loads(path.read_text())
+    assert saved['state'] == ('failed' if not mismatch and not live else 'running')
+    assert not Path(cursor.context(config, 'finalize', '000')[2]['result']).exists()
+    if saved['state'] == 'failed':
+        assert json.loads((root / 'cursor_workers/000.reconcile.before.json').read_text()) == state
+
+
+def test_cleanup_failed_holds_capacity_until_verified_reconciliation(tmp_path, monkeypatch):
+    from bilibili_live_monitor import live_share_watch as watch
+    config, plan, root = setup(tmp_path)
+    plan['concurrency'] = 1
+    atomic_json(root / 'plan.json', plan)
+    calls = []
+    monkeypatch.setattr(cursor, 'post', lambda *a: calls.append(a) or {'pid': 123, 'diagnose_on_failure': False})
+    state = cursor.launch(config, 'finalize', '000')
+    state.update(state='cleanup_failed', adapter_pid=123, pgid=456)
+    atomic_json(root / 'cursor_workers/000.json', state)
+    with pytest.raises(ValueError, match='并发已满'):
+        cursor.launch(config, 'finalize', '001')
+    assert len(calls) == 1
+    job = {'pid': 123, 'status': 'exited', 'exit_code': 1, 'exited_at': '2030-01-01',
+           'command': [cursor.sys.executable, '-m', 'bilibili_live_monitor.cursor_finalize', 'worker',
+                       '--config', config['_config_path'], '--kind', 'finalize',
+                       '--shard', '000', '--token', state['token']]}
+    monkeypatch.setattr(watch, 'request', lambda *a: job)
+    monkeypatch.setattr(cursor, 'group_exists', lambda *a: False)
+    assert cursor.reconcile_worker(config, 'finalize', '000')
+    cursor.launch(config, 'finalize', '001')
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize('fault', ['interpreter', 'adapter_missing', 'adapter_wrong', 'config',
+                                   'kind', 'shard', 'plan', 'nonterminal', 'no_exit', 'no_time', 'request'])
+def test_reconcile_rejects_incomplete_or_changed_identity(tmp_path, monkeypatch, fault):
+    from bilibili_live_monitor import live_share_watch as watch
+    config, _, root = setup(tmp_path)
+    monkeypatch.setattr(cursor, 'post', lambda *a: {'pid': 123, 'diagnose_on_failure': False})
+    state = cursor.launch(config, 'finalize', '000')
+    state.update(state='running', adapter_pid=123, pgid=456)
+    argv = [cursor.sys.executable, '-m', 'bilibili_live_monitor.cursor_finalize', 'worker',
+            '--config', config['_config_path'], '--kind', 'finalize', '--shard', '000', '--token', state['token']]
+    job = {'pid': 123, 'status': 'exited', 'exit_code': 1, 'exited_at': '2030', 'command': argv}
+    if fault == 'interpreter':
+        argv[0] = '/wrong/python'
+    if fault == 'adapter_missing':
+        state.pop('adapter_pid')
+    if fault == 'adapter_wrong':
+        state['adapter_pid'] = 999
+    if fault in ('config', 'kind', 'shard'):
+        argv[argv.index('--' + fault) + 1] = 'wrong'
+    if fault == 'plan':
+        state['plan_id'] = 'wrong'
+    if fault == 'nonterminal':
+        job['status'] = 'running'
+    if fault == 'no_exit':
+        job.pop('exit_code')
+    if fault == 'no_time':
+        job.pop('exited_at')
+    path = root / 'cursor_workers/000.json'
+    atomic_json(path, state)
+    before = path.read_bytes()
+    def request(*args):
+        if fault == 'request':
+            raise OSError('launcher unavailable')
+        return job
+    monkeypatch.setattr(watch, 'request', request)
+    monkeypatch.setattr(cursor, 'group_exists', lambda *a: False)
+    if fault == 'request':
+        with pytest.raises(OSError):
+            cursor.reconcile_worker(config, 'finalize', '000')
+    elif fault == 'nonterminal':
+        assert not cursor.reconcile_worker(config, 'finalize', '000')
+    else:
+        with pytest.raises(ValueError):
+            cursor.reconcile_worker(config, 'finalize', '000')
+    assert path.read_bytes() == before
+
+
+def test_reconcile_cannot_touch_receipt_while_worker_holds_lock(tmp_path, monkeypatch):
+    import fcntl
+    config, _, root = setup(tmp_path)
+    monkeypatch.setattr(cursor, 'post', lambda *a: {'pid': 123, 'diagnose_on_failure': False})
+    state = cursor.launch(config, 'finalize', '000')
+    state.update(state='running', adapter_pid=123, pgid=456)
+    path = root / 'cursor_workers/000.json'
+    atomic_json(path, state)
+    with path.with_suffix('.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with pytest.raises(BlockingIOError):
+            cursor.reconcile_worker(config, 'finalize', '000')
+    assert json.loads(path.read_text()) == state
+
+
+def test_cleanup_exception_persists_nonterminal_writer_state(tmp_path, monkeypatch):
+    config, _, root = setup(tmp_path)
+    monkeypatch.setattr(cursor, 'post', lambda *a: {'pid': 123, 'diagnose_on_failure': False})
+    state = cursor.launch(config, 'finalize', '000')
+    class Process:
+        pid = 1234
+        returncode = 0
+        def __init__(self, *a, **kw):
+            pass
+        def wait(self, **kw):
+            return 0
+    monkeypatch.setattr(cursor.subprocess, 'Popen', Process)
+    def denied(*a):
+        raise PermissionError('live group not owned')
+    monkeypatch.setattr(cursor, 'stop_group', denied)
+    with pytest.raises(PermissionError):
+        cursor.worker(config, 'finalize', '000', state['token'])
+    receipt = json.loads((root / 'cursor_workers/000.json').read_text())
+    assert receipt['state'] == 'cleanup_failed' and receipt['error'] == 'PermissionError'

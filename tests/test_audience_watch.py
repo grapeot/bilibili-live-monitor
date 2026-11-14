@@ -93,3 +93,42 @@ def test_timeout_stops_owned_tree_without_advancing(tmp_path, monkeypatch):
     monkeypatch.setattr(watch, 'advance', lambda *_: (_ for _ in ()).throw(AssertionError('超时后不能推进')))
     assert watch.tick(settings)['status'] == 'attention'
     assert stopped == [('owned-session', {'children': True})]
+
+
+def test_stop_retries_preserve_original_error_and_expose_cleanup_failure(tmp_path, monkeypatch):
+    from bilibili_live_monitor import session_runner
+    settings, _ = setup(tmp_path)
+    monkeypatch.setattr(watch, 'advance', lambda *a: (_ for _ in ()).throw(ValueError('original')))
+    monkeypatch.setattr(session_runner, 'stop_ai', lambda *a, **kw: (_ for _ in ()).throw(RuntimeError('cleanup')))
+    first = watch.tick(settings)
+    assert first['status'] == 'stopping'
+    for _ in range(3):
+        assert watch.tick(settings)['error'] == first['error'] == 'ValueError: original'
+    active = json.loads((Path(settings['workspace']) / 'active.json').read_text())
+    assert active['stop_error'] == 'RuntimeError: cleanup'
+
+
+def test_recovery_hold_prevents_selection_or_advance(tmp_path, monkeypatch):
+    settings, _ = setup(tmp_path)
+    root = Path(settings['workspace'])
+    root.mkdir()
+    (root / 'recovery_hold.json').write_text(json.dumps({'recovery_id': 'owned-recovery'}))
+    monkeypatch.setattr(watch, 'advance', lambda *a: (_ for _ in ()).throw(AssertionError('must not advance')))
+    assert watch.tick(settings) == {'status': 'recovery_hold', 'recovery_id': 'owned-recovery'}
+    assert not (root / 'active.json').exists()
+
+
+def test_actual_worker_reconcile_error_reaches_watch_then_cleanup_succeeds(tmp_path, monkeypatch):
+    from bilibili_live_monitor import cursor_finalize, session_runner
+    settings, _ = setup(tmp_path)
+    monkeypatch.setattr(watch, 'advance', lambda *a: (_ for _ in ()).throw(ValueError('original')))
+    monkeypatch.setattr(session_runner, 'stop_ai', lambda *a, **kw: True)
+    # stop_workers must not swallow its underlying reconciliation error.
+    monkeypatch.setattr(cursor_finalize, 'stop_workers', lambda *a, **kw: (_ for _ in ()).throw(OSError('launcher read failed')))
+    assert watch.tick(settings)['status'] == 'stopping'
+    active = json.loads((Path(settings['workspace']) / 'active.json').read_text())
+    assert active['last_error'] == 'ValueError: original'
+    assert active['stop_error'] == 'OSError: launcher read failed'
+    monkeypatch.setattr(cursor_finalize, 'stop_workers', lambda *a, **kw: True)
+    assert watch.tick(settings)['status'] == 'attention'
+    assert json.loads((Path(settings['workspace']) / 'active.json').read_text()) is None
